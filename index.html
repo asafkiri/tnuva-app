@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
-    <title>קליטת תנובה - v10 שמות בשלטים</title>
+    <title>קליטת תנובה - v11 מיזוג עד 10%</title>
 
     <!-- PWA: התקנה כאפליקציה במסך מלא (אנדרואיד + אייפון) -->
     <meta name="mobile-web-app-capable" content="yes">
@@ -102,7 +102,7 @@
 
     <!-- תוכן ראשי -->
     <main id="app" class="max-w-3xl mx-auto p-4"></main>
-    <div id="verBadge" class="fixed bottom-1 left-2 text-[10px] font-black text-slate-300 z-[45] pointer-events-none select-none">v10 שמות בשלטים</div>
+    <div id="verBadge" class="fixed bottom-1 left-2 text-[10px] font-black text-slate-300 z-[45] pointer-events-none select-none">v11 מיזוג עד 10%</div>
 
     <!-- כפתור סיום הזמנה (צף) -->
     <div id="cartWrap" class="fixed bottom-6 inset-x-0 flex justify-center pointer-events-none px-4 z-20">
@@ -12045,10 +12045,17 @@ function tnvGroupRows(rows){
     const bypct={};
     b.items.forEach(it=>{ (bypct[it.pct]=bypct[it.pct]||[]).push(it); });
     Object.keys(bypct).map(Number).sort((a,b2)=>b2-a).forEach(pct=>{
-      // כלל הקבוצה: אותו אחוז בדיוק וגם אותו מחיר מחירון בדיוק — אחרת מפצלים
-      const byprice={};
-      bypct[pct].forEach(it=>{ (byprice[it.list]=byprice[it.list]||[]).push(it); });
-      Object.keys(byprice).map(Number).sort((a,b2)=>b2-a).forEach(pr=>groups.push({pct, items:byprice[pr]}));
+      // כלל 4.8 המעודכן: בתוך פס ואחוז, מוצרים במרחק עד 10% מהיקר בצבר
+      // מתאחדים לאותו מבצע; המדידה תמיד מול היקר בצבר — בלי זחילת שרשרת
+      // (8.00→8.70→9.40 לא יתאחדו). מעבר ל-10% — קבוצה חדשה.
+      const sorted = bypct[pct].slice().sort((a,b2)=>b2.list-a.list);
+      let cluster = [];
+      const flush = ()=>{ if (cluster.length) groups.push({pct, items:cluster}); cluster=[]; };
+      sorted.forEach(it=>{
+        if (cluster.length && it.list >= cluster[0].list*0.9 - 1e-9) cluster.push(it);
+        else { flush(); cluster=[it]; }
+      });
+      flush();
     });
   }
   return groups;
@@ -12119,12 +12126,14 @@ async function tnvParsePromoSheet(pdfjsLib, data){
   }
   if (problems.length) throw new Error('הדף נקרא אך נמצאו בעיות:\n• '+problems.slice(0,6).join('\n• '));
   const groups = tnvGroupRows(rows).map(g=>{
-    const uniq = Array.from(new Set(g.items.map(it=>it.list)));
+    // מחיר הקבוצה = היקר ביותר בצבר (הכרעת 4.8) — זה בסיס השלט; ההתחשבנות
+    // ממילא פר-מוצר לפי המחיר שלו-עצמו, כך שהמיזוג לא נוגע בכסף.
+    const maxList = Math.max.apply(null, g.items.map(it=>it.list));
     return {
-      name: tnvGroupName(g.items, g.pct) + (uniq.length===1 ? ' · ₪' + uniq[0] : ''),
+      name: tnvGroupName(g.items, g.pct) + ' · ₪' + maxList,
       discountPct: g.pct,
       packUnits: 1,
-      unitPriceExVat: uniq.length===1 ? uniq[0] : null,
+      unitPriceExVat: maxList,
       products: g.items.map(it=>({ barcode: it.bc, name: it.name, listPrice: it.list, promoPrice: it.promo }))
     };
   });
