@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
-    <title>קליטת תנובה - v1 יסודות</title>
+    <title>קליטת תנובה - v2 ייבוא מבצעים</title>
 
     <!-- PWA: התקנה כאפליקציה במסך מלא (אנדרואיד + אייפון) -->
     <meta name="mobile-web-app-capable" content="yes">
@@ -102,7 +102,7 @@
 
     <!-- תוכן ראשי -->
     <main id="app" class="max-w-3xl mx-auto p-4"></main>
-    <div id="verBadge" class="fixed bottom-1 left-2 text-[10px] font-black text-slate-300 z-[45] pointer-events-none select-none">v1 יסודות</div>
+    <div id="verBadge" class="fixed bottom-1 left-2 text-[10px] font-black text-slate-300 z-[45] pointer-events-none select-none">v2 ייבוא מבצעים</div>
 
     <!-- כפתור סיום הזמנה (צף) -->
     <div id="cartWrap" class="fixed bottom-6 inset-x-0 flex justify-center pointer-events-none px-4 z-20">
@@ -496,7 +496,8 @@ const RAW_PRODUCTS = [
   "שמרים קוביה - 1","לורפק קופסא כחול -1","לורפק קופסא אדום - 1"
 ];
 
-const INITIAL_PRODUCTS = RAW_PRODUCTS.map((raw, index) => {
+const INITIAL_PRODUCTS = []; // תנובה: בלי זריעת קטלוג התחלתי — הקטלוג מגיע מייבוא
+const UNUSED_INITIAL_PRODUCTS = RAW_PRODUCTS.map((raw, index) => {
   let [name, avgPart] = raw.split('-');
   name = name.trim().replace('*', '');
   let average = 0, unit = 'carton';
@@ -11870,7 +11871,7 @@ function promoImportMatch(sheet) {
       const key = normalizeBarcode(item.barcode);
       if (seen.has(key)) return;
       seen.add(key);
-      missing.push({ barcode: item.barcode, name: item.name, price: group.unitPriceExVat });
+      missing.push({ barcode: item.barcode, name: item.name, price: (Number(item.listPrice) > 0 ? item.listPrice : group.unitPriceExVat) });
     });
   });
   return missing;
@@ -11879,13 +11880,14 @@ function promoImportPriceMismatches(sheet) {
   // אותו סוג בדיקה שתפס את הקאופרי (10.06 מול 10.60): מחיר הדף מול המאגר.
   const out = [];
   (sheet.groups || []).forEach(group => {
-    if (!(Number(group.unitPriceExVat) > 0)) return;
     (group.products || []).forEach(item => {
       if (!item.productId) return;
+      const sheetPrice = (Number(item.listPrice) > 0) ? Number(item.listPrice) : Number(group.unitPriceExVat);
+      if (!(sheetPrice > 0)) return;
       const p = products.find(x => x.id === item.productId);
       if (!p || !(Number(p.price) > 0)) return;
-      if (Math.abs(r2(Number(p.price)) - r2(Number(group.unitPriceExVat))) >= 0.01) {
-        out.push({ name: p.name || item.name, catalog: r2(Number(p.price)), sheet: r2(Number(group.unitPriceExVat)) });
+      if (Math.abs(r2(Number(p.price)) - r2(sheetPrice)) >= 0.01) {
+        out.push({ name: p.name || item.name, catalog: r2(Number(p.price)), sheet: r2(sheetPrice) });
       }
     });
   });
@@ -11894,39 +11896,214 @@ function promoImportPriceMismatches(sheet) {
 function promoImportExistingPromo(group, sheet) {
   return promos.find(pr => (pr.name || '') === (group.name || '') && (pr.start || '') === (sheet.validFrom || '') && (pr.end || '') === (sheet.validTo || ''));
 }
+
+// ===== v2: טעינת pdf.js מקומית (CDN, פעם אחת) =====
+let tnvPdfjsPromise = null;
+function tnvLoadPdfjs(){
+  if (window.pdfjsLib && window.pdfjsLib.getDocument) return Promise.resolve(window.pdfjsLib);
+  if (tnvPdfjsPromise) return tnvPdfjsPromise;
+  tnvPdfjsPromise = new Promise((resolve, reject)=>{
+    const s = document.createElement('script');
+    s.src = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js';
+    s.onload = ()=>{ try { window.pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js'; resolve(window.pdfjsLib); } catch(e){ reject(e); } };
+    s.onerror = ()=>reject(new Error('טעינת רכיב קריאת ה-PDF נכשלה — בדוק חיבור אינטרנט ונסה שוב'));
+    document.head.appendChild(s);
+  });
+  return tnvPdfjsPromise;
+}
+function promoImportFileArrayBuffer(file){
+  return new Promise((resolve, reject)=>{
+    const r = new FileReader();
+    r.onerror = ()=>reject(new Error('קריאת הקובץ נכשלה'));
+    r.onload = ()=>resolve(new Uint8Array(r.result));
+    r.readAsArrayBuffer(file);
+  });
+}
+// ===== Tnuva v2: local promo-sheet parser (no server, no AI) =====
+// Pure functions; pdfjsLib injected. Same algorithm proven in Python (104/104).
+const TNV_HEB_MONTHS = { 'ינואר':1,'פברואר':2,'מרץ':3,'אפריל':4,'מאי':5,'יוני':6,'יולי':7,'אוגוסט':8,'ספטמבר':9,'אוקטובר':10,'נובמבר':11,'דצמבר':12 };
+function tnvHeb(s){ for (let i=0;i<s.length;i++){ const c=s.charCodeAt(i); if (c>=0x0590&&c<=0x05FF) return true; } return false; }
+function tnvFixTok(t){ if(!tnvHeb(t)) return t; const M={'(':')',')':'(','[':']',']':'['}; let o=''; for(let i=t.length-1;i>=0;i--){ const c=t[i]; o+=(M[c]||c);} return o; }
+function tnvFixName(toks){ return toks.slice().reverse().map(tnvFixTok).join(' ').replace(/^[ .]+|[ .]+$/g,''); }
+function tnvEan13Ok(bc){ if(!/^\d{13}$/.test(bc)) return false; let s=0; for(let i=0;i<12;i++) s+=(+bc[i])*(i%2===0?1:3); return ((10-s%10)%10)===+bc[12]; }
+function tnvR2(x){ return Math.round((x+1e-9)*100)/100; }
+
+function tnvClusterLines(items){
+  const rows=[];
+  for (const it of items){
+    if (!it.str || !it.str.trim()) continue;
+    const y=it.transform[5], x=it.transform[4];
+    let row=rows.find(r=>Math.abs(r.y-y)<=2.2);
+    if(!row){ row={y, parts:[]}; rows.push(row); }
+    row.parts.push({x, s: it.str});
+  }
+  rows.forEach(r=>{ r.parts.sort((a,b)=>a.x-b.x); r.text=r.parts.map(p=>p.s).join(' ').replace(/\s+/g,' ').trim(); });
+  rows.sort((a,b)=>b.y-a.y);
+  return rows;
+}
+
+function tnvMat(a,b){ return [a[0]*b[0]+a[2]*b[1], a[1]*b[0]+a[3]*b[1], a[0]*b[2]+a[2]*b[3], a[1]*b[2]+a[3]*b[3], a[0]*b[4]+a[2]*b[5]+a[4], a[1]*b[4]+a[3]*b[5]+a[5]]; }
+function tnvApply(m,x,y){ return [m[0]*x+m[2]*y+m[4], m[1]*x+m[3]*y+m[5]]; }
+
+async function tnvExtractFillRects(pdfjsLib, page){
+  const OPS = pdfjsLib.OPS;
+  const ol = await page.getOperatorList();
+  const rects=[]; let ctm=[1,0,0,1,0,0]; const stack=[]; let fill=null; let pending=[];
+  for (let i=0;i<ol.fnArray.length;i++){
+    const fn=ol.fnArray[i], args=ol.argsArray[i];
+    if (fn===OPS.save) stack.push(ctm.slice());
+    else if (fn===OPS.restore) ctm = stack.pop() || [1,0,0,1,0,0];
+    else if (fn===OPS.transform) ctm = tnvMat(ctm, args);
+    else if (fn===OPS.setFillRGBColor) fill = [args[0], args[1], args[2]];
+    else if (fn===OPS.setFillGray) fill = [args[0], args[0], args[0]];
+    else if (fn===OPS.constructPath){
+      const pops=args[0], coords=args[1]; let ci=0;
+      for (const p of pops){
+        if (p===OPS.rectangle){ pending.push([coords[ci],coords[ci+1],coords[ci+2],coords[ci+3]]); ci+=4; }
+        else if (p===OPS.moveTo||p===OPS.lineTo) ci+=2;
+        else if (p===OPS.curveTo) ci+=6;
+        else if (p===OPS.curveTo2||p===OPS.curveTo3) ci+=4;
+      }
+    }
+    else if (fn===OPS.fill||fn===OPS.eoFill||fn===OPS.fillStroke||fn===OPS.eoFillStroke){
+      if (fill){
+        const norm = fill.map(v=> v>1.001 ? v/255 : v);
+        for (const [x,y,w,h] of pending){
+          const [x0,y0]=tnvApply(ctm,x,y), [x1,y1]=tnvApply(ctm,x+w,y+h);
+          rects.push({x0:Math.min(x0,x1), x1:Math.max(x0,x1), y0:Math.min(y0,y1), y1:Math.max(y0,y1),
+                      c: norm.map(v=>Math.round(v*1000)/1000).join(',')});
+        }
+      }
+      pending=[];
+    }
+    else if (fn===OPS.endPath) pending=[];
+  }
+  return rects.filter(r=> (r.x1-r.x0)>30);
+}
+
+function tnvParsePromoRow(text){
+  const mb = text.match(/(\d{13})/); if(!mb) return null;
+  const mp = text.match(/(\d{1,2}\.\d{2})%/); if(!mp) return null;
+  let work = text.replace(mb[0],' ').replace(mp[0],' ');
+  const prices = (work.match(/\d{1,3}\.\d{2}/g)||[]).map(Number);
+  if (prices.length!==2) return { bad:true, text };
+  work = work.replace(/\d{1,3}\.\d{2}/g,' ').replace(/₪/g,' ').replace(/!!/g,' ');
+  return { bc: mb[1], pct: parseFloat(mp[1]), list: Math.max(prices[0],prices[1]),
+           promo: Math.min(prices[0],prices[1]), name: tnvFixName(work.split(/\s+/).filter(Boolean)) };
+}
+
+function tnvGroupRows(rows){
+  const count={};
+  rows.forEach(r=>r.colors.forEach(c=>{ count[c]=(count[c]||0)+1; }));
+  const common=new Set(Object.keys(count).filter(c=>count[c]>rows.length*0.8));
+  rows.forEach(r=>{ r.key = r.colors.filter(c=>!common.has(c)).sort().join('|'); });
+  const bands=[];
+  for (const r of rows){
+    if (bands.length && bands[bands.length-1].key===r.key) bands[bands.length-1].items.push(r);
+    else bands.push({key:r.key, items:[r]});
+  }
+  const groups=[];
+  for (const b of bands){
+    const bypct={};
+    b.items.forEach(it=>{ (bypct[it.pct]=bypct[it.pct]||[]).push(it); });
+    Object.keys(bypct).map(Number).sort((a,b2)=>b2-a).forEach(pct=>groups.push({pct, items:bypct[pct]}));
+  }
+  return groups;
+}
+
+function tnvGroupName(items, pct){
+  const cnt={};
+  items.forEach(it=>{ const t=(it.name.split(' ')[0]||'').trim(); if(t) cnt[t]=(cnt[t]||0)+1; });
+  const top = Object.keys(cnt).sort((a,b)=>cnt[b]-cnt[a])[0] || 'מבצע';
+  const p = pct===Math.round(pct) ? String(Math.round(pct)) : String(pct);
+  return top + ' ' + p + '%';
+}
+
+function tnvSheetDates(titleText){
+  // הכותרת מגיעה בסדר ויזואלי הפוך ("טסוגוא"). התאמה לפי טוקן שלם בלבד
+  // (ילויבר של "רביולי" הכיל את "יולי" הפוך — לכן לא מחפשים תת-מחרוזת),
+  // ובוחרים את החודש הקרוב ביותר לטוקן שנה 20xx.
+  const toks = titleText.split(/\s+/);
+  const monthIdx=[], yearIdx=[];
+  toks.forEach((t,i)=>{
+    const clean = t.replace(/[^א-ת0-9]/g,'');
+    if (/^20\d{2}$/.test(clean)) yearIdx.push(i);
+    for (const name of Object.keys(TNV_HEB_MONTHS)){
+      const rev = name.split('').reverse().join('');
+      if (clean===name || clean===rev){ monthIdx.push([i, TNV_HEB_MONTHS[name]]); break; }
+    }
+  });
+  let y=null, mo=null;
+  if (monthIdx.length && yearIdx.length){
+    let best=null;
+    for (const [mi, mval] of monthIdx) for (const yi of yearIdx){
+      const d=Math.abs(mi-yi);
+      if (!best || d<best[0]) best=[d, mval, +toks[yi].replace(/[^0-9]/g,'')];
+    }
+    mo=best[1]; y=best[2];
+  }
+  if (!mo || !y){ const d=new Date(); mo=d.getMonth()+1; y=d.getFullYear(); }
+  const last = new Date(y, mo, 0).getDate();
+  const p2 = n=> (n<10?'0':'')+n;
+  return { validFrom: y+'-'+p2(mo)+'-01', validTo: y+'-'+p2(mo)+'-'+p2(last) };
+}
+
+async function tnvParsePromoSheet(pdfjsLib, data){
+  const doc = await pdfjsLib.getDocument({ data }).promise;
+  const rows=[]; const problems=[]; let title='';
+  for (let pn=1; pn<=doc.numPages; pn++){
+    const page = await doc.getPage(pn);
+    const tc = await page.getTextContent();
+    const lines = tnvClusterLines(tc.items);
+    if (pn===1) title = lines.slice(0,6).map(l=>l.text).join(' ');
+    const rects = await tnvExtractFillRects(pdfjsLib, page);
+    for (const ln of lines){
+      const row = tnvParsePromoRow(ln.text);
+      if (!row) continue;
+      if (row.bad){ problems.push('שורה לא מפוענחת: '+ln.text.slice(0,60)); continue; }
+      row.colors = rects.filter(r=> ln.y>=r.y0-1 && ln.y<=r.y1+1).map(r=>r.c);
+      rows.push(row);
+    }
+  }
+  if (!rows.length) throw new Error('לא נמצאו שורות מבצע בקובץ — ודא שזה ה-PDF של דף הפעילות');
+  const seen=new Set();
+  for (const r of rows){
+    if (!tnvEan13Ok(r.bc)) problems.push('ברקוד עם ספרת ביקורת שגויה: '+r.bc);
+    if (seen.has(r.bc)) problems.push('ברקוד כפול בדף: '+r.bc);
+    seen.add(r.bc);
+    const exp = tnvR2(r.list*(1-r.pct/100));
+    if (Math.abs(exp-r.promo)>0.011) problems.push('חשבון אחוז לא מסתדר ב-'+r.bc+': '+r.list+'−'+r.pct+'% אמור לתת '+exp+' אך בדף '+r.promo);
+  }
+  if (problems.length) throw new Error('הדף נקרא אך נמצאו בעיות:\n• '+problems.slice(0,6).join('\n• '));
+  const groups = tnvGroupRows(rows).map(g=>{
+    const uniq = Array.from(new Set(g.items.map(it=>it.list)));
+    return {
+      name: tnvGroupName(g.items, g.pct),
+      discountPct: g.pct,
+      packUnits: 1,
+      unitPriceExVat: uniq.length===1 ? uniq[0] : null,
+      products: g.items.map(it=>({ barcode: it.bc, name: it.name, listPrice: it.list, promoPrice: it.promo }))
+    };
+  });
+  const dates = tnvSheetDates(title);
+  return { validFrom: dates.validFrom, validTo: dates.validTo, groups };
+}
+
 async function promoImportStart(files) {
   if (!files || !files.length) return;
   if (!auth || !auth.currentUser) { showToast('עדיין אין חיבור מאובטח — המתן רגע ונסה שוב', null, null, 3000); return; }
   promoImport = { stage: 'reading', sheet: null, missing: [], error: '' };
   renderPromos();
   try {
-    // v194: אם נבחר PDF — הוא נשלח כמו שהוא (הדף מגיע מהספק כ-PDF).
-    // אחרת: עד 4 תמונות, מוקטנות כרגיל.
+    // v2 תנובה: הדף של שקל ראשון הוא PDF דיגיטלי — נקרא מקומית בטלפון,
+    // בלי שרת ובלי AI. דטרמיניסטי: אותו קובץ ייתן תמיד את אותה תוצאה.
     const list = Array.from(files);
     const pdfFile = list.find(f => f.type === 'application/pdf' || /\.pdf$/i.test(f.name || ''));
-    let requestBody;
-    if (pdfFile) {
-      if (pdfFile.size > 15 * 1024 * 1024) throw new Error('קובץ ה-PDF גדול מדי (מעל 15MB) — צלם את העמודים כתמונות במקום');
-      requestBody = { mode: 'promoSheet', pdf: await promoImportFileRaw(pdfFile) };
-    } else {
-      const pages = [];
-      for (const file of list.slice(0, 4)) pages.push(await promoImportFileToDataUrl(file));
-      requestBody = { mode: 'promoSheet', pages: pages };
-    }
-    const token = await auth.currentUser.getIdToken();
-    const response = await aiFetchWithRetry(AI_SCAN_WORKER_URL, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + token },
-      body: JSON.stringify(requestBody)
-    });
-    const payload = await response.json().catch(() => ({}));
-    if (!response.ok || !payload.ok || !payload.sheet) {
-      const code = payload.error || '';
-      if (code === 'invalid_document_count' || code === 'invalid_promo_sheet_input') throw new Error('שירות הסריקה עדיין בגרסה ישנה שאינה כוללת ייבוא מבצעים — יש להעלות קודם את server.js החדש.');
-      if (code === 'rate_limited') throw new Error('בוצעו יותר מדי ניסיונות. המתן 10 דקות ונסה שוב.');
-      throw new Error('קריאת הדף לא הצליחה. נסה שוב עם צילום חד יותר.');
-    }
-    const sheet = payload.sheet;
+    if (!pdfFile) throw new Error('בתנובה דף הפעילות מגיע כקובץ PDF — בחר את הקובץ עצמו (לא צילום). קריאת צילומי נייר תתווסף בשלב 2.');
+    if (pdfFile.size > 15 * 1024 * 1024) throw new Error('קובץ ה-PDF גדול מדי (מעל 15MB) — ודא שזה קובץ דף הפעילות המקורי');
+    const pdfjs = await tnvLoadPdfjs();
+    const bytes = await promoImportFileArrayBuffer(pdfFile);
+    const sheet = await tnvParsePromoSheet(pdfjs, bytes);
     const missing = promoImportMatch(sheet);
     promoImport = { stage: missing.length ? 'wizard' : 'summary', sheet: sheet, missing: missing, error: '' };
     if (missing.length) promoImportOpenNextMissing();
@@ -12063,8 +12240,8 @@ function promoImportHtml() {
 function promoImportPick() {
   const input = document.createElement('input');
   input.type = 'file';
-  input.accept = 'image/*,application/pdf';
-  input.multiple = true;
+  input.accept = '.pdf,application/pdf';
+  input.multiple = false;
   input.onchange = () => promoImportStart(input.files);
   input.click();
 }
