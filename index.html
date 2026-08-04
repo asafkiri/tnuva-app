@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
-    <title>קליטת תנובה - v2 ייבוא מבצעים</title>
+    <title>קליטת תנובה - v3 שמות מהמאגר</title>
 
     <!-- PWA: התקנה כאפליקציה במסך מלא (אנדרואיד + אייפון) -->
     <meta name="mobile-web-app-capable" content="yes">
@@ -102,7 +102,7 @@
 
     <!-- תוכן ראשי -->
     <main id="app" class="max-w-3xl mx-auto p-4"></main>
-    <div id="verBadge" class="fixed bottom-1 left-2 text-[10px] font-black text-slate-300 z-[45] pointer-events-none select-none">v2 ייבוא מבצעים</div>
+    <div id="verBadge" class="fixed bottom-1 left-2 text-[10px] font-black text-slate-300 z-[45] pointer-events-none select-none">v3 שמות מהמאגר</div>
 
     <!-- כפתור סיום הזמנה (צף) -->
     <div id="cartWrap" class="fixed bottom-6 inset-x-0 flex justify-center pointer-events-none px-4 z-20">
@@ -12104,6 +12104,26 @@ async function promoImportStart(files) {
     const pdfjs = await tnvLoadPdfjs();
     const bytes = await promoImportFileArrayBuffer(pdfFile);
     const sheet = await tnvParsePromoSheet(pdfjs, bytes);
+    // v3: שמות מהמאגר — pdf.js מחזיר עברית בסדר לוגי (בשונה מכלי הבדיקה),
+    // ותיקון-הכיוון הגורף הפך שמות נכונים לג'יבריש. הפתרון המבני: הטקסט מהדף
+    // משמש למספרים בלבד; שמות המוצרים והקבוצות נלקחים מהקטלוג לפי ברקוד,
+    // ולכן לעולם אינם תלויים בכיווניות ה-PDF.
+    (sheet.groups || []).forEach(group => {
+      const catNames = [];
+      (group.products || []).forEach(item => {
+        const match = findProductByBarcode(item.barcode, null);
+        if (match && match.name) { item.name = match.name; catNames.push(match.name); }
+      });
+      if (catNames.length) {
+        const cnt = {};
+        catNames.forEach(n => { const t = (n.split(' ')[0] || '').trim(); if (t) cnt[t] = (cnt[t] || 0) + 1; });
+        const top = Object.keys(cnt).sort((a, b) => cnt[b] - cnt[a])[0];
+        if (top) {
+          const p = group.discountPct === Math.round(group.discountPct) ? String(Math.round(group.discountPct)) : String(group.discountPct);
+          group.name = top + ' ' + p + '%';
+        }
+      }
+    });
     const missing = promoImportMatch(sheet);
     promoImport = { stage: missing.length ? 'wizard' : 'summary', sheet: sheet, missing: missing, error: '' };
     if (missing.length) promoImportOpenNextMissing();
