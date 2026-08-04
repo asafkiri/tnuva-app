@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
-    <title>קליטת תנובה - v12 קיבוץ לפי המאגר</title>
+    <title>קליטת תנובה - v13 בלש בלי יחידות</title>
 
     <!-- PWA: התקנה כאפליקציה במסך מלא (אנדרואיד + אייפון) -->
     <meta name="mobile-web-app-capable" content="yes">
@@ -102,7 +102,7 @@
 
     <!-- תוכן ראשי -->
     <main id="app" class="max-w-3xl mx-auto p-4"></main>
-    <div id="verBadge" class="fixed bottom-1 left-2 text-[10px] font-black text-slate-300 z-[45] pointer-events-none select-none">v12 קיבוץ לפי המאגר</div>
+    <div id="verBadge" class="fixed bottom-1 left-2 text-[10px] font-black text-slate-300 z-[45] pointer-events-none select-none">v13 בלש בלי יחידות</div>
 
     <!-- כפתור סיום הזמנה (צף) -->
     <div id="cartWrap" class="fixed bottom-6 inset-x-0 flex justify-center pointer-events-none px-4 z-20">
@@ -5432,10 +5432,19 @@ function detectiveQuestionHtml(result, question) {
 function detectiveIsSimpleSafeResult(result) {
   // v214: תוצאת "מבצע על הסף" עברה תמחור-מחדש של שורות — תקציב עיגול גדול יותר.
   // v215: הסף הרגיל עלה לאגורה — חוסר לגיטימי מתפזר גם על שתי שורות r2.
-  const tolCap = (result && result.promoFlip) ? 150 : 100;
+  // v13: הענף חסר-עוגן-היחידות מחפש בסבילות הייעודית שלו (500 = 5 אגורות,
+  // חיפוש כספי בלבד) ומדווח אותה בתוצאה — תקרת האגורה של יטבתה פסלה אותו
+  // אוטומטית. בהיעדר עוגן יחידות התקרה היא סבילות הענף; עם עוגן — כמו שהיה.
+  const tolCap = (result && result.unitGap == null) ? 500 : ((result && result.promoFlip) ? 150 : 100);
   if (!result || !result.complete || result.overflow || result.level !== 1 || result.toleranceCents > tolCap) return false;
   if (!Array.isArray(result.solutions) || !result.solutions.length || result.solutions.length > 4) return false;
-  if ([DETECTIVE_SEARCH_PURE_SHORT_COMPLETE, DETECTIVE_SEARCH_PURE_SHORT, DETECTIVE_SEARCH_PURE_SURPLUS].indexOf(result.searchStage) === -1) return false;
+  // v13 (תנובה): בלי עוגן יחידות בכלל (unitGap==null) המנוע מחפש רק בשלב
+  // MIXED — שער שדורש שלבים "טהורים" חסם אותו תמיד ושלח כל פער לסריקה,
+  // גם כשנמצאו 1-4 פתרונות נקיים. מתירים MIXED רק בהיעדר עוגן יחידות;
+  // כשיש עוגן (יטבתה), הדרישה לשלבים הטהורים נשארת כפי שהייתה.
+  const stageOk = [DETECTIVE_SEARCH_PURE_SHORT_COMPLETE, DETECTIVE_SEARCH_PURE_SHORT, DETECTIVE_SEARCH_PURE_SURPLUS].indexOf(result.searchStage) !== -1
+    || (result.unitGap == null && result.searchStage === DETECTIVE_SEARCH_MIXED);
+  if (!stageOk) return false;
   // v209: בקבוצת מחיר עם כמה טעמים בלי ארגז (אקטימל), לצד ההצעות הנקיות
   // נשמרים גם פיצולים (רגיל 1 + פטל 2) — אותו כסף בדיוק, רק חלוקה אחרת.
   // הדרישה שכל ההצעות יהיו של מוצר בודד זרקה את כל המשפחות האלה ל-AI
