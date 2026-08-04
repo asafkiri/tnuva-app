@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
-    <title>קליטת תנובה - v17 פלוס מינוס ארגז</title>
+    <title>קליטת תנובה - v18 ארגז ראשון נקי</title>
 
     <!-- PWA: התקנה כאפליקציה במסך מלא (אנדרואיד + אייפון) -->
     <meta name="mobile-web-app-capable" content="yes">
@@ -102,7 +102,7 @@
 
     <!-- תוכן ראשי -->
     <main id="app" class="max-w-3xl mx-auto p-4"></main>
-    <div id="verBadge" class="fixed bottom-1 left-2 text-[10px] font-black text-slate-300 z-[45] pointer-events-none select-none">v17 פלוס מינוס ארגז</div>
+    <div id="verBadge" class="fixed bottom-1 left-2 text-[10px] font-black text-slate-300 z-[45] pointer-events-none select-none">v18 ארגז ראשון נקי</div>
 
     <!-- כפתור סיום הזמנה (צף) -->
     <div id="cartWrap" class="fixed bottom-6 inset-x-0 flex justify-center pointer-events-none px-4 z-20">
@@ -4255,6 +4255,7 @@ function promptQty(p, target) {
     } else { exEl.innerHTML = ''; exEl.classList.add('hidden'); }
   }
   $('qtyVal').value = 1;
+  qtyPristine = true;
   updateQtyBoxUi();
   updateQtyPackOffer();
   const m = $('qtyModal'); m.classList.remove('hidden'); m.classList.add('flex');
@@ -4321,10 +4322,11 @@ function convertQtyToPack() {
   openReceivingScanner();
 }
 function hideQty() { const m = $('qtyModal'); m.classList.add('hidden'); m.classList.remove('flex'); qtyProduct = null; const po = $('qtyPackOffer'); if (po) { po.innerHTML = ''; po.classList.add('hidden'); } const bb = $('qtyBoxRow'); if (bb) bb.classList.add('hidden'); const bk = $('qtyBoxBreak'); if (bk) bk.classList.add('hidden'); }
-function qtyStep(d) { const i = $('qtyVal'); if (!i) return; let v = parseInt((i.value || '').replace(/[^0-9]/g, ''), 10) || 0; v = Math.max(1, v + d); i.value = v; updateQtyPackOffer(); updateQtyBoxBreak(); }
+function qtyStep(d) { const i = $('qtyVal'); if (!i) return; qtyPristine = false; let v = parseInt((i.value || '').replace(/[^0-9]/g, ''), 10) || 0; v = Math.max(1, v + d); i.value = v; updateQtyPackOffer(); updateQtyBoxBreak(); }
 // v15: מוצר-ארגז (גודל ארגז מוגדר במוצר) — כפתור "+ ארגז" מוסיף ארגז שלם
 // בלחיצה, ופירוק חי "= X ארגזים + Y" מתחת לכמות. שקית שנפלה עדיין ניתנת
 // להקלדה חופשית — הארגז הוא קיצור ורמז, לא אזיקים.
+let qtyPristine = false; // v18: "1" ההתחלתי שטרם נגעו בו — הארגז הראשון מחליף אותו, לא מתווסף אליו
 function qtyBoxSize() { return Math.max(0, parseInt(qtyProduct && qtyProduct.boxSize, 10) || 0); }
 function updateQtyBoxUi() {
   const row = $('qtyBoxRow'); if (!row) return;
@@ -4341,7 +4343,8 @@ function updateQtyBoxBreak() {
   const q = parseInt((($('qtyVal') || {}).value || '').replace(/[^0-9]/g, ''), 10) || 0;
   if (bs > 1 && q >= bs) {
     const full = Math.floor(q / bs), rem = q % bs;
-    el.textContent = rem === 0 ? ('= ' + full + ' ארגזים מלאים') : ('= ' + full + ' ארגזים + ' + rem + ' יח׳');
+    const boxes = full === 1 ? 'ארגז אחד' : full + ' ארגזים';
+    el.textContent = rem === 0 ? ('= ' + boxes + (full === 1 ? ' מלא' : ' מלאים')) : ('= ' + boxes + ' + ' + rem + ' יח׳');
     el.className = 'text-xs font-black mt-1.5 ' + (rem === 0 ? 'text-emerald-700' : 'text-amber-600');
     el.classList.remove('hidden');
   } else el.classList.add('hidden');
@@ -13181,9 +13184,9 @@ $('mr_add').addEventListener('click', addManualReturn);
 $('mr_price').addEventListener('input', updateManualReturnTotal);
 $('mr_qty').addEventListener('input', updateManualReturnTotal);
 $('qtyVal').addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); commitQty(false); } });
-$('qtyVal').addEventListener('input', () => { updateQtyPackOffer(); updateQtyBoxBreak(); });
-$('qty_plus_box').addEventListener('click', () => { const bs = qtyBoxSize(); if (!bs) return; const i = $('qtyVal'); let v = parseInt((i.value || '').replace(/[^0-9]/g, ''), 10) || 0; if (v === 1 && i === document.activeElement) v = 0; i.value = v + bs; updateQtyPackOffer(); updateQtyBoxBreak(); buzz(12); });
-$('qty_minus_box').addEventListener('click', () => { const bs = qtyBoxSize(); if (!bs) return; const i = $('qtyVal'); let v = parseInt((i.value || '').replace(/[^0-9]/g, ''), 10) || 0; i.value = Math.max(0, v - bs); updateQtyPackOffer(); updateQtyBoxBreak(); buzz(12); });
+$('qtyVal').addEventListener('input', () => { qtyPristine = false; updateQtyPackOffer(); updateQtyBoxBreak(); });
+$('qty_plus_box').addEventListener('click', () => { const bs = qtyBoxSize(); if (!bs) return; const i = $('qtyVal'); let v = parseInt((i.value || '').replace(/[^0-9]/g, ''), 10) || 0; if (qtyPristine) v = 0; qtyPristine = false; i.value = v + bs; updateQtyPackOffer(); updateQtyBoxBreak(); buzz(12); });
+$('qty_minus_box').addEventListener('click', () => { const bs = qtyBoxSize(); if (!bs) return; const i = $('qtyVal'); let v = parseInt((i.value || '').replace(/[^0-9]/g, ''), 10) || 0; if (qtyPristine) v = 0; qtyPristine = false; i.value = Math.max(0, v - bs); updateQtyPackOffer(); updateQtyBoxBreak(); buzz(12); });
 $('qtyPackOffer').addEventListener('click', (e) => { if (e.target.closest('[data-role="qty-pack-convert"]')) convertQtyToPack(); });
 $('prod_cancel').addEventListener('click', hideProdModal);
 $('prod_save').addEventListener('click', () => requireAdmin('שמירת מוצר/מחיר', () => saveProd(false)));
