@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
-    <title>קליטת תנובה - v6 ארגזים בחזרות</title>
+    <title>קליטת תנובה - v8 מסומנים למעלה</title>
 
     <!-- PWA: התקנה כאפליקציה במסך מלא (אנדרואיד + אייפון) -->
     <meta name="mobile-web-app-capable" content="yes">
@@ -102,7 +102,7 @@
 
     <!-- תוכן ראשי -->
     <main id="app" class="max-w-3xl mx-auto p-4"></main>
-    <div id="verBadge" class="fixed bottom-1 left-2 text-[10px] font-black text-slate-300 z-[45] pointer-events-none select-none">v6 ארגזים בחזרות</div>
+    <div id="verBadge" class="fixed bottom-1 left-2 text-[10px] font-black text-slate-300 z-[45] pointer-events-none select-none">v8 מסומנים למעלה</div>
 
     <!-- כפתור סיום הזמנה (צף) -->
     <div id="cartWrap" class="fixed bottom-6 inset-x-0 flex justify-center pointer-events-none px-4 z-20">
@@ -4356,6 +4356,7 @@ function renderReceiving() {
         '<div class="text-center mb-3"><i class="fa-solid fa-file-invoice text-blue-600 text-4xl mb-2"></i><div class="font-black text-slate-800 text-lg">תעודה חדשה</div><div class="text-sm text-slate-500">הזן את סכום התעודה מהספק. מחולק לכמה תעודות? הוסף כל אחת ונסכם.</div></div>' +
         noteEditorBodyHtml() +
         '<button data-role="rc-open" class="btn-tap w-full bg-blue-600 text-white rounded-2xl py-3.5 font-black text-base flex items-center justify-center gap-2 mt-4"><i class="fa-solid fa-barcode"></i> פתח והתחל סריקה</button>' +
+        '<button data-role="rc-open-crates" class="btn-tap w-full bg-emerald-50 border-2 border-emerald-300 text-emerald-800 rounded-2xl py-3 font-black text-base flex items-center justify-center gap-2 mt-2"><i class="fa-solid fa-boxes-stacked"></i> פתח והוסף ארגזים</button>' +
       '</div>';
     return;
   }
@@ -12954,13 +12955,18 @@ function refreshPromoProdList(q) {
   const ids = (promoEdit && promoEdit.productIds) || [];
   let list = products.slice().sort((a, b) => (a.orderIndex || 0) - (b.orderIndex || 0));
   if (q) list = list.filter(p => (p.name || '').includes(q) || (p.barcode || '').includes(q));
-  box.innerHTML = list.map(p => {
+  // v8: המסומנים תמיד למעלה — רואים מיד מה בסל בלי לגלול ולחפש
+  const rowHtml = p => {
     const inIt = ids.indexOf(p.id) !== -1;
     return '<button data-role="pe-toggle" data-id="' + p.id + '" class="btn-tap w-full flex items-center justify-between gap-2 p-2.5 rounded-xl border-2 ' + (inIt ? 'border-rose-500 bg-rose-50' : 'border-slate-100 bg-white') + '">' +
       '<div class="min-w-0 text-right"><div class="font-bold text-slate-800 text-sm truncate">' + (p.name || '(ללא שם)') + '</div><div class="text-[10px] text-slate-400">' + (p.barcode || 'ללא ברקוד') + '</div></div>' +
       '<i class="fa-solid ' + (inIt ? 'fa-circle-check text-rose-600' : 'fa-circle-plus text-slate-300') + ' text-xl shrink-0"></i>' +
     '</button>';
-  }).join('') || '<div class="text-center text-slate-400 py-6 text-sm">לא נמצא מוצר</div>';
+  };
+  const chosen = list.filter(p => ids.indexOf(p.id) !== -1);
+  const rest = list.filter(p => ids.indexOf(p.id) === -1);
+  const secHead = t => '<div class="text-[11px] font-black text-slate-400 pt-1 pb-0.5">' + t + '</div>';
+  box.innerHTML = ((chosen.length ? secHead('בסל המבצע (' + chosen.length + ')') + chosen.map(rowHtml).join('') + (rest.length ? secHead('שאר המוצרים') : '') : '') + rest.map(rowHtml).join('')) || '<div class="text-center text-slate-400 py-6 text-sm">לא נמצא מוצר</div>';
 }
 function newPromo() {
   promoEdit = { id: null, name: '', pct: '', start: todayStr(), end: '', minQty: 1, minUnit: 'unit', cartonSize: null, productIds: [], type: 'receipt' };
@@ -13406,6 +13412,7 @@ app.addEventListener('click', (e) => {
   else if (role === 'rc-crates') { openCratePicker('receipt'); }
   else if (role === 'ret-crates') { openCratePicker('returns'); }
   else if (role === 'rc-open') { const en = readNoteEntry(receiptNotes.length === 0); if (en === false) return; if (en) receiptNotes.push(en); recomputeNoteTotal(); receiptOpened = true; receiptDupConfirmed = false; receiptLinesConfirmed = false; saveReceiptDraft(); refreshReceipt(); openReceivingScanner(); }
+  else if (role === 'rc-open-crates') { const en = readNoteEntry(receiptNotes.length === 0); if (en === false) return; if (en) receiptNotes.push(en); recomputeNoteTotal(); receiptOpened = true; receiptDupConfirmed = false; receiptLinesConfirmed = false; saveReceiptDraft(); refreshReceipt(); openCratePicker('receipt'); }
   else if (role === 'rc-cancel') { showConfirm('ביטול תעודה', 'לבטל את התעודה הנוכחית? כל הפריטים שנסרקו יימחקו.', 'בטל תעודה', () => { receiptList = []; receiptNotes = []; recomputeNoteTotal(); receiptOpened = false; editingNotes = false; reconcileData = null; receiptDupConfirmed = false; receiptLinesConfirmed = false; saveReceiptDraft(); setView('receiving'); }); }
   else if (role === 'rc-note-add') { const en = readNoteEntry(true); if (en === false) return; if (en) { receiptNotes.push(en); recomputeNoteTotal(); saveReceiptDraft(); } refreshReceipt(); const inp = $('rcNoteInput'); if (inp) inp.focus(); }
   else if (role === 'rc-note-remove') { const i = parseInt(t.dataset.idx, 10); if (i >= 0) { receiptNotes.splice(i, 1); recomputeNoteTotal(); saveReceiptDraft(); refreshReceipt(); } }
