@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
-    <title>קליטת תנובה - v8 מסומנים למעלה</title>
+    <title>קליטת תנובה - v9 פיצול לפי מחיר</title>
 
     <!-- PWA: התקנה כאפליקציה במסך מלא (אנדרואיד + אייפון) -->
     <meta name="mobile-web-app-capable" content="yes">
@@ -102,7 +102,7 @@
 
     <!-- תוכן ראשי -->
     <main id="app" class="max-w-3xl mx-auto p-4"></main>
-    <div id="verBadge" class="fixed bottom-1 left-2 text-[10px] font-black text-slate-300 z-[45] pointer-events-none select-none">v8 מסומנים למעלה</div>
+    <div id="verBadge" class="fixed bottom-1 left-2 text-[10px] font-black text-slate-300 z-[45] pointer-events-none select-none">v9 פיצול לפי מחיר</div>
 
     <!-- כפתור סיום הזמנה (צף) -->
     <div id="cartWrap" class="fixed bottom-6 inset-x-0 flex justify-center pointer-events-none px-4 z-20">
@@ -12044,7 +12044,12 @@ function tnvGroupRows(rows){
   for (const b of bands){
     const bypct={};
     b.items.forEach(it=>{ (bypct[it.pct]=bypct[it.pct]||[]).push(it); });
-    Object.keys(bypct).map(Number).sort((a,b2)=>b2-a).forEach(pct=>groups.push({pct, items:bypct[pct]}));
+    Object.keys(bypct).map(Number).sort((a,b2)=>b2-a).forEach(pct=>{
+      // כלל הקבוצה: אותו אחוז בדיוק וגם אותו מחיר מחירון בדיוק — אחרת מפצלים
+      const byprice={};
+      bypct[pct].forEach(it=>{ (byprice[it.list]=byprice[it.list]||[]).push(it); });
+      Object.keys(byprice).map(Number).sort((a,b2)=>b2-a).forEach(pr=>groups.push({pct, items:byprice[pr]}));
+    });
   }
   return groups;
 }
@@ -12116,7 +12121,7 @@ async function tnvParsePromoSheet(pdfjsLib, data){
   const groups = tnvGroupRows(rows).map(g=>{
     const uniq = Array.from(new Set(g.items.map(it=>it.list)));
     return {
-      name: tnvGroupName(g.items, g.pct),
+      name: tnvGroupName(g.items, g.pct) + (uniq.length===1 ? ' · ₪' + uniq[0] : ''),
       discountPct: g.pct,
       packUnits: 1,
       unitPriceExVat: uniq.length===1 ? uniq[0] : null,
@@ -12158,7 +12163,7 @@ async function promoImportStart(files) {
         const top = Object.keys(cnt).sort((a, b) => cnt[b] - cnt[a])[0];
         if (top) {
           const p = group.discountPct === Math.round(group.discountPct) ? String(Math.round(group.discountPct)) : String(group.discountPct);
-          group.name = top + ' ' + p + '%';
+          group.name = top + ' ' + p + '%' + (Number(group.unitPriceExVat) > 0 ? ' · ₪' + group.unitPriceExVat : '');
         }
       }
     });
