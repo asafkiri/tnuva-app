@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
-    <title>קליטת תנובה - v11 מיזוג עד 10%</title>
+    <title>קליטת תנובה - v12 קיבוץ לפי המאגר</title>
 
     <!-- PWA: התקנה כאפליקציה במסך מלא (אנדרואיד + אייפון) -->
     <meta name="mobile-web-app-capable" content="yes">
@@ -102,7 +102,7 @@
 
     <!-- תוכן ראשי -->
     <main id="app" class="max-w-3xl mx-auto p-4"></main>
-    <div id="verBadge" class="fixed bottom-1 left-2 text-[10px] font-black text-slate-300 z-[45] pointer-events-none select-none">v11 מיזוג עד 10%</div>
+    <div id="verBadge" class="fixed bottom-1 left-2 text-[10px] font-black text-slate-300 z-[45] pointer-events-none select-none">v12 קיבוץ לפי המאגר</div>
 
     <!-- כפתור סיום הזמנה (צף) -->
     <div id="cartWrap" class="fixed bottom-6 inset-x-0 flex justify-center pointer-events-none px-4 z-20">
@@ -12048,11 +12048,11 @@ function tnvGroupRows(rows){
       // כלל 4.8 המעודכן: בתוך פס ואחוז, מוצרים במרחק עד 10% מהיקר בצבר
       // מתאחדים לאותו מבצע; המדידה תמיד מול היקר בצבר — בלי זחילת שרשרת
       // (8.00→8.70→9.40 לא יתאחדו). מעבר ל-10% — קבוצה חדשה.
-      const sorted = bypct[pct].slice().sort((a,b2)=>b2.list-a.list);
+      const sorted = bypct[pct].slice().sort((a,b2)=>b2.gp-a.gp);
       let cluster = [];
       const flush = ()=>{ if (cluster.length) groups.push({pct, items:cluster}); cluster=[]; };
       sorted.forEach(it=>{
-        if (cluster.length && it.list >= cluster[0].list*0.9 - 1e-9) cluster.push(it);
+        if (cluster.length && it.gp >= cluster[0].gp*0.9 - 1e-9) cluster.push(it);
         else { flush(); cluster=[it]; }
       });
       flush();
@@ -12098,7 +12098,7 @@ function tnvSheetDates(titleText){
   return { validFrom: y+'-'+p2(mo)+'-01', validTo: y+'-'+p2(mo)+'-'+p2(last) };
 }
 
-async function tnvParsePromoSheet(pdfjsLib, data){
+async function tnvParsePromoSheet(pdfjsLib, data, priceOf){
   const doc = await pdfjsLib.getDocument({ data }).promise;
   const rows=[]; const problems=[]; let title='';
   for (let pn=1; pn<=doc.numPages; pn++){
@@ -12112,6 +12112,9 @@ async function tnvParsePromoSheet(pdfjsLib, data){
       if (!row) continue;
       if (row.bad){ problems.push('שורה לא מפוענחת: '+ln.text.slice(0,60)); continue; }
       row.colors = rects.filter(r=> ln.y>=r.y0-1 && ln.y<=r.y1+1).map(r=>r.c);
+      // v12: הקיבוץ נעשה לפי מחיר המאגר (האמת שבחרנו) — מחיר הדף נשאר לאימות
+      // האחוזים ולאזהרות המחיר; טעות בדף (8.28 מול 8.82) לא תגרור מוצר לקבוצה זרה.
+      row.gp = (function(){ try { const v = priceOf ? Number(priceOf(row.bc)) : 0; return v > 0 ? v : row.list; } catch(e){ return row.list; } })();
       rows.push(row);
     }
   }
@@ -12128,7 +12131,7 @@ async function tnvParsePromoSheet(pdfjsLib, data){
   const groups = tnvGroupRows(rows).map(g=>{
     // מחיר הקבוצה = היקר ביותר בצבר (הכרעת 4.8) — זה בסיס השלט; ההתחשבנות
     // ממילא פר-מוצר לפי המחיר שלו-עצמו, כך שהמיזוג לא נוגע בכסף.
-    const maxList = Math.max.apply(null, g.items.map(it=>it.list));
+    const maxList = Math.max.apply(null, g.items.map(it=>it.gp));
     return {
       name: tnvGroupName(g.items, g.pct) + ' · ₪' + maxList,
       discountPct: g.pct,
@@ -12155,7 +12158,7 @@ async function promoImportStart(files) {
     if (pdfFile.size > 15 * 1024 * 1024) throw new Error('קובץ ה-PDF גדול מדי (מעל 15MB) — ודא שזה קובץ דף הפעילות המקורי');
     const pdfjs = await tnvLoadPdfjs();
     const bytes = await promoImportFileArrayBuffer(pdfFile);
-    const sheet = await tnvParsePromoSheet(pdfjs, bytes);
+    const sheet = await tnvParsePromoSheet(pdfjs, bytes, function(bc){ const m = findProductByBarcode(bc, null); const v = m ? Number(m.price) : 0; return v > 0 ? v : null; });
     // v3: שמות מהמאגר — pdf.js מחזיר עברית בסדר לוגי (בשונה מכלי הבדיקה),
     // ותיקון-הכיוון הגורף הפך שמות נכונים לג'יבריש. הפתרון המבני: הטקסט מהדף
     // משמש למספרים בלבד; שמות המוצרים והקבוצות נלקחים מהקטלוג לפי ברקוד,
