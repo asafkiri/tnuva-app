@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
-    <title>קליטת תנובה - v9 פיצול לפי מחיר</title>
+    <title>קליטת תנובה - v10 שמות בשלטים</title>
 
     <!-- PWA: התקנה כאפליקציה במסך מלא (אנדרואיד + אייפון) -->
     <meta name="mobile-web-app-capable" content="yes">
@@ -102,7 +102,7 @@
 
     <!-- תוכן ראשי -->
     <main id="app" class="max-w-3xl mx-auto p-4"></main>
-    <div id="verBadge" class="fixed bottom-1 left-2 text-[10px] font-black text-slate-300 z-[45] pointer-events-none select-none">v9 פיצול לפי מחיר</div>
+    <div id="verBadge" class="fixed bottom-1 left-2 text-[10px] font-black text-slate-300 z-[45] pointer-events-none select-none">v10 שמות בשלטים</div>
 
     <!-- כפתור סיום הזמנה (צף) -->
     <div id="cartWrap" class="fixed bottom-6 inset-x-0 flex justify-center pointer-events-none px-4 z-20">
@@ -12492,7 +12492,8 @@ function signPickToggle(promoId) {
   if (i !== -1) { signMaker.signs.splice(i, 1); renderSignMaker(); return; }
   if (signMaker.signs.length >= SIGN_MAX) { showToast('אפשר עד ' + SIGN_MAX + ' מבצעים בדף', null, null, 2200); return; }
   const pr = promos.find(p => p.id === promoId); if (!pr) return;
-  signMaker.signs.push({ promoId: promoId, kind: 'bundle', title: pr.name || ('מבצע ' + pr.pct + '%'), price: '', qty: '', pct: '', note: '', oldPrice: '', validUntil: (pr.end ? dDisp(pr.end) : '') });
+  const spp = signProductsOf(promoId);
+  signMaker.signs.push({ promoId: promoId, kind: 'bundle', title: (spp.length === 1 && spp[0].name) ? spp[0].name : (pr.name || ('מבצע ' + pr.pct + '%')), price: '', qty: '', pct: '', note: '', oldPrice: '', validUntil: (pr.end ? dDisp(pr.end) : '') });
   renderSignMaker();
 }
 function signProductsOf(promoId) {
@@ -12631,7 +12632,11 @@ function signEditCard(s, idx) {
   return '<div class="bg-white rounded-2xl border border-slate-200 p-3.5 shadow-sm mb-3">' +
     '<div class="text-[10px] font-black text-slate-400 mb-1.5">שלט ' + (idx + 1) + ' · ' + prods.length + ' מוצרים במבצע</div>' +
     '<label class="text-[10px] font-bold text-slate-400 block mb-0.5">כותרת השלט</label>' +
-    '<input data-role="sign-f" data-id="' + idx + '" data-f="title" type="text" value="' + (s.title || '').replace(/"/g, '&quot;') + '" class="w-full h-10 px-2 font-black border-2 border-slate-200 rounded-lg outline-none focus:border-rose-500 mb-2">' +
+    '<input data-role="sign-f" data-id="' + idx + '" data-f="title" type="text" value="' + (s.title || '').replace(/"/g, '&quot;') + '" class="w-full h-10 px-2 font-black border-2 border-slate-200 rounded-lg outline-none focus:border-rose-500 mb-1">' +
+    // v10: השמות בקטלוג ברורים, השמות מהדף לא — מציגים את סל המבצע מתחת
+    // לכותרת, ולחיצה על שם הופכת אותו לכותרת השלט (מציל בעיקר במבצעי מוצר-בודד)
+    '<div class="text-[10px] font-bold text-slate-400 mb-1"><i class="fa-solid fa-hand-pointer"></i> מוצרי המבצע — לחיצה על שם קובעת אותו ככותרת:</div>' +
+    '<div class="flex flex-wrap gap-1 mb-2">' + prods.map(p => '<button data-role="sign-name-pick" data-id="' + idx + '" data-pid="' + p.id + '" class="btn-tap text-[11px] font-bold bg-slate-50 border border-slate-200 text-slate-700 rounded-lg px-2 py-1">' + htmlEscape(p.name || '') + '</button>').join('') + '</div>' +
     '<div class="flex gap-1.5 mb-2">' + signKindBtn(idx, 'unit', 'מחיר ליח׳', s.kind) + signKindBtn(idx, 'bundle', 'כמות במחיר', s.kind) + signKindBtn(idx, 'pct', '% הנחה', s.kind) + '</div>' +
     '<div class="flex gap-2 mb-2">' + fields +
       (s.kind !== 'pct' ? '<div class="w-24"><label class="text-[10px] font-bold text-slate-400 block mb-0.5">במקום ₪ (רשות)</label><input data-role="sign-f" data-id="' + idx + '" data-f="oldPrice" type="text" inputmode="decimal" value="' + (s.oldPrice || '') + '" class="w-full h-10 text-center font-black border-2 border-slate-200 rounded-lg outline-none focus:border-rose-500" placeholder="14"></div>' : '') +
@@ -13233,6 +13238,7 @@ app.addEventListener('input', (e) => {
   if (role === 're-price') { retEditSetPriceLive(parseInt(t.dataset.id, 10), t.value); return; }
   if (role === 're-name') { retEditSetNameLive(parseInt(t.dataset.id, 10), t.value); return; }
   if (t.id === 'reAddSearch') { if (returnEdit) returnEdit.addQuery = t.value; refreshRetEditAddList(t.value); return; }
+  if (role === 'sign-name-pick') { if (signMaker) { const si = parseInt(t.dataset.id, 10); const s = signMaker.signs[si]; const p = products.find(x => x.id === t.dataset.pid); if (s && p && p.name) { s.title = p.name; renderSignPreview(); } } return; }
   if (role === 'sign-f') { if (signMaker) { const si = parseInt(t.dataset.id, 10); const s = signMaker.signs[si]; if (s) { s[t.dataset.f] = t.value; drawSignCanvas(); const rc = $('signRec_' + si); if (rc) rc.innerHTML = signRecInnerHtml(s, si); } } return; }
   if (role === 'price-set') { savePrice(t.dataset.id, t.value); return; }
   if (role === 'pcat-name') { const i = parseInt(t.dataset.i, 10); if (pricingCats[i]) { pricingCats[i].name = t.value; savePricingCats(); } return; }
