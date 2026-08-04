@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
-    <title>קליטת תנובה - v3 שמות מהמאגר</title>
+    <title>קליטת תנובה - v4 עוגני תנובה</title>
 
     <!-- PWA: התקנה כאפליקציה במסך מלא (אנדרואיד + אייפון) -->
     <meta name="mobile-web-app-capable" content="yes">
@@ -102,7 +102,7 @@
 
     <!-- תוכן ראשי -->
     <main id="app" class="max-w-3xl mx-auto p-4"></main>
-    <div id="verBadge" class="fixed bottom-1 left-2 text-[10px] font-black text-slate-300 z-[45] pointer-events-none select-none">v3 שמות מהמאגר</div>
+    <div id="verBadge" class="fixed bottom-1 left-2 text-[10px] font-black text-slate-300 z-[45] pointer-events-none select-none">v4 עוגני תנובה</div>
 
     <!-- כפתור סיום הזמנה (צף) -->
     <div id="cartWrap" class="fixed bottom-6 inset-x-0 flex justify-center pointer-events-none px-4 z-20">
@@ -780,13 +780,16 @@ function parseNoteVal(v) {
   const n = Number(s);
   return isFinite(n) && n > 0 ? r2(n) : null;
 }
-let receiptNoteUnits = null; // עוגן נייר: סה"כ יחידות מודפסות בתחתית תעודות הספק
+let receiptNoteUnits = null; // ירושה מיטבתה — בתנובה אין סך יחידות מודפס; נשאר null
+let receiptNoteLines = null; // עוגן תנובה: "פריטים" (מספר השורות) המודפס בתחתית התעודה
+let receiptLinesConfirmed = false; // אישור שמירה למרות פער בספירת הפריטים
 function normNote(x) {
   if (x && typeof x === 'object') {
     const units = parseInt(x.units, 10);
-    return { amount: r2(Number(x.amount) || 0), units: units > 0 ? units : null };
+    const lns = parseInt(x.lines, 10);
+    return { amount: r2(Number(x.amount) || 0), units: units > 0 ? units : null, lines: lns > 0 ? lns : null };
   }
-  return { amount: r2(Number(x) || 0), units: null };
+  return { amount: r2(Number(x) || 0), units: null, lines: null };
 }
 function noteSum() { return r2(receiptNotes.reduce((a, x) => a + normNote(x).amount, 0)); }
 function noteAnchorSum(key) {
@@ -797,12 +800,13 @@ function noteAnchorSum(key) {
 function recomputeNoteTotal() {
   receiptNoteTotal = receiptNotes.length ? noteSum() : null;
   receiptNoteUnits = noteAnchorSum('units');
+  receiptNoteLines = noteAnchorSum('lines');
 }
 function dDisp(d) { try { return new Date(d + 'T12:00:00').toLocaleDateString('he-IL'); } catch (e) { return d || ''; } }
 function noteEditorBodyHtml() {
   const chips = receiptNotes.map((raw, i) => {
     const n = normNote(raw);
-    const extras = n.units != null ? n.units + ' יח׳' : '';
+    const extras = n.lines != null ? n.lines + ' פריטים' : (n.units != null ? n.units + ' יח׳' : '');
     return '<div class="flex items-center justify-between gap-2 bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 mb-1.5">' +
       '<div class="min-w-0"><span class="font-bold text-slate-700 text-sm">תעודה ' + (i + 1) + '</span>' +
       (extras ? '<span class="text-[11px] text-slate-400 font-bold"> · ' + extras + '</span>' : '') + '</div>' +
@@ -810,38 +814,38 @@ function noteEditorBodyHtml() {
       '<button data-role="rc-note-remove" data-idx="' + i + '" class="btn-tap text-red-500 px-1"><i class="fa-solid fa-xmark"></i></button></div>' +
     '</div>';
   }).join('');
-  const anchorsSummary = receiptNoteUnits != null
-    ? '<div class="text-[11px] font-bold text-slate-400 mt-1">סה"כ יחידות: ' + receiptNoteUnits + '</div>'
+  const anchorsSummary = receiptNoteLines != null
+    ? '<div class="text-[11px] font-bold text-slate-400 mt-1">סה"כ פריטים: ' + receiptNoteLines + '</div>'
     : '';
   const total = receiptNotes.length ? '<div class="flex items-center justify-between mt-2 pt-2 border-t border-slate-200"><span class="font-bold text-slate-500 text-sm">סה"כ ' + receiptNotes.length + ' תעודות</span><span class="font-black text-blue-600 text-lg">₪' + fmtMoney(noteSum()) + '</span></div>' + anchorsSummary : '';
   return chips +
-    '<div class="text-[11px] text-slate-400 font-bold mb-1.5"><i class="fa-solid fa-circle-info"></i> לכל תעודה הקלד את הסכום <b class="text-slate-600">ללא מע״מ</b> ואת סך היחידות</div>' +
+    '<div class="text-[11px] text-slate-400 font-bold mb-1.5"><i class="fa-solid fa-circle-info"></i> לכל תעודה הקלד את הסכום <b class="text-slate-600">ללא מע״מ</b> (שורת סהכ חייב מעמ — אחרי הנחת מבצעים) ואת מספר הפריטים</div>' +
     '<div class="flex gap-2 items-stretch">' +
       '<div class="flex-1 flex items-center gap-1 border-2 border-slate-200 rounded-xl px-2 focus-within:border-blue-500"><span class="text-slate-400 font-black">₪</span><input id="rcNoteInput" type="text" inputmode="decimal" placeholder="סכום ללא מע״מ" class="w-full h-11 text-center text-base font-black outline-none bg-transparent"></div>' +
       '<button data-role="rc-note-add" class="btn-tap px-4 rounded-xl font-black bg-slate-100 text-slate-700 flex items-center gap-1"><i class="fa-solid fa-plus"></i> הוסף</button>' +
     '</div>' +
-    '<input id="rcNoteUnits" type="text" inputmode="numeric" placeholder="סך יחידות בתעודה" class="w-full h-10 mt-1.5 text-center text-sm font-black border-2 border-slate-200 rounded-xl outline-none focus:border-blue-500 bg-white">' +
-    '<div class="text-[10px] text-slate-400 font-bold mt-1"><i class="fa-solid fa-wand-magic-sparkles"></i> סך היחידות מודפס בתחתית תעודת הספק ועוזר לבלש לזהות חוסרים בכמות</div>' +
+    '<input id="rcNoteLines" type="text" inputmode="numeric" placeholder="מספר פריטים בתעודה" class="w-full h-10 mt-1.5 text-center text-sm font-black border-2 border-slate-200 rounded-xl outline-none focus:border-blue-500 bg-white">' +
+    '<div class="text-[10px] text-slate-400 font-bold mt-1"><i class="fa-solid fa-wand-magic-sparkles"></i> שורת "פריטים" מודפסת בתחתית תעודת תנובה — מוודאת שלא פוספסה שורה</div>' +
     total;
 }
 function readNoteEntry(required) {
-  const amountInp = $('rcNoteInput'), unitsInp = $('rcNoteUnits');
+  const amountInp = $('rcNoteInput'), linesInp = $('rcNoteLines');
   const amountRaw = ((amountInp || {}).value || '').trim();
-  const unitsRaw = ((unitsInp || {}).value || '').replace(/[^0-9]/g, '');
+  const linesRaw = ((linesInp || {}).value || '').replace(/[^0-9]/g, '');
   const v = parseNoteVal(amountRaw);
   if (v == null) {
-    if (!required && !unitsRaw) return null;
-    showToast('הזן את סכום התעודה ללא מע״מ', null, null, 3000);
+    if (!required && !linesRaw) return null;
+    showToast('הזן את סכום התעודה ללא מע״מ (שורת סהכ חייב מעמ)', null, null, 3200);
     if (amountInp) amountInp.focus();
     return false;
   }
-  const units = parseInt(unitsRaw, 10) || 0;
-  if (!(units > 0)) {
-    showToast('הזן את סך היחידות שמופיע בתחתית התעודה', null, null, 3200);
-    if (unitsInp) unitsInp.focus();
+  const lns = parseInt(linesRaw, 10) || 0;
+  if (!(lns > 0)) {
+    showToast('הזן את מספר הפריטים (שורת "פריטים") שבתחתית התעודה', null, null, 3400);
+    if (linesInp) linesInp.focus();
     return false;
   }
-  return { amount: r2(v), units: units };
+  return { amount: r2(v), lines: lns };
 }
 function saveReceiptDraft() { try { localStorage.setItem(RECEIPT_DRAFT_KEY, JSON.stringify({ items: receiptList, notes: receiptNotes, opened: receiptOpened })); } catch (e) {} }
 function restoreReceiptDraft() {
@@ -4195,6 +4199,29 @@ function addScannedToReturns(p) {
   updateScanOverlay(p.name);
   updateCart();
 }
+// v4: הארגזים חסרי ברקוד פיזי — כפתור ייעודי במקום סריקה. הבחירה פותחת
+// את חלון הכמות הרגיל (promptQty) עם כל ההגנות הקיימות, כולל "כבר נסרק".
+const CRATE_BARCODES = ['59259', '59631', '59549', '59686'];
+function openCratePicker(target) {
+  const found = CRATE_BARCODES.map(bc => findProductByBarcode(bc, null)).filter(Boolean);
+  if (!found.length) { showToast('מוצרי הארגזים לא נמצאו במאגר — ודא שקטלוג תנובה יובא', null, null, 3600); return; }
+  const old = document.getElementById('cratePickerOverlay');
+  if (old) old.remove();
+  const ov = document.createElement('div');
+  ov.id = 'cratePickerOverlay';
+  ov.className = 'fixed inset-0 bg-black/50 z-[70] flex items-end justify-center p-3';
+  ov.innerHTML = '<div class="bg-white w-full max-w-md rounded-3xl p-4 shadow-2xl">' +
+    '<div class="flex items-center justify-between mb-2"><div class="font-black text-slate-800 text-lg"><i class="fa-solid fa-boxes-stacked text-emerald-600"></i> ארגזים ומשטחים</div><button data-crate-close class="btn-tap w-9 h-9 rounded-lg bg-slate-100 text-slate-500"><i class="fa-solid fa-xmark"></i></button></div>' +
+    '<div class="text-[11px] text-slate-400 font-bold mb-2">על הארגז עצמו אין ברקוד — לכן מוסיפים מכאן. בתעודה הם שורות רגילות.</div>' +
+    found.map(p => '<button data-crate-id="' + p.id + '" class="btn-tap w-full flex items-center justify-between gap-2 bg-slate-50 border border-slate-200 rounded-xl px-3 py-3 mb-1.5"><span class="font-black text-slate-800 text-right">' + htmlEscape(p.name) + '</span><span class="font-black text-emerald-700 shrink-0">₪' + fmtMoney(Number(p.price) || 0) + '</span></button>').join('') +
+  '</div>';
+  ov.addEventListener('click', (e) => {
+    const btn = e.target.closest('[data-crate-id]');
+    if (btn) { const p = products.find(x => x.id === btn.getAttribute('data-crate-id')); ov.remove(); if (p) promptQty(p, target); return; }
+    if (e.target.closest('[data-crate-close]') || e.target === ov) ov.remove();
+  });
+  document.body.appendChild(ov);
+}
 function promptQty(p, target) {
   qtyProduct = p; qtyTarget = target || 'receipt';
   closeScanner();
@@ -4337,11 +4364,12 @@ function renderReceiving() {
         noteEditorBodyHtml() +
       '</div>'
     : '<div class="bg-white rounded-2xl border border-slate-200 p-3 shadow-sm mb-3 flex items-center justify-between gap-2">' +
-        '<div class="flex items-center gap-2 min-w-0"><i class="fa-solid fa-file-invoice text-blue-600"></i><div class="min-w-0"><div class="text-[11px] text-slate-400 font-bold">סכום התעודה (ללא מע״מ)' + (receiptNotes.length > 1 ? ' · ' + receiptNotes.length + ' תעודות' : '') + (receiptNoteUnits != null ? ' · ' + receiptNoteUnits + ' יח׳' : '') + '</div><div class="font-black text-slate-800">' + (receiptNoteTotal != null ? '₪' + fmtMoney(receiptNoteTotal) : 'ללא אימות') + '</div></div></div>' +
+        '<div class="flex items-center gap-2 min-w-0"><i class="fa-solid fa-file-invoice text-blue-600"></i><div class="min-w-0"><div class="text-[11px] text-slate-400 font-bold">סכום התעודה (ללא מע״מ)' + (receiptNotes.length > 1 ? ' · ' + receiptNotes.length + ' תעודות' : '') + (receiptNoteLines != null ? ' · ' + receiptNoteLines + ' פריטים' : '') + '</div><div class="font-black text-slate-800">' + (receiptNoteTotal != null ? '₪' + fmtMoney(receiptNoteTotal) : 'ללא אימות') + '</div></div></div>' +
         '<div class="flex items-center gap-1.5 shrink-0"><button data-role="rc-notes-edit" class="btn-tap text-xs font-bold text-blue-600 bg-blue-50 px-2.5 py-2 rounded-lg"><i class="fa-solid fa-pen"></i> ערוך</button><button data-role="rc-cancel" class="btn-tap text-xs font-bold text-red-500 bg-red-50 px-2.5 py-2 rounded-lg"><i class="fa-solid fa-xmark"></i></button></div>' +
       '</div>';
   app.innerHTML = banner + topButtons + noteBar +
     '<button data-role="rc-scan" class="btn-tap w-full bg-blue-600 text-white rounded-2xl py-4 font-black text-lg flex items-center justify-center gap-3 shadow-lg mb-2"><i class="fa-solid fa-barcode text-2xl"></i> סרוק פריט לתעודה</button>' +
+    '<button data-role="rc-crates" class="btn-tap w-full bg-emerald-50 border-2 border-emerald-300 text-emerald-800 rounded-2xl py-3 font-black text-base flex items-center justify-center gap-2 mb-2"><i class="fa-solid fa-boxes-stacked"></i> הוספת ארגזים ומשטחים</button>' +
     '<div class="bg-white rounded-2xl border border-slate-200 p-3 shadow-sm mb-4">' +
       '<div class="text-[11px] font-bold text-slate-400 mb-1.5"><i class="fa-solid fa-keyboard"></i> הסורק לא קורא? הקלד את הספרות האחרונות של הברקוד (6 מומלץ)</div>' +
       '<input id="rcDigits" type="text" inputmode="numeric" placeholder="למשל: 693134" class="w-full bg-slate-50 border border-slate-200 rounded-xl py-2.5 px-3 text-base font-black text-center outline-none focus:border-blue-500" dir="ltr">' +
@@ -4374,8 +4402,9 @@ function receiptTotalsHtml(t) {
   }
   // v175: מונה יחידות חי — כולל הפיקדון — מול העוגן שהוקלד מהנייר. ירוק
   // כשסגור בדיוק; זו ההוכחה על המסך שהפיקדון נספר גם ביחידות.
-  const unitsMatched = receiptNoteUnits != null && t.units === receiptNoteUnits;
-  const unitsLine = '<div class="flex items-center justify-between text-xs font-black mt-1 ' + (receiptNoteUnits == null ? 'text-slate-500' : (unitsMatched ? 'text-emerald-700' : 'text-amber-600')) + '"><span>יחידות' + (t.depositUnits > 0 ? ' (פיקדון בכסף בלבד, כמו בתעודה)' : '') + '</span><span>' + t.units + (receiptNoteUnits != null ? ' / ' + receiptNoteUnits : '') + ' יח׳' + (unitsMatched ? ' ✓' : '') + '</span></div>';
+  const linesMatched = receiptNoteLines != null && receiptList.length === receiptNoteLines;
+  const unitsLine = '<div class="flex items-center justify-between text-xs font-black mt-1 ' + (receiptNoteLines == null ? 'text-slate-500' : (linesMatched ? 'text-emerald-700' : 'text-amber-600')) + '"><span>פריטים (שורות בתעודה)</span><span>' + receiptList.length + (receiptNoteLines != null ? ' / ' + receiptNoteLines : '') + (linesMatched ? ' ✓' : '') + '</span></div>' +
+    (function(){ const tp = statuses.reduce((a, s) => a + (s.triggered ? s.discount : 0), 0); return tp > 0 ? '<div class="flex items-center justify-between text-[11px] font-bold text-slate-400 mt-1"><span>סה"כ הנחת מבצעים — מול שורת "סד הנחה" בתעודה</span><span>₪' + fmtMoney(r2(tp)) + '</span></div>' : ''; })();
   return '<div id="rcTotals" class="mt-4 mb-24 bg-white rounded-2xl border border-slate-200 p-4 shadow-sm">' +
     '<div class="flex items-center justify-between text-slate-900 font-black text-lg"><span>סה"כ (ללא מע"מ)</span><span id="rcEx">₪' + fmtMoney(t.ex) + '</span></div>' +
     unitsLine +
@@ -4505,12 +4534,19 @@ function finishReceipt() {
   // השינוי אינה יכולה לעקוף את הבלש או להיסגר כתקינה ללא שניהם.
   const anchorsReady = receiptNotes.length > 0 && receiptNotes.every(raw => {
     const note = normNote(raw);
-    return note.amount > 0 && note.units != null && note.units > 0;
+    return note.amount > 0 && note.lines != null && note.lines > 0;
   });
-  if (!anchorsReady || receiptNoteTotal == null || receiptNoteUnits == null) {
+  if (!anchorsReady || receiptNoteTotal == null || receiptNoteLines == null) {
     editingNotes = true;
-    showToast('לפני האישור חובה להזין לכל תעודה סכום ללא מע״מ וסך יחידות', null, null, 3800);
+    showToast('לפני האישור חובה להזין לכל תעודה סכום ללא מע״מ ומספר פריטים', null, null, 3800);
     refreshReceipt();
+    return;
+  }
+  // עוגן הפריטים של תנובה: מספר השורות שנקלטו (כולל ארגזים, בלי שורות
+  // פיקדון נגזרות) חייב להתאים לשורת "פריטים" המודפסת. פער = כנראה שורה
+  // שפוספסה או נסרקה פעמיים.
+  if (!receiptLinesConfirmed && receiptNoteLines != null && receiptList.length !== receiptNoteLines) {
+    showConfirm('פער בספירת הפריטים', 'בתעודה מודפס "פריטים: ' + receiptNoteLines + '" אך נקלטו ' + receiptList.length + ' שורות. ייתכן ששורה פוספסה או נוספה פעמיים. להמשיך בכל זאת?', 'המשך בכל זאת', function () { receiptLinesConfirmed = true; finishReceipt(); });
     return;
   }
   const day = todayStr();
@@ -7812,7 +7848,7 @@ function aiResidualGroupHtml(residuals) {
 function aiFindingsClosure(evaluation, findings) {
   const rows = Array.isArray(findings) ? findings : (Array.isArray(evaluation && evaluation.findings) ? evaluation.findings : []);
   const receivedRows = Array.isArray(reconcileData) ? reconcileData : [];
-  const expectedUnits = Number(receiptNoteUnits);
+  const expectedUnits = receiptNoteUnits == null ? NaN : Number(receiptNoteUnits); // תנובה: אין עוגן יחידות — הסגירה נבדקת בכסף בלבד
   // v186: המקום החמישי והאחרון שבו כלל v176 ("פיקדון = כסף בלבד, לא יחידות")
   // פוספס. הסכימה כאן ספרה גם את שורת הפיקדון, ולכן היחידות שנקלטו יצאו 444
   // במקום 432 — ופער היחידות הצפוי חושב כאפס בזמן שהממצאים האמיתיים הראו 12.
@@ -7828,7 +7864,7 @@ function aiFindingsClosure(evaluation, findings) {
     const id = String(finding.productId == null ? '' : finding.productId);
     if (id) quantityDeltaByProduct.set(id, (quantityDeltaByProduct.get(id) || 0) + signedQty);
   });
-  const unitsOk = expectedUnitsDelta != null && Math.abs(actualUnitsDelta - expectedUnitsDelta) < 0.001;
+  const unitsOk = expectedUnitsDelta == null ? true : Math.abs(actualUnitsDelta - expectedUnitsDelta) < 0.001;
 
   const receivedAmount = reconcileReceivedInc();
   const expectedAmountDelta = r2((Number(receiptNoteTotal) || 0) - receivedAmount);
@@ -10655,7 +10691,7 @@ async function confirmReceipt() {
   if (!saved) return;
   hideReceiptSummary();
   aiCloseOrientationReview();
-  receiptList = []; pendingReceipt = null; receiptNotes = []; recomputeNoteTotal(); receiptOpened = false; editingNotes = false; reconcileData = null; reconcileSupplierDiscount = 0; reconcileSupplierPromoItems = []; reconcilePromoMismatchItems = []; reconcileSupplierCreditClaim = null; reconcileAiAudit = null; aiScanDocuments = []; aiScanBusy = false; aiScanProgressText = ''; aiScanResponse = null; aiScanEvaluation = null; aiScanError = ''; aiScanAutoRotationNote = ''; aiScanAttemptCount = 0; receiptDupConfirmed = false; saveReceiptDraft();
+  receiptList = []; pendingReceipt = null; receiptNotes = []; recomputeNoteTotal(); receiptOpened = false; editingNotes = false; reconcileData = null; reconcileSupplierDiscount = 0; reconcileSupplierPromoItems = []; reconcilePromoMismatchItems = []; reconcileSupplierCreditClaim = null; reconcileAiAudit = null; aiScanDocuments = []; aiScanBusy = false; aiScanProgressText = ''; aiScanResponse = null; aiScanEvaluation = null; aiScanError = ''; aiScanAutoRotationNote = ''; aiScanAttemptCount = 0; receiptDupConfirmed = false; receiptLinesConfirmed = false; saveReceiptDraft();
   setView('receiptsHistory');
   const newOpen = receipts.filter(r => receiptDiscrepancyInfo(r).open).find(r => findOffsetMatch(r));
   if (newOpen) showToast('💡 זוהה קיזוז אפשרי מול תעודה קודמת — ראה בכרטיס התעודה', null, null, 3500);
@@ -13366,8 +13402,9 @@ app.addEventListener('click', (e) => {
   else if (role === 'clear-history') showConfirm('ניקוי היסטוריה', 'למחוק את כל היסטוריית ההזמנות? יישמר גיבוי בסל מחזור.', 'מחק הכל', () => clearAllDocs('history'));
   else if (role === 'clear-returns-history') showConfirm('ניקוי היסטוריה', 'למחוק את כל היסטוריית החזרות? יישמר גיבוי בסל מחזור.', 'מחק הכל', () => clearAllDocs('returns'));
   else if (role === 'rc-scan') openReceivingScanner();
-  else if (role === 'rc-open') { const en = readNoteEntry(receiptNotes.length === 0); if (en === false) return; if (en) receiptNotes.push(en); recomputeNoteTotal(); receiptOpened = true; receiptDupConfirmed = false; saveReceiptDraft(); refreshReceipt(); openReceivingScanner(); }
-  else if (role === 'rc-cancel') { showConfirm('ביטול תעודה', 'לבטל את התעודה הנוכחית? כל הפריטים שנסרקו יימחקו.', 'בטל תעודה', () => { receiptList = []; receiptNotes = []; recomputeNoteTotal(); receiptOpened = false; editingNotes = false; reconcileData = null; receiptDupConfirmed = false; saveReceiptDraft(); setView('receiving'); }); }
+  else if (role === 'rc-crates') { openCratePicker('receipt'); }
+  else if (role === 'rc-open') { const en = readNoteEntry(receiptNotes.length === 0); if (en === false) return; if (en) receiptNotes.push(en); recomputeNoteTotal(); receiptOpened = true; receiptDupConfirmed = false; receiptLinesConfirmed = false; saveReceiptDraft(); refreshReceipt(); openReceivingScanner(); }
+  else if (role === 'rc-cancel') { showConfirm('ביטול תעודה', 'לבטל את התעודה הנוכחית? כל הפריטים שנסרקו יימחקו.', 'בטל תעודה', () => { receiptList = []; receiptNotes = []; recomputeNoteTotal(); receiptOpened = false; editingNotes = false; reconcileData = null; receiptDupConfirmed = false; receiptLinesConfirmed = false; saveReceiptDraft(); setView('receiving'); }); }
   else if (role === 'rc-note-add') { const en = readNoteEntry(true); if (en === false) return; if (en) { receiptNotes.push(en); recomputeNoteTotal(); saveReceiptDraft(); } refreshReceipt(); const inp = $('rcNoteInput'); if (inp) inp.focus(); }
   else if (role === 'rc-note-remove') { const i = parseInt(t.dataset.idx, 10); if (i >= 0) { receiptNotes.splice(i, 1); recomputeNoteTotal(); saveReceiptDraft(); refreshReceipt(); } }
   else if (role === 'rc-notes-edit') { editingNotes = true; refreshReceipt(); }
