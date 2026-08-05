@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
-    <title>קליטת תנובה - v19 בלש זהיר</title>
+    <title>קליטת תנובה - v20 בורר בניהול עצמי</title>
 
     <!-- PWA: התקנה כאפליקציה במסך מלא (אנדרואיד + אייפון) -->
     <meta name="mobile-web-app-capable" content="yes">
@@ -102,7 +102,7 @@
 
     <!-- תוכן ראשי -->
     <main id="app" class="max-w-3xl mx-auto p-4"></main>
-    <div id="verBadge" class="fixed bottom-1 left-2 text-[10px] font-black text-slate-300 z-[45] pointer-events-none select-none">v19 בלש זהיר</div>
+    <div id="verBadge" class="fixed bottom-1 left-2 text-[10px] font-black text-slate-300 z-[45] pointer-events-none select-none">v20 בורר בניהול עצמי</div>
 
     <!-- כפתור סיום הזמנה (צף) -->
     <div id="cartWrap" class="fixed bottom-6 inset-x-0 flex justify-center pointer-events-none px-4 z-20">
@@ -420,6 +420,10 @@
               <label class="text-[11px] text-slate-500 font-bold block mb-1">כמה יחידות יש בארגז?</label>
               <input id="prod_boxSize" type="text" inputmode="numeric" class="w-full p-3 rounded-xl border-2 border-amber-200 bg-amber-50 outline-none text-center font-black focus:border-amber-500" placeholder="לדוגמה 12">
             </div>
+            <label class="flex items-start gap-2 mt-3 p-3 rounded-xl bg-emerald-50/60 border border-emerald-100 cursor-pointer">
+              <input id="prod_quickCrate" type="checkbox" class="mt-0.5 w-5 h-5 accent-emerald-600">
+              <span><span class="block text-sm font-black text-slate-700">הצג בכפתור המהיר של הארגזים</span><span class="block text-[10px] text-slate-400 font-bold">לפריטים בלי ברקוד שמחויבים כשורה — ארגזים, לולים, משטחים. מופיע בקליטה ובחזרות.</span></span>
+            </label>
             <label class="hidden items-center justify-between gap-3 mt-3 p-3 rounded-xl bg-slate-50 border border-slate-100 cursor-pointer"><!-- v16: אין מסך הזמנות -->
               <span><span class="block text-sm font-black text-slate-700">הצג במסך ההזמנה</span><span class="block text-[10px] text-slate-400 font-bold">כיבוי מסתיר רק מההזמנה; המוצר נשאר בקליטה ובחזרות.</span></span>
               <input id="prod_visible" type="checkbox" class="w-5 h-5 accent-blue-600" checked>
@@ -4210,8 +4214,16 @@ function addScannedToReturns(p) {
 // v4: הארגזים חסרי ברקוד פיזי — כפתור ייעודי במקום סריקה. הבחירה פותחת
 // את חלון הכמות הרגיל (promptQty) עם כל ההגנות הקיימות, כולל "כבר נסרק".
 const CRATE_BARCODES = ['59259', '59631', '59549']; // 4.8: בלי משטחים — הוא לא עובד איתם
+// v20: חברות בבורר המהיר בניהול עצמי — דגל quickCrate על המוצר גובר;
+// בלעדיו, שלושת קודי הארגזים ההיסטוריים נשארים ברירת מחדל (תאימות לאחור).
+function isQuickCrate(p) {
+  if (!p) return false;
+  if (p.quickCrate === true) return true;
+  if (p.quickCrate === false) return false;
+  return CRATE_BARCODES.indexOf(p.barcode) !== -1;
+}
 function openCratePicker(target) {
-  const found = CRATE_BARCODES.map(bc => findProductByBarcode(bc, null)).filter(Boolean);
+  const found = (products || []).filter(isQuickCrate).sort((a, b) => (a.name || '').localeCompare(b.name || '', 'he'));
   if (!found.length) { showToast('מוצרי הארגזים לא נמצאו במאגר — ודא שקטלוג תנובה יובא', null, null, 3600); return; }
   const old = document.getElementById('cratePickerOverlay');
   if (old) old.remove();
@@ -11752,6 +11764,7 @@ function openProdModal(p, fromScan, presetCode, afterSaveTarget) {
   $('prod_wholeCarton').checked = boxSize >= 2;
   $('prod_boxSize').value = boxSize >= 2 ? String(boxSize) : '';
   $('prod_visible').checked = !(p && p.hidden);
+  $('prod_quickCrate').checked = isQuickCrate(p);
   $('prod_cartonPrice').value = '';
   $('prod_cartonUnits').value = boxSize >= 2 ? String(boxSize) : '';
   $('prod_cartonResult').textContent = '';
@@ -11867,7 +11880,8 @@ async function saveProd(again) {
   const boxSize = wholeCarton ? parsedBoxSize : 0;
   const hidden = !$('prod_visible').checked;
   const unitUpdatedAt = Date.now();
-  const data = { name, barcode, price, creditPrice, deposit, billingPackId, billingPackSize, category, average, defaultUnit, defaultUnitUpdatedAt: unitUpdatedAt, boxSize, hidden };
+  const quickCrate = !!$('prod_quickCrate').checked;
+  const data = { name, barcode, price, creditPrice, deposit, billingPackId, billingPackSize, category, average, defaultUnit, defaultUnitUpdatedAt: unitUpdatedAt, boxSize, hidden, quickCrate };
   clearTimeout(priceTimers[docId]); clearTimeout(avgTimers[docId]); clearTimeout(boxTimers[docId]);
   let savedProduct = null;
   if (id) {
