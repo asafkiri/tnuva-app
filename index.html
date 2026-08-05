@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
-    <title>קליטת תנובה - v27 מחיקת תעודת חזרה</title>
+    <title>קליטת תנובה - v28 תאריך למעלה</title>
 
     <!-- PWA: התקנה כאפליקציה במסך מלא (אנדרואיד + אייפון) -->
     <meta name="mobile-web-app-capable" content="yes">
@@ -102,7 +102,7 @@
 
     <!-- תוכן ראשי -->
     <main id="app" class="max-w-3xl mx-auto p-4"></main>
-    <div id="verBadge" class="fixed bottom-1 left-2 text-[10px] font-black text-slate-300 z-[45] pointer-events-none select-none">v27 מחיקת תעודת חזרה</div>
+    <div id="verBadge" class="fixed bottom-1 left-2 text-[10px] font-black text-slate-300 z-[45] pointer-events-none select-none">v28 תאריך למעלה</div>
 
     <!-- כפתור סיום הזמנה (צף) -->
     <div id="cartWrap" class="fixed bottom-6 inset-x-0 flex justify-center pointer-events-none px-4 z-20">
@@ -865,8 +865,6 @@ function noteEditorBodyHtml() {
       '<button data-role="rc-note-add" class="btn-tap px-4 rounded-xl font-black bg-slate-100 text-slate-700 flex items-center gap-1"><i class="fa-solid fa-plus"></i> הוסף</button>' +
     '</div>' +
     '<input id="rcNoteLines" type="text" inputmode="numeric" placeholder="מספר פריטים בתעודה" class="w-full h-10 mt-1.5 text-center text-sm font-black border-2 border-slate-200 rounded-xl outline-none focus:border-blue-500 bg-white">' +
-    '<label class="block text-[10px] text-slate-400 font-bold mt-2 mb-0.5"><i class="fa-solid fa-calendar-day"></i> תאריך התעודה מהנייר — למלא רק בזיכוי/חיוב שמוקלד באיחור (ריק = היום)</label>' +
-    '<input id="rcDocDate" type="date" class="w-full h-10 text-center text-sm font-black border-2 border-slate-200 rounded-xl outline-none focus:border-blue-500 bg-white">' +
     '<div class="text-[10px] text-slate-400 font-bold mt-1"><i class="fa-solid fa-wand-magic-sparkles"></i> שורת "פריטים" מודפסת בתחתית תעודת תנובה — מוודאת שלא פוספסה שורה</div>' +
     total;
 }
@@ -4508,6 +4506,8 @@ function renderReceiving() {
   if (!opened) {
     app.innerHTML = banner + topButtons +
       '<div class="bg-white rounded-2xl border border-slate-200 p-5 shadow-sm mt-2">' +
+        '<label class="block text-[10px] text-slate-400 font-bold mb-0.5"><i class="fa-solid fa-calendar-day"></i> תאריך התעודה מהנייר — למלא רק בזיכוי/חיוב שמוקלד באיחור (ריק = היום)</label>' +
+        '<input id="rcDocDate" type="date" class="w-full h-10 text-center text-sm font-black border-2 border-slate-200 rounded-xl outline-none focus:border-blue-500 bg-white mb-3">' +
         '<div class="text-center mb-3"><i class="fa-solid fa-file-invoice text-blue-600 text-4xl mb-2"></i><div class="font-black text-slate-800 text-lg">תעודה חדשה</div><div class="text-sm text-slate-500">הזן את סכום התעודה מהספק. מחולק לכמה תעודות? הוסף כל אחת ונסכם.</div></div>' +
         noteEditorBodyHtml() +
         '<button data-role="rc-open" class="btn-tap w-full bg-blue-600 text-white rounded-2xl py-3.5 font-black text-base flex items-center justify-center gap-2 mt-4"><i class="fa-solid fa-barcode"></i> פתח והתחל סריקה</button>' +
