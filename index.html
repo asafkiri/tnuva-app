@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
-    <title>קליטת תנובה - v26 כפתור תאריך גלוי</title>
+    <title>קליטת תנובה - v27 מחיקת תעודת חזרה</title>
 
     <!-- PWA: התקנה כאפליקציה במסך מלא (אנדרואיד + אייפון) -->
     <meta name="mobile-web-app-capable" content="yes">
@@ -102,7 +102,7 @@
 
     <!-- תוכן ראשי -->
     <main id="app" class="max-w-3xl mx-auto p-4"></main>
-    <div id="verBadge" class="fixed bottom-1 left-2 text-[10px] font-black text-slate-300 z-[45] pointer-events-none select-none">v26 כפתור תאריך גלוי</div>
+    <div id="verBadge" class="fixed bottom-1 left-2 text-[10px] font-black text-slate-300 z-[45] pointer-events-none select-none">v27 מחיקת תעודת חזרה</div>
 
     <!-- כפתור סיום הזמנה (צף) -->
     <div id="cartWrap" class="fixed bottom-6 inset-x-0 flex justify-center pointer-events-none px-4 z-20">
@@ -2701,14 +2701,14 @@ function renderReturnsHistory() {
           '<div class="flex gap-2 items-stretch mb-2">' +
             '<div class="flex-1 flex items-center gap-1 border-2 border-slate-200 rounded-xl px-2 focus-within:border-blue-500"><span class="text-slate-400 font-black">₪</span><input id="rvNote_' + r.id + '" type="text" inputmode="decimal" placeholder="סכום זיכוי ללא מע״מ" class="w-full h-11 text-center text-base font-black outline-none bg-transparent"></div>' +
             '<button data-role="rv-verify-inline" data-id="' + r.id + '" class="btn-tap px-4 rounded-xl font-black bg-green-600 text-white flex items-center gap-1"><i class="fa-solid fa-check-double"></i> בדוק</button>' +
-          '</div>' + '<button data-role="ret-edit-items" data-id="' + r.id + '" class="btn-tap w-full mt-2 bg-white border border-indigo-200 text-indigo-700 rounded-xl py-2 font-black text-[11px]"><i class="fa-solid fa-pen-to-square"></i> ערוך פריטים בתעודה</button>' + '<button data-role="ret-edit-date" data-id="' + r.id + '" class="btn-tap w-full mt-2 bg-white border border-blue-200 text-blue-700 rounded-xl py-2 font-black text-[11px]"><i class="fa-solid fa-calendar-days"></i> ערוך תאריך תעודה</button>'
+          '</div>' + '<button data-role="ret-edit-items" data-id="' + r.id + '" class="btn-tap w-full mt-2 bg-white border border-indigo-200 text-indigo-700 rounded-xl py-2 font-black text-[11px]"><i class="fa-solid fa-pen-to-square"></i> ערוך פריטים בתעודה</button>' + '<button data-role="ret-edit-date" data-id="' + r.id + '" class="btn-tap w-full mt-2 bg-white border border-blue-200 text-blue-700 rounded-xl py-2 font-black text-[11px]"><i class="fa-solid fa-calendar-days"></i> ערוך תאריך תעודה</button>' + '<button data-role="ret-delete" data-id="' + r.id + '" class="btn-tap w-full mt-2 bg-white border border-red-200 text-red-600 rounded-xl py-2 font-black text-[11px]"><i class="fa-solid fa-trash-can"></i> מחק תעודה</button>'
         : breakdown +
           creditPartsInfoHtml(r) +
           (openGap ? creditAddNoteHtml(r) : '') +
           '<div class="flex gap-2">' +
             '<button data-role="rv-open" data-id="' + r.id + '" class="btn-tap flex-1 font-black py-2.5 rounded-xl text-sm flex items-center justify-center gap-2 ' + (openGap ? 'bg-blue-600 text-white' : 'bg-slate-100 text-slate-700') + '"><i class="fa-solid ' + (openGap ? 'fa-wrench' : 'fa-pen') + '"></i> ' + (openGap ? 'תקן פער' : 'ערוך אימות') + '</button>' +
             '<button data-role="uncredit" data-id="' + r.id + '" class="btn-tap px-3 font-bold py-2.5 rounded-xl text-sm bg-slate-100 text-slate-500"><i class="fa-solid fa-rotate-left"></i></button>' +
-          '</div>' + '<button data-role="ret-edit-items" data-id="' + r.id + '" class="btn-tap w-full mt-2 bg-white border border-indigo-200 text-indigo-700 rounded-xl py-2 font-black text-[11px]"><i class="fa-solid fa-pen-to-square"></i> ערוך פריטים בתעודה</button>' + '<button data-role="ret-edit-date" data-id="' + r.id + '" class="btn-tap w-full mt-2 bg-white border border-blue-200 text-blue-700 rounded-xl py-2 font-black text-[11px]"><i class="fa-solid fa-calendar-days"></i> ערוך תאריך תעודה</button>';
+          '</div>' + '<button data-role="ret-edit-items" data-id="' + r.id + '" class="btn-tap w-full mt-2 bg-white border border-indigo-200 text-indigo-700 rounded-xl py-2 font-black text-[11px]"><i class="fa-solid fa-pen-to-square"></i> ערוך פריטים בתעודה</button>' + '<button data-role="ret-edit-date" data-id="' + r.id + '" class="btn-tap w-full mt-2 bg-white border border-blue-200 text-blue-700 rounded-xl py-2 font-black text-[11px]"><i class="fa-solid fa-calendar-days"></i> ערוך תאריך תעודה</button>' + '<button data-role="ret-delete" data-id="' + r.id + '" class="btn-tap w-full mt-2 bg-white border border-red-200 text-red-600 rounded-xl py-2 font-black text-[11px]"><i class="fa-solid fa-trash-can"></i> מחק תעודה</button>';
       return '<div class="bg-white rounded-2xl shadow-sm border ' + (credited ? (openGap ? 'border-rose-300' : 'border-green-300') : 'border-amber-300') + ' overflow-hidden mb-4">' +
         statusBar +
         '<div class="p-4 border-b border-slate-100 flex justify-between items-center">' +
@@ -10898,6 +10898,13 @@ async function confirmReceipt() {
   if (newOpen) showToast('💡 זוהה קיזוז אפשרי מול תעודה קודמת — ראה בכרטיס התעודה', null, null, 3500);
   else showToast('התעודה נקלטה ✓', null, null, 2200);
 }
+// v27: מחיקת תעודת חזרה — עם גיבוי וביטול מיידי, כמו בקליטה
+async function delReturn(id) {
+  const r = returns.find(x => x.id === id);
+  const backup = r ? { ...r } : null;
+  const ok = await hardDeleteDocWithBackup('returns', id, backup, 'delete-return');
+  if (ok && backup) showToast('תעודת החזרה נמחקה ונשמר גיבוי', 'בטל', () => restoreDoc('returns', backup));
+}
 async function delReceipt(id) {
   const rc = receipts.find(x => x.id === id);
   const backup = rc ? { ...rc } : null;
@@ -10935,13 +10942,13 @@ function returnCardInReceipts(r) {
       '<div class="flex gap-2 items-stretch">' +
         '<div class="flex-1 flex items-center gap-1 border-2 border-slate-200 rounded-xl px-2 focus-within:border-blue-500"><span class="text-slate-400 font-black">₪</span><input id="rvNote_' + r.id + '" type="text" inputmode="decimal" placeholder="סכום זיכוי ללא מע״מ" class="w-full h-11 text-center text-base font-black outline-none bg-transparent"></div>' +
         '<button data-role="rv-verify-inline" data-id="' + r.id + '" class="btn-tap px-4 rounded-xl font-black bg-green-600 text-white flex items-center gap-1"><i class="fa-solid fa-check-double"></i> בדוק</button>' +
-      '</div>' + '<button data-role="ret-edit-items" data-id="' + r.id + '" class="btn-tap w-full mt-2 bg-white border border-indigo-200 text-indigo-700 rounded-xl py-2 font-black text-[11px]"><i class="fa-solid fa-pen-to-square"></i> ערוך פריטים בתעודה</button>' + '<button data-role="ret-edit-date" data-id="' + r.id + '" class="btn-tap w-full mt-2 bg-white border border-blue-200 text-blue-700 rounded-xl py-2 font-black text-[11px]"><i class="fa-solid fa-calendar-days"></i> ערוך תאריך תעודה</button>'
+      '</div>' + '<button data-role="ret-edit-items" data-id="' + r.id + '" class="btn-tap w-full mt-2 bg-white border border-indigo-200 text-indigo-700 rounded-xl py-2 font-black text-[11px]"><i class="fa-solid fa-pen-to-square"></i> ערוך פריטים בתעודה</button>' + '<button data-role="ret-edit-date" data-id="' + r.id + '" class="btn-tap w-full mt-2 bg-white border border-blue-200 text-blue-700 rounded-xl py-2 font-black text-[11px]"><i class="fa-solid fa-calendar-days"></i> ערוך תאריך תעודה</button>' + '<button data-role="ret-delete" data-id="' + r.id + '" class="btn-tap w-full mt-2 bg-white border border-red-200 text-red-600 rounded-xl py-2 font-black text-[11px]"><i class="fa-solid fa-trash-can"></i> מחק תעודה</button>'
     : '<div class="mt-2">' + creditPartsInfoHtml(r) + (openGap ? creditAddNoteHtml(r) : '') +
       '<button data-role="uncredit" data-id="' + r.id + '" class="btn-tap w-full bg-white border border-slate-300 text-slate-500 rounded-xl py-2 font-black text-[11px] mt-2"><i class="fa-solid fa-rotate-left"></i> בטל אימות — פתח מחדש לתיקון</button></div>' +
       '<div class="flex gap-2">' +
         '<button data-role="rv-open" data-id="' + r.id + '" class="btn-tap flex-1 font-black py-2.5 rounded-xl text-sm flex items-center justify-center gap-2 ' + (openGap ? 'bg-blue-600 text-white' : 'bg-slate-100 text-slate-700') + '"><i class="fa-solid ' + (openGap ? 'fa-wrench' : 'fa-pen') + '"></i> ' + (openGap ? 'תקן פער' : 'ערוך אימות') + '</button>' +
         '<button data-role="uncredit" data-id="' + r.id + '" class="btn-tap px-3 font-bold py-2.5 rounded-xl text-sm bg-slate-100 text-slate-500" title="בטל אימות"><i class="fa-solid fa-rotate-left"></i></button>' +
-      '</div>' + '<button data-role="ret-edit-items" data-id="' + r.id + '" class="btn-tap w-full mt-2 bg-white border border-indigo-200 text-indigo-700 rounded-xl py-2 font-black text-[11px]"><i class="fa-solid fa-pen-to-square"></i> ערוך פריטים בתעודה</button>' + '<button data-role="ret-edit-date" data-id="' + r.id + '" class="btn-tap w-full mt-2 bg-white border border-blue-200 text-blue-700 rounded-xl py-2 font-black text-[11px]"><i class="fa-solid fa-calendar-days"></i> ערוך תאריך תעודה</button>';
+      '</div>' + '<button data-role="ret-edit-items" data-id="' + r.id + '" class="btn-tap w-full mt-2 bg-white border border-indigo-200 text-indigo-700 rounded-xl py-2 font-black text-[11px]"><i class="fa-solid fa-pen-to-square"></i> ערוך פריטים בתעודה</button>' + '<button data-role="ret-edit-date" data-id="' + r.id + '" class="btn-tap w-full mt-2 bg-white border border-blue-200 text-blue-700 rounded-xl py-2 font-black text-[11px]"><i class="fa-solid fa-calendar-days"></i> ערוך תאריך תעודה</button>' + '<button data-role="ret-delete" data-id="' + r.id + '" class="btn-tap w-full mt-2 bg-white border border-red-200 text-red-600 rounded-xl py-2 font-black text-[11px]"><i class="fa-solid fa-trash-can"></i> מחק תעודה</button>';
   return '<details class="bg-white rounded-2xl border-2 ' + borderCls + ' shadow-sm overflow-hidden">' +
     '<summary class="cursor-pointer">' +
       '<div class="' + barCls + ' px-4 py-2 flex items-center justify-between gap-2 font-black text-[13px]">' +
@@ -13610,6 +13617,7 @@ app.addEventListener('click', (e) => {
   else if (role === 'resend') { const o = history.find(x => x.id === id); if (o) openResend(o); }
   else if (role === 'ret-resend') { const r = returns.find(x => x.id === id); if (r) openReturnsResend(r); }
   else if (role === 'ret-edit-date') { const r = returns.find(x => x.id === id); if (r) openReturnDateEdit(r); }
+  else if (role === 'ret-delete') { showConfirm('מחיקת תעודת חזרה', 'למחוק את תעודת החזרה הזו? יישמר גיבוי ותוכל לבטל מיד אחרי.', 'מחק', () => delReturn(id)); }
   else if (role === 'add-note') addNote();
   else if (role === 'done-note') doneNote(id);
   else if (role === 'ret-add') addReturn(id);
