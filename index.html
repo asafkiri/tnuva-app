@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
-    <title>קליטת תנובה - v18 ארגז ראשון נקי</title>
+    <title>קליטת תנובה - v19 בלש זהיר</title>
 
     <!-- PWA: התקנה כאפליקציה במסך מלא (אנדרואיד + אייפון) -->
     <meta name="mobile-web-app-capable" content="yes">
@@ -102,7 +102,7 @@
 
     <!-- תוכן ראשי -->
     <main id="app" class="max-w-3xl mx-auto p-4"></main>
-    <div id="verBadge" class="fixed bottom-1 left-2 text-[10px] font-black text-slate-300 z-[45] pointer-events-none select-none">v18 ארגז ראשון נקי</div>
+    <div id="verBadge" class="fixed bottom-1 left-2 text-[10px] font-black text-slate-300 z-[45] pointer-events-none select-none">v19 בלש זהיר</div>
 
     <!-- כפתור סיום הזמנה (צף) -->
     <div id="cartWrap" class="fixed bottom-6 inset-x-0 flex justify-center pointer-events-none px-4 z-20">
@@ -5316,6 +5316,20 @@ function detectiveSolutions() {
     // מעל 4 פתרונות → הצפה → סריקה. חוסר אמיתי כמעט תמיד מדויק עד
     // עיגול-שורה (חצי אגורה), אז קודם אוספים רק מדויקים; רק אם אין —
     // מרחיבים ל-5 אגורות. עודף ממילא מוגבל לשורות שנסרקו (מעט מועמדים).
+    // v19: אימות-סיפור. במשוואה אחת (כסף בלבד) חלוקה נקייה במחיר איננה
+    // הוכחה — צירופי מקרים שכיחים, ובניסויי שגיאות-כפולות הבלש "מצא" תמיד.
+    // שורת הפריטים היא העד השני: מניין תואם ⇒ רק טעות כמות בשורה קיימת;
+    // מניין חסר ⇒ רק שורה שלמה שלא נקלטה. פתרון שסותר את העד נפסל, ואם
+    // לא שרד כלום — מוותרים בקול. עדיף בלש שותק מבלש מנחש.
+    const rcLineCount = (reconcileData || []).filter(l => !l.isDeposit).length;
+    const linesKnown = receiptNoteLines != null;
+    const linesMatch = linesKnown && rcLineCount === Number(receiptNoteLines);
+    const storyOk = s => {
+      if (gap <= 0 || !linesKnown) return true;
+      try {
+        return s.components.every(c => (c.allocations[0].moves || []).every(m => linesMatch ? !m.ext : !!m.ext));
+      } catch (e) { return true; }
+    };
     for (const tol of [50, 500]) {
       const found = [];
       groups.forEach(g => {
@@ -5323,7 +5337,7 @@ function detectiveSolutions() {
         for (let d = Math.floor(center) - 1; d <= Math.ceil(center) + 1; d++) {
           if (!d || Math.abs(g.priceCents * d - gapCents) > tol) continue;
         const s = detectiveMakeSolution([{ group: g, delta: d }], g.priceCents * d - gapCents, DETECTIVE_SEARCH_MIXED);
-          if (s) found.push(s);
+          if (s && storyOk(s)) found.push(s);
         }
       });
       if (found.length) return detectiveFinishStage(found, gap, null, 1, tol, true, DETECTIVE_SEARCH_MIXED);
@@ -5560,12 +5574,12 @@ function detectiveSolutionsHtml(result, opts) {
     return '<div class="rounded-2xl border-2 ' + (si === 0 ? 'border-indigo-300 bg-indigo-50/30' : 'border-slate-200 bg-white') + ' p-3 mt-2">' +
       '<div class="font-black text-slate-800 text-sm">אפשרות ' + (si + 1) + (si === 0 ? ' <span class="text-[10px] text-white bg-indigo-600 px-1.5 py-0.5 rounded">הכי סבירה</span>' : '') + residual + '</div>' +
       comps +
-      '<button data-role="' + buttonRole + '" data-i="' + si + '" class="btn-tap w-full bg-indigo-600 text-white rounded-xl py-2.5 font-black text-sm mt-2"><i class="fa-solid fa-check"></i> זה מה שקרה — אשר</button>' +
+      '<button data-role="' + buttonRole + '" data-i="' + si + '" class="btn-tap w-full bg-indigo-600 text-white rounded-xl py-2.5 font-black text-sm mt-2"><i class="fa-solid fa-check"></i> ' + (result.unitGap == null ? 'בדקתי מול הנייר — זה מה שקרה' : 'זה מה שקרה — אשר') + '</button>' +
     '</div>';
   }).join('');
   return '<div class="bg-white rounded-2xl border-2 border-indigo-200 p-4 shadow-sm mb-24">' +
     '<div class="text-xs font-black text-slate-400 mb-1">' + (opts.postBarcode ? 'אחרי הברקודים · הבלש בדק שוב' : stageMeta.step) + '</div>' +
-    '<div class="font-black text-lg text-slate-800"><i class="fa-solid fa-magnifying-glass text-indigo-500"></i> נמצאו ' + result.solutions.length + ' אפשרויות שסוגרות גם סכום וגם יחידות</div>' +
+    '<div class="font-black text-lg text-slate-800"><i class="fa-solid fa-magnifying-glass text-indigo-500"></i> ' + (result.unitGap == null ? ('הבלש מצביע על ' + result.solutions.length + ' כיוונים שסוגרים את הסכום — בדוק מול הנייר') : ('נמצאו ' + result.solutions.length + ' אפשרויות שסוגרות גם סכום וגם יחידות')) + '</div>' +
     '<div class="text-xs text-slate-500 font-bold mt-1">' + (opts.postBarcode ? 'החיפוש הוגבל רק למוצרים שאומתו בתעודת הנייר. אין צורך להקליד כמויות אם אחת האפשרויות נכונה.' : stageMeta.text + ' האפשרויות מסודרות מהסבירה ביותר.') + '</div>' +
     (opts.postBarcode ? '' : promoCard) +
     rows +
