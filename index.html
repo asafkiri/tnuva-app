@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
-    <title>קליטת תנובה - v22 מיון לפי הנייר</title>
+    <title>קליטת תנובה - v24 חזרות כפולות</title>
 
     <!-- PWA: התקנה כאפליקציה במסך מלא (אנדרואיד + אייפון) -->
     <meta name="mobile-web-app-capable" content="yes">
@@ -102,7 +102,7 @@
 
     <!-- תוכן ראשי -->
     <main id="app" class="max-w-3xl mx-auto p-4"></main>
-    <div id="verBadge" class="fixed bottom-1 left-2 text-[10px] font-black text-slate-300 z-[45] pointer-events-none select-none">v22 מיון לפי הנייר</div>
+    <div id="verBadge" class="fixed bottom-1 left-2 text-[10px] font-black text-slate-300 z-[45] pointer-events-none select-none">v24 חזרות כפולות</div>
 
     <!-- כפתור סיום הזמנה (צף) -->
     <div id="cartWrap" class="fixed bottom-6 inset-x-0 flex justify-center pointer-events-none px-4 z-20">
@@ -309,9 +309,9 @@
             <input id="qtyVal" type="text" inputmode="numeric" value="1" class="w-24 h-16 text-center text-3xl font-black border-2 border-slate-200 rounded-2xl outline-none focus:border-blue-500">
             <button id="qty_plus" class="btn-tap w-14 h-14 rounded-2xl bg-slate-100 text-slate-700 flex items-center justify-center text-2xl"><i class="fa-solid fa-plus"></i></button>
           </div>
-          <div id="qtyBoxRow" class="hidden flex gap-2 mt-3">
-            <button id="qty_plus_box" class="btn-tap flex-1 py-3 rounded-xl font-black bg-emerald-50 border-2 border-emerald-300 text-emerald-800"><i class="fa-solid fa-boxes-stacked"></i> <span id="qtyBoxLabel">+ ארגז</span></button>
+          <div id="qtyBoxRow" class="hidden flex gap-2 mt-3"><!-- v23: מינוס ראשון = מימין, מתחת למינוס היחידות -->
             <button id="qty_minus_box" class="btn-tap flex-1 py-3 rounded-xl font-black bg-white border-2 border-slate-200 text-slate-600"><i class="fa-solid fa-minus"></i> ארגז</button>
+            <button id="qty_plus_box" class="btn-tap flex-1 py-3 rounded-xl font-black bg-emerald-50 border-2 border-emerald-300 text-emerald-800"><i class="fa-solid fa-boxes-stacked"></i> <span id="qtyBoxLabel">+ ארגז</span></button>
           </div>
           <p id="qtyBoxBreak" class="hidden text-xs font-black mt-1.5"></p>
         </div>
@@ -526,6 +526,13 @@ let orderState = {};
 let currentView = 'receiving';
 let mainMode = 'receiving'; // תנובה: קליטה בלבד — אין מסך הזמנות
 let returnsList = [];
+// v24: שתי רשימות חזרה חיות זו לצד זו — השבועית (מוצרים+ארגזים) והיומית
+// (לרוב ארגזים, בכל יום אספקה). returnsList הוא תמיד הרשימה הפעילה;
+// המעבר מחליף את התוכן ושומר את השנייה בצד. אחרי כל השמה מחדש חובה לסנכרן
+// returnsSlots[returnsSlot] = returnsList (mutations משותפות ממילא).
+let returnsSlots = { weekly: returnsList, daily: [] };
+let returnsSlot = 'weekly';
+let returnsDocDate = '';
 let returns = [];
 let pendingBarcodeProductId = null, pendingBarcodeEdit = false;
 let isOnline = navigator.onLine;
@@ -766,14 +773,35 @@ function restoreDraft() {
   draftReady = true;
 }
 function saveReturnsDraft() {
-  try { localStorage.setItem(RETURNS_DRAFT_KEY, JSON.stringify(returnsList)); } catch (e) {}
+  returnsSlots[returnsSlot] = returnsList;
+  try { localStorage.setItem(RETURNS_DRAFT_KEY, JSON.stringify({ slots: returnsSlots, active: returnsSlot })); } catch (e) {}
   if (!db) return;
   clearTimeout(returnsDraftTimer);
   returnsDraftTimer = setTimeout(() => {
-    runCloudTaskSilent('save returns draft', { op: 'set', path: dataPath('drafts', 'returns'), data: { items: returnsList, updatedAt: Date.now() }, merge: true, operationId: 'returns_draft' });
+    runCloudTaskSilent('save returns draft', { op: 'set', path: dataPath('drafts', 'returns'), data: { items: returnsList, slots: returnsSlots, active: returnsSlot, updatedAt: Date.now() }, merge: true, operationId: 'returns_draft' });
   }, 700);
 }
-function restoreReturnsDraft() { try { const s = localStorage.getItem(RETURNS_DRAFT_KEY); if (s) { const a = JSON.parse(s); if (Array.isArray(a)) returnsList = a; } } catch (e) {} }
+function restoreReturnsDraft() {
+  try {
+    const s = localStorage.getItem(RETURNS_DRAFT_KEY); if (!s) return;
+    const a = JSON.parse(s);
+    if (Array.isArray(a)) { returnsSlots = { weekly: a, daily: [] }; returnsSlot = 'weekly'; } // טיוטה ישנה
+    else if (a && a.slots) {
+      returnsSlots = { weekly: Array.isArray(a.slots.weekly) ? a.slots.weekly : [], daily: Array.isArray(a.slots.daily) ? a.slots.daily : [] };
+      returnsSlot = a.active === 'daily' ? 'daily' : 'weekly';
+    }
+    returnsList = returnsSlots[returnsSlot];
+  } catch (e) {}
+}
+function switchReturnsSlot(slot) {
+  if (slot !== 'weekly' && slot !== 'daily') return;
+  if (slot === returnsSlot) return;
+  returnsSlots[returnsSlot] = returnsList;
+  returnsSlot = slot;
+  returnsList = returnsSlots[returnsSlot];
+  saveReturnsDraft();
+  renderReturns();
+}
 function parseNoteVal(v) {
   let s = (v || '').toString().trim().replace(/\s/g, '').replace(/[^0-9.,]/g, '');
   if (!s) return null;
@@ -973,6 +1001,13 @@ function startListeners() {
   const retQ = query(retRef, orderBy('timestamp', 'desc'), limit(20));
   onSnapshot(retQ, (snap) => {
     returns = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+    // v24: כמו בקליטה — תעודת חזרה יושבת במקומה לפי תאריך הנייר
+    const locDate = t => { const x = new Date(t || 0); return x.getFullYear() + '-' + String(x.getMonth() + 1).padStart(2, '0') + '-' + String(x.getDate()).padStart(2, '0'); };
+    returns.sort((a, b) => {
+      const ea = String(a.docDate || a.date || locDate(a.timestamp)), eb = String(b.docDate || b.date || locDate(b.timestamp));
+      if (ea !== eb) return eb.localeCompare(ea);
+      return (b.timestamp || 0) - (a.timestamp || 0);
+    });
     if (currentView === 'returnsHistory' || currentView === 'returns' || currentView === 'receiptsHistory') rerender();
   }, console.error);
 
@@ -2452,7 +2487,12 @@ function renderReturns() {
   const histBar = pendingRet
     ? '<button data-role="ret-history" class="btn-tap w-full bg-rose-600 text-white rounded-xl py-3.5 px-3 font-black text-base flex items-center justify-between gap-2 mb-3 shadow-md"><span class="min-w-0 truncate"><i class="fa-solid fa-triangle-exclamation"></i> ' + (pendingRet === 1 ? 'יש תעודת חזרות פתוחה לאימות' : 'יש ' + pendingRet + ' תעודות חזרות פתוחות לאימות') + '</span><span class="text-xs font-black bg-white/20 px-2 py-1 rounded-lg shrink-0">לאימות ←</span></button>'
     : '<button data-role="ret-history" class="btn-tap w-full bg-white border-2 border-slate-200 text-slate-700 rounded-xl py-3.5 font-black text-base flex items-center justify-center gap-2 mb-3 shadow-sm"><i class="fa-solid fa-clock-rotate-left text-blue-600"></i> היסטוריית חזרות</button>';
+  const wCnt = (returnsSlot === 'weekly' ? returnsList : returnsSlots.weekly).length;
+  const dCnt = (returnsSlot === 'daily' ? returnsList : returnsSlots.daily).length;
+  const slotBtn = (key, label, cnt) =>
+    '<button data-role="ret-slot" data-slot="' + key + '" class="btn-tap flex-1 py-2.5 rounded-lg font-black text-sm ' + (returnsSlot === key ? 'bg-white shadow text-emerald-800' : 'text-slate-500') + '">' + label + (cnt ? ' <span class="text-[10px] bg-rose-100 text-rose-700 rounded-full px-1.5">' + cnt + '</span>' : '') + '</button>';
   app.innerHTML = histBar +
+    '<div class="flex bg-slate-100 rounded-xl p-1 mb-2 gap-1">' + slotBtn('weekly', 'שבועית · מוצרים+ארגזים', wCnt) + slotBtn('daily', 'יומית · ארגזים', dCnt) + '</div>' +
     '<div class="relative mb-2">' +
       '<i class="fa-solid fa-magnifying-glass absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 text-sm"></i>' +
       '<input id="returnsSearch" type="text" inputmode="search" autocomplete="off" placeholder="חפש מוצר להוספה לחזרות..." class="w-full bg-white border border-slate-200 rounded-xl py-3 pr-9 pl-3 text-sm font-bold outline-none focus:border-blue-500">' +
@@ -2464,6 +2504,8 @@ function renderReturns() {
       '<input id="retDigits" type="text" inputmode="numeric" placeholder="למשל: 557423" class="w-full bg-slate-50 border border-slate-200 rounded-xl py-2.5 px-3 text-base font-black text-center outline-none focus:border-blue-500" dir="ltr">' +
       '<div id="retDigitsList" class="mt-2 space-y-1"></div>' +
     '</div>' +
+    '<label class="block text-[10px] text-slate-400 font-bold mt-1 mb-0.5"><i class="fa-solid fa-calendar-day"></i> תאריך התעודה מהנייר — רק לתעודה ישנה (ריק = היום)</label>' +
+    '<input id="retDocDate" type="date" value="' + (returnsDocDate || '') + '" class="w-full h-10 text-center text-sm font-black border-2 border-slate-200 rounded-xl outline-none focus:border-blue-500 bg-white mb-2">' +
     '<button data-role="ret-manual" class="btn-tap w-full bg-white border-2 border-blue-200 text-blue-700 rounded-xl py-2.5 font-black flex items-center justify-center gap-2 mb-3 text-sm"><i class="fa-solid fa-pen-to-square"></i> הוסף מוצר ידני (ללא ברקוד)</button>' +
     '<div id="returnsResults" class="bg-white border border-slate-200 rounded-xl overflow-hidden mb-3 hidden"></div>' +
     '<div class="flex items-center justify-between px-1 mb-2"><div class="font-black text-slate-800">רשימת חזרות</div><div id="returnsCount" class="text-xs text-slate-400">' + returnsList.length + ' פריטים</div></div>' +
@@ -2670,7 +2712,14 @@ function renderReturnsHistory() {
       return '<div class="bg-white rounded-2xl shadow-sm border ' + (credited ? (openGap ? 'border-rose-300' : 'border-green-300') : 'border-amber-300') + ' overflow-hidden mb-4">' +
         statusBar +
         '<div class="p-4 border-b border-slate-100 flex justify-between items-center">' +
-          '<div><div class="font-black text-slate-800">' + d.toLocaleDateString('he-IL') + ' · ' + d.toLocaleTimeString('he-IL', { hour: '2-digit', minute: '2-digit' }) + '</div>' +
+          '<div><div class="font-black text-slate-800">' + (function () {
+            const eff = r.docDate || r.date;
+            const keyed = d.toLocaleDateString('he-IL') + ' · ' + d.toLocaleTimeString('he-IL', { hour: '2-digit', minute: '2-digit' });
+            const lateKeyed = eff && r.date && eff !== r.date;
+            return (lateKeyed ? dDisp(eff) + ' · <span class="text-slate-400 font-bold">הוקלד ' + keyed + '</span>' : keyed) +
+              (r.returnKind === 'daily' ? ' <span class="text-[10px] bg-emerald-50 text-emerald-700 border border-emerald-200 rounded px-1">יומית</span>' : '') +
+              ' <button data-role="ret-edit-date" data-id="' + r.id + '" class="btn-tap text-slate-300 hover:text-blue-600 px-1" title="ערוך תאריך תעודה"><i class="fa-solid fa-calendar-pen text-xs"></i></button>';
+          })() + '</div>' +
           '<div class="text-sm text-slate-500">נשלח אל: <b>' + (r.sentTo || '') + '</b></div></div>' +
           '<div class="text-left shrink-0"><span class="bg-blue-100 text-blue-800 font-black px-3 py-1 rounded-full text-xs inline-block">' + ((r.items || []).length) + ' פריטים</span><div class="text-xs font-black text-emerald-700 mt-1">זיכוי ₪' + fmtMoney(rt.ex) + '</div></div>' +
         '</div>' +
@@ -3285,6 +3334,30 @@ function openResend(order) {
   sendCtx = { type: 'order', items, resetCurrent: false };
   renderSendModal(items, 'שליחה חוזרת', 'order');
 }
+// v24: התעודה הפיזית מגיעה לרוב ימים אחרי המסירה — קובעים לה תאריך בדיעבד
+function openReturnDateEdit(r) {
+  const old = document.getElementById('retDateOverlay'); if (old) old.remove();
+  const ov = document.createElement('div');
+  ov.id = 'retDateOverlay';
+  ov.className = 'fixed inset-0 bg-black/50 z-[70] flex items-center justify-center p-4';
+  const cur = r.docDate || r.date || '';
+  ov.innerHTML = '<div class="bg-white w-full max-w-sm rounded-2xl p-4 shadow-2xl">' +
+    '<div class="font-black text-slate-800 text-lg mb-1"><i class="fa-solid fa-calendar-pen text-blue-600"></i> תאריך התעודה</div>' +
+    '<div class="text-[11px] text-slate-400 font-bold mb-2">התאריך המודפס על תעודת החזרה מתנובה — הרשומה תסתדר לפיו ברשימה ובדוח.</div>' +
+    '<input id="retDateInput" type="date" value="' + cur + '" class="w-full h-11 text-center font-black border-2 border-slate-200 rounded-xl outline-none focus:border-blue-500 mb-3">' +
+    '<div class="flex gap-2"><button data-rde="save" class="btn-tap flex-1 bg-blue-600 text-white rounded-xl py-2.5 font-black">שמור</button><button data-rde="close" class="btn-tap flex-1 bg-slate-100 text-slate-600 rounded-xl py-2.5 font-black">ביטול</button></div>' +
+  '</div>';
+  ov.addEventListener('click', async (e) => {
+    const b = e.target.closest('[data-rde]'); if (!b && e.target !== ov) return;
+    if (!b || b.dataset.rde === 'close') { ov.remove(); return; }
+    const v = (document.getElementById('retDateInput').value || '').trim();
+    if (!v) { showToast('בחר תאריך', null, null, 2000); return; }
+    await runCloudTask('set return doc date', { op: 'update', path: dataPath('returns', r.id), data: { docDate: v }, operationId: makeOperationId('ret_docdate') });
+    ov.remove();
+    showToast('תאריך התעודה עודכן ל-' + dDisp(v), null, null, 2400);
+  });
+  document.body.appendChild(ov);
+}
 function openReturnsResend(r) {
   const items = (r.items || []).map(i => ({ name: i.name, barcode: i.barcode || '', qty: i.qty }));
   if (!items.length) return;
@@ -3307,8 +3380,10 @@ async function performSend(contact) {
       return;
     }
     const opId = sendCtx.operationId || (sendCtx.operationId = makeOperationId('returns'));
+    const deIn = $('retDocDate'); if (deIn && deIn.value) returnsDocDate = deIn.value;
     const data = {
-      timestamp: Date.now(), sentTo: contact.name, items, credited: false,
+      timestamp: Date.now(), date: todayStr(), docDate: (returnsDocDate || todayStr()), returnKind: returnsSlot,
+      sentTo: contact.name, items, credited: false,
       totalExVat: (sendCtx && sendCtx.totalExVat) || 0,
       totalIncVat: (sendCtx && sendCtx.totalIncVat) || 0,
       operationId: opId
@@ -3317,7 +3392,7 @@ async function performSend(contact) {
     if (!saved) return;
     const msg = buildReturnsMessage(items, note);
     const url = 'https://wa.me/' + phone + '?text=' + encodeURIComponent(msg);
-    returnsList = []; saveReturnsDraft();
+    returnsList = []; returnsSlots[returnsSlot] = returnsList; returnsDocDate = ''; saveReturnsDraft();
     sendCtx = null; hideSend(); setView('returnsHistory'); window.location.href = url;
     return;
   }
@@ -11364,7 +11439,8 @@ function receiptRangeData(from, to) {
   // של תנובה ידברו באותו סדר בדיוק
   const effT = r => { const e = r.docDate || r.date; return e ? new Date(e + 'T12:00:00').getTime() : (r.timestamp || 0); };
   const recs = receipts.filter(r => effT(r) >= fromT && effT(r) <= toT);
-  const rets = returns.filter(r => r.timestamp >= fromT && r.timestamp <= toT);
+  const retT = r => { const e = r.docDate || r.date; return e ? new Date(e + 'T12:00:00').getTime() : (r.timestamp || 0); };
+  const rets = returns.filter(r => retT(r) >= fromT && retT(r) <= toT);
   const recEx = r2(recs.reduce((a, r) => a + (Number(r.totalExVat) || 0), 0));
   const recInc = r2(recs.reduce((a, r) => a + (Number(r.totalIncVat) || 0), 0));
   let retEx = 0, retInc = 0;
@@ -13504,6 +13580,7 @@ app.addEventListener('click', (e) => {
   else if (role === 'del-contact') { const c = contacts.find(x => x.id === id); showConfirm('מחיקת איש קשר', 'למחוק את "' + (c ? c.name : '') + '"?', 'מחק', () => delContact(id)); }
   else if (role === 'resend') { const o = history.find(x => x.id === id); if (o) openResend(o); }
   else if (role === 'ret-resend') { const r = returns.find(x => x.id === id); if (r) openReturnsResend(r); }
+  else if (role === 'ret-edit-date') { const r = returns.find(x => x.id === id); if (r) openReturnDateEdit(r); }
   else if (role === 'add-note') addNote();
   else if (role === 'done-note') doneNote(id);
   else if (role === 'ret-add') addReturn(id);
@@ -13545,6 +13622,7 @@ app.addEventListener('click', (e) => {
   else if (role === 'rc-scan') openReceivingScanner();
   else if (role === 'rc-crates') { openCratePicker('receipt'); }
   else if (role === 'ret-crates') { openCratePicker('returns'); }
+  else if (role === 'ret-slot') { const de = $('retDocDate'); if (de) returnsDocDate = de.value || ''; switchReturnsSlot(t.dataset.slot); }
   else if (role === 'rc-open') { const en = readNoteEntry(receiptNotes.length === 0); if (en === false) return; if (en) receiptNotes.push(en); receiptDocDate = (($('rcDocDate') || {}).value || '').trim() || null; recomputeNoteTotal(); receiptOpened = true; receiptDupConfirmed = false; receiptLinesConfirmed = false; saveReceiptDraft(); refreshReceipt(); openReceivingScanner(); }
   else if (role === 'rc-open-crates') { const en = readNoteEntry(receiptNotes.length === 0); if (en === false) return; if (en) receiptNotes.push(en); receiptDocDate = (($('rcDocDate') || {}).value || '').trim() || null; recomputeNoteTotal(); receiptOpened = true; receiptDupConfirmed = false; receiptLinesConfirmed = false; saveReceiptDraft(); refreshReceipt(); openCratePicker('receipt'); }
   else if (role === 'rc-cancel') { showConfirm('ביטול תעודה', 'לבטל את התעודה הנוכחית? כל הפריטים שנסרקו יימחקו.', 'בטל תעודה', () => { receiptList = []; receiptNotes = []; receiptDocDate = null; recomputeNoteTotal(); receiptOpened = false; editingNotes = false; reconcileData = null; receiptDupConfirmed = false; receiptLinesConfirmed = false; saveReceiptDraft(); setView('receiving'); }); }
