@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
-    <title>קליטת תנובה - v20 בורר בניהול עצמי</title>
+    <title>קליטת תנובה - v22 מיון לפי הנייר</title>
 
     <!-- PWA: התקנה כאפליקציה במסך מלא (אנדרואיד + אייפון) -->
     <meta name="mobile-web-app-capable" content="yes">
@@ -102,7 +102,7 @@
 
     <!-- תוכן ראשי -->
     <main id="app" class="max-w-3xl mx-auto p-4"></main>
-    <div id="verBadge" class="fixed bottom-1 left-2 text-[10px] font-black text-slate-300 z-[45] pointer-events-none select-none">v20 בורר בניהול עצמי</div>
+    <div id="verBadge" class="fixed bottom-1 left-2 text-[10px] font-black text-slate-300 z-[45] pointer-events-none select-none">v22 מיון לפי הנייר</div>
 
     <!-- כפתור סיום הזמנה (צף) -->
     <div id="cartWrap" class="fixed bottom-6 inset-x-0 flex justify-center pointer-events-none px-4 z-20">
@@ -545,6 +545,7 @@ const legacyOffsetMigrationBusy = new Set(); // זוגות קיזוז ישנים
 let pendingReceipt = null;       // תעודה הממתינה לאישור בסיכום
 let receiptNoteTotal = null;     // סכום התעודה מהספק (ללא מע"מ) — סכום כל התעודות
 let receiptNotes = [];           // פירוט סכומי תעודות הספק (למקרה שהמשלוח מחולק)
+let receiptDocDate = null;       // v21: תאריך התעודה מהנייר — לזיכוי/חיוב שמוקלד באיחור
 let editingNotes = false;        // עריכת סכומי התעודות במסך פתוח
 let receiptOpened = false;       // האם נפתחה תעודה (שער לפני סריקה)
 let reconcileData = null;        // נתוני מסך השוואת תעודה
@@ -836,6 +837,8 @@ function noteEditorBodyHtml() {
       '<button data-role="rc-note-add" class="btn-tap px-4 rounded-xl font-black bg-slate-100 text-slate-700 flex items-center gap-1"><i class="fa-solid fa-plus"></i> הוסף</button>' +
     '</div>' +
     '<input id="rcNoteLines" type="text" inputmode="numeric" placeholder="מספר פריטים בתעודה" class="w-full h-10 mt-1.5 text-center text-sm font-black border-2 border-slate-200 rounded-xl outline-none focus:border-blue-500 bg-white">' +
+    '<label class="block text-[10px] text-slate-400 font-bold mt-2 mb-0.5"><i class="fa-solid fa-calendar-day"></i> תאריך התעודה מהנייר — למלא רק בזיכוי/חיוב שמוקלד באיחור (ריק = היום)</label>' +
+    '<input id="rcDocDate" type="date" class="w-full h-10 text-center text-sm font-black border-2 border-slate-200 rounded-xl outline-none focus:border-blue-500 bg-white">' +
     '<div class="text-[10px] text-slate-400 font-bold mt-1"><i class="fa-solid fa-wand-magic-sparkles"></i> שורת "פריטים" מודפסת בתחתית תעודת תנובה — מוודאת שלא פוספסה שורה</div>' +
     total;
 }
@@ -1012,6 +1015,12 @@ function startListeners() {
   const rcQ = query(rcRef, orderBy('timestamp', 'desc'), limit(100));
   onSnapshot(rcQ, (snap) => {
     receipts = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+    // v22: תעודה שהוקלדה באיחור יושבת במקומה לפי תאריך הנייר, לא לפי רגע ההקלדה
+    receipts.sort((a, b) => {
+      const ea = String(a.docDate || a.date || ''), eb = String(b.docDate || b.date || '');
+      if (ea !== eb) return eb.localeCompare(ea);
+      return (b.timestamp || 0) - (a.timestamp || 0);
+    });
     if (currentView === 'receiptsHistory' || currentView === 'receiving' || currentView === 'health') rerender();
     setTimeout(migrateLegacyReceiptOffsets, 0);
     setTimeout(stampResolvedAiPriceFindings, 0); // v202
@@ -10779,12 +10788,12 @@ async function confirmReceipt() {
   const { lines, ex, calculatedEx, roundingAdjustment, grossEx, supplierDiscount, supplierPromoItems, supplierPromoMismatchItems, supplierCreditClaim, aiAudit, noteTotal, status, noteParts, unresolvedAmountGap, unresolvedUnitsGap } = pendingReceipt;
   const opId = pendingReceipt.operationId || (pendingReceipt.operationId = makeOperationId('receipt'));
   const creditClaim = supplierCreditClaim ? { ...cloneSafe(supplierCreditClaim), createdAt: supplierCreditClaim.createdAt || Date.now() } : null;
-  const data = { timestamp: Date.now(), date: todayStr(), items: lines, count: lines.length, totalExVat: ex, totalIncVat: ex, calculatedExVat: (calculatedEx != null ? calculatedEx : ex), roundingAdjustment: r2(Number(roundingAdjustment) || 0), grossExVat: (grossEx != null ? grossEx : (calculatedEx != null ? calculatedEx : ex)), supplierDiscount: r2(Number(supplierDiscount) || 0), supplierPromoItems: (Array.isArray(supplierPromoItems) ? supplierPromoItems : []), supplierPromoMismatchItems: (Array.isArray(supplierPromoMismatchItems) ? supplierPromoMismatchItems : []), supplierCreditClaim: creditClaim, aiAudit: aiAudit ? cloneSafe(aiAudit) : null, noteTotalInc: (noteTotal != null ? noteTotal : null), noteParts: (Array.isArray(noteParts) ? noteParts : []), unresolvedAmountGap: r2(Number(unresolvedAmountGap) || 0), unresolvedUnitsGap: Number(unresolvedUnitsGap) || 0, status: status || 'ok', operationId: opId };
+  const data = { timestamp: Date.now(), date: todayStr(), docDate: (receiptDocDate || todayStr()), items: lines, count: lines.length, totalExVat: ex, totalIncVat: ex, calculatedExVat: (calculatedEx != null ? calculatedEx : ex), roundingAdjustment: r2(Number(roundingAdjustment) || 0), grossExVat: (grossEx != null ? grossEx : (calculatedEx != null ? calculatedEx : ex)), supplierDiscount: r2(Number(supplierDiscount) || 0), supplierPromoItems: (Array.isArray(supplierPromoItems) ? supplierPromoItems : []), supplierPromoMismatchItems: (Array.isArray(supplierPromoMismatchItems) ? supplierPromoMismatchItems : []), supplierCreditClaim: creditClaim, aiAudit: aiAudit ? cloneSafe(aiAudit) : null, noteTotalInc: (noteTotal != null ? noteTotal : null), noteParts: (Array.isArray(noteParts) ? noteParts : []), unresolvedAmountGap: r2(Number(unresolvedAmountGap) || 0), unresolvedUnitsGap: Number(unresolvedUnitsGap) || 0, status: status || 'ok', operationId: opId };
   const saved = await runCloudTask('save receipt before clearing draft', { op: 'set', path: dataPath('receipts', opId), data, operationId: opId });
   if (!saved) return;
   hideReceiptSummary();
   aiCloseOrientationReview();
-  receiptList = []; pendingReceipt = null; receiptNotes = []; recomputeNoteTotal(); receiptOpened = false; editingNotes = false; reconcileData = null; reconcileSupplierDiscount = 0; reconcileSupplierPromoItems = []; reconcilePromoMismatchItems = []; reconcileSupplierCreditClaim = null; reconcileAiAudit = null; aiScanDocuments = []; aiScanBusy = false; aiScanProgressText = ''; aiScanResponse = null; aiScanEvaluation = null; aiScanError = ''; aiScanAutoRotationNote = ''; aiScanAttemptCount = 0; receiptDupConfirmed = false; receiptLinesConfirmed = false; saveReceiptDraft();
+  receiptList = []; pendingReceipt = null; receiptNotes = []; receiptDocDate = null; recomputeNoteTotal(); receiptOpened = false; editingNotes = false; reconcileData = null; reconcileSupplierDiscount = 0; reconcileSupplierPromoItems = []; reconcilePromoMismatchItems = []; reconcileSupplierCreditClaim = null; reconcileAiAudit = null; aiScanDocuments = []; aiScanBusy = false; aiScanProgressText = ''; aiScanResponse = null; aiScanEvaluation = null; aiScanError = ''; aiScanAutoRotationNote = ''; aiScanAttemptCount = 0; receiptDupConfirmed = false; receiptLinesConfirmed = false; saveReceiptDraft();
   setView('receiptsHistory');
   const newOpen = receipts.filter(r => receiptDiscrepancyInfo(r).open).find(r => findOffsetMatch(r));
   if (newOpen) showToast('💡 זוהה קיזוז אפשרי מול תעודה קודמת — ראה בכרטיס התעודה', null, null, 3500);
@@ -11207,7 +11216,11 @@ function renderReceiptsHistory() {
   if (!receipts.length && !returns.length) { app.innerHTML = head + receiptsRangeHtml() + '<div class="text-center text-slate-400 py-10">אין תעודות עדיין</div>'; return; }
   const receiptCard = (rc) => {
     const d = new Date(rc.timestamp);
-    const dateStr = d.toLocaleDateString('he-IL') + ' · ' + d.toLocaleTimeString('he-IL', { hour: '2-digit', minute: '2-digit' });
+    const effD = rc.docDate || rc.date;
+    const lateKeyed = !!(effD && rc.date && effD !== rc.date);
+    const dateStr = lateKeyed
+      ? dDisp(effD) + ' · <span class="text-slate-400">הוקלד ' + d.toLocaleDateString('he-IL') + ' ' + d.toLocaleTimeString('he-IL', { hour: '2-digit', minute: '2-digit' }) + '</span>'
+      : d.toLocaleDateString('he-IL') + ' · ' + d.toLocaleTimeString('he-IL', { hour: '2-digit', minute: '2-digit' });
     const di = receiptDiscrepancyInfo(rc);
     const effectiveOpen = di.open;
     const legacyRecovering = !!(rc.offsetClosed && Number(rc.offsetSchemaVersion || 0) < 2);
@@ -11347,7 +11360,10 @@ function renderReceiptsHistory() {
 function receiptRangeData(from, to) {
   const fromT = from ? new Date(from + 'T00:00:00').getTime() : -Infinity;
   const toT = to ? new Date(to + 'T23:59:59').getTime() : Infinity;
-  const recs = receipts.filter(r => r.timestamp >= fromT && r.timestamp <= toT);
+  // v22: הדוח בוחר תעודות לפי תאריך הנייר — כדי שהרשימה, הדוח ודף היתרות
+  // של תנובה ידברו באותו סדר בדיוק
+  const effT = r => { const e = r.docDate || r.date; return e ? new Date(e + 'T12:00:00').getTime() : (r.timestamp || 0); };
+  const recs = receipts.filter(r => effT(r) >= fromT && effT(r) <= toT);
   const rets = returns.filter(r => r.timestamp >= fromT && r.timestamp <= toT);
   const recEx = r2(recs.reduce((a, r) => a + (Number(r.totalExVat) || 0), 0));
   const recInc = r2(recs.reduce((a, r) => a + (Number(r.totalIncVat) || 0), 0));
@@ -13529,9 +13545,9 @@ app.addEventListener('click', (e) => {
   else if (role === 'rc-scan') openReceivingScanner();
   else if (role === 'rc-crates') { openCratePicker('receipt'); }
   else if (role === 'ret-crates') { openCratePicker('returns'); }
-  else if (role === 'rc-open') { const en = readNoteEntry(receiptNotes.length === 0); if (en === false) return; if (en) receiptNotes.push(en); recomputeNoteTotal(); receiptOpened = true; receiptDupConfirmed = false; receiptLinesConfirmed = false; saveReceiptDraft(); refreshReceipt(); openReceivingScanner(); }
-  else if (role === 'rc-open-crates') { const en = readNoteEntry(receiptNotes.length === 0); if (en === false) return; if (en) receiptNotes.push(en); recomputeNoteTotal(); receiptOpened = true; receiptDupConfirmed = false; receiptLinesConfirmed = false; saveReceiptDraft(); refreshReceipt(); openCratePicker('receipt'); }
-  else if (role === 'rc-cancel') { showConfirm('ביטול תעודה', 'לבטל את התעודה הנוכחית? כל הפריטים שנסרקו יימחקו.', 'בטל תעודה', () => { receiptList = []; receiptNotes = []; recomputeNoteTotal(); receiptOpened = false; editingNotes = false; reconcileData = null; receiptDupConfirmed = false; receiptLinesConfirmed = false; saveReceiptDraft(); setView('receiving'); }); }
+  else if (role === 'rc-open') { const en = readNoteEntry(receiptNotes.length === 0); if (en === false) return; if (en) receiptNotes.push(en); receiptDocDate = (($('rcDocDate') || {}).value || '').trim() || null; recomputeNoteTotal(); receiptOpened = true; receiptDupConfirmed = false; receiptLinesConfirmed = false; saveReceiptDraft(); refreshReceipt(); openReceivingScanner(); }
+  else if (role === 'rc-open-crates') { const en = readNoteEntry(receiptNotes.length === 0); if (en === false) return; if (en) receiptNotes.push(en); receiptDocDate = (($('rcDocDate') || {}).value || '').trim() || null; recomputeNoteTotal(); receiptOpened = true; receiptDupConfirmed = false; receiptLinesConfirmed = false; saveReceiptDraft(); refreshReceipt(); openCratePicker('receipt'); }
+  else if (role === 'rc-cancel') { showConfirm('ביטול תעודה', 'לבטל את התעודה הנוכחית? כל הפריטים שנסרקו יימחקו.', 'בטל תעודה', () => { receiptList = []; receiptNotes = []; receiptDocDate = null; recomputeNoteTotal(); receiptOpened = false; editingNotes = false; reconcileData = null; receiptDupConfirmed = false; receiptLinesConfirmed = false; saveReceiptDraft(); setView('receiving'); }); }
   else if (role === 'rc-note-add') { const en = readNoteEntry(true); if (en === false) return; if (en) { receiptNotes.push(en); recomputeNoteTotal(); saveReceiptDraft(); } refreshReceipt(); const inp = $('rcNoteInput'); if (inp) inp.focus(); }
   else if (role === 'rc-note-remove') { const i = parseInt(t.dataset.idx, 10); if (i >= 0) { receiptNotes.splice(i, 1); recomputeNoteTotal(); saveReceiptDraft(); refreshReceipt(); } }
   else if (role === 'rc-notes-edit') { editingNotes = true; refreshReceipt(); }
