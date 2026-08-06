@@ -4481,9 +4481,11 @@ function promptQty(p, target, nextMode) {
   updateQtyBoxUi();
   updateQtyPackOffer();
   const again = $('qty_again');
-  if (again) again.innerHTML = qtyNextMode === 'crates'
-    ? '<i class="fa-solid fa-boxes-stacked"></i> שמור והוסף ארגז נוסף'
-    : '<i class="fa-solid fa-barcode"></i> שמור וסרוק הבא';
+  if (again) {
+    const crateFlow = qtyNextMode === 'crates';
+    again.classList.toggle('hidden', !crateFlow);
+    if (crateFlow) again.innerHTML = '<i class="fa-solid fa-boxes-stacked"></i> שמור והוסף ארגז נוסף';
+  }
   const m = $('qtyModal'); m.classList.remove('hidden'); m.classList.add('flex');
   setTimeout(() => { const i = $('qtyVal'); if (i) { i.focus(); i.select(); } }, 80);
 }
@@ -13647,7 +13649,7 @@ $('mr_cancel').addEventListener('click', closeManualReturn);
 $('mr_add').addEventListener('click', addManualReturn);
 $('mr_price').addEventListener('input', updateManualReturnTotal);
 $('mr_qty').addEventListener('input', updateManualReturnTotal);
-$('qtyVal').addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); commitQty(true); } });
+$('qtyVal').addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); commitQty(qtyNextMode === 'crates'); } });
 $('qtyVal').addEventListener('input', () => { qtyPristine = false; updateQtyPackOffer(); updateQtyBoxBreak(); });
 $('qty_plus_box').addEventListener('click', () => { const bs = qtyBoxSize(); if (!bs) return; const i = $('qtyVal'); let v = parseInt((i.value || '').replace(/[^0-9]/g, ''), 10) || 0; if (qtyPristine) v = 0; qtyPristine = false; i.value = v + bs; updateQtyPackOffer(); updateQtyBoxBreak(); buzz(12); });
 $('qty_minus_box').addEventListener('click', () => { const bs = qtyBoxSize(); if (!bs) return; const i = $('qtyVal'); let v = parseInt((i.value || '').replace(/[^0-9]/g, ''), 10) || 0; if (qtyPristine) v = 0; qtyPristine = false; i.value = Math.max(0, v - bs); updateQtyPackOffer(); updateQtyBoxBreak(); buzz(12); });
