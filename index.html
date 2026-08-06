@@ -3700,7 +3700,6 @@ function closeScanner() {
   }
   const ov = $('scanOverlay'); if (ov) ov.classList.add('hidden');
   const m = $('scanModal'); if (m) { m.classList.add('hidden'); m.classList.remove('flex'); }
-  releaseScreenWakeLock();
   scanPurpose = 'field';
 }
 
@@ -14295,7 +14294,8 @@ window.addEventListener('online', () => { setOnlineUI(); if (cloudFailedWrites.l
 window.addEventListener('offline', setOnlineUI);
 setOnlineUI();
 
-// המסך נשאר דולק רק בזמן שהמצלמה פתוחה; בשאר האפליקציה חוסכים סוללה.
+// המסך נשאר דולק כל עוד האפליקציה פתוחה ומוצגת.
+// Wake Lock משתחרר אוטומטית כשהאפליקציה עוברת לרקע ונתפס מחדש כשחוזרים.
 let screenWakeLock = null;
 async function acquireScreenWakeLock() {
   try {
@@ -14305,10 +14305,10 @@ async function acquireScreenWakeLock() {
     screenWakeLock.addEventListener('release', () => { screenWakeLock = null; });
   } catch (e) { screenWakeLock = null; }
 }
-function releaseScreenWakeLock() {
-  try { if (screenWakeLock) screenWakeLock.release(); } catch (e) {}
-  screenWakeLock = null;
-}
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'visible') acquireScreenWakeLock();
+});
+acquireScreenWakeLock();
 
 try { history.replaceState({ tnuvaView: currentView }, '', location.href); } catch (e) {}
 window.addEventListener('popstate', (e) => {
