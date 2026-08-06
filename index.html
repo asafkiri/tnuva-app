@@ -12984,11 +12984,9 @@ function roundNine(v) {
   return r2(out);
 }
 function shelfRecommendedPrice(p) {
-  const cost = Number(p && p.price);
-  if (!(cost > 0)) return null;
-  const category = pricingCatOf(p);
-  if (category) return recForProduct(p);
-  return recommendedPrice(cost, Number(signMarginPct) || 0, depositIncFor(p));
+  // מחיר מדף מומלץ קיים רק כשמוצר שויך במודע לקטגוריית רווחיות.
+  // אין ליפול לרווח ברירת המחדל של שלטי המבצע כשאין קטגוריה.
+  return recForProduct(p);
 }
 function signRecommend(s) {
   const pr = promos.find(p => p.id === s.promoId);
