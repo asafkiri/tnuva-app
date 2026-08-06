@@ -562,6 +562,7 @@ let receiptNotes = [];           // פירוט סכומי תעודות הספק 
 let receiptDocDate = null;       // v21: תאריך התעודה מהנייר — לזיכוי/חיוב שמוקלד באיחור
 let receiptDraftId = null;       // מזהה קבוע לטיוטה — מונע כפילות אחרי שמירה ממתינה/ניתוק
 let receiptHistoryFilter = 'all';
+let manualOffsetOrigin = null;
 let editingNotes = false;        // עריכת סכומי התעודות במסך פתוח
 let receiptOpened = false;       // האם נפתחה תעודה (שער לפני סריקה)
 let reconcileData = null;        // נתוני מסך השוואת תעודה
@@ -600,7 +601,7 @@ let receiptDupConfirmed = false; // אישור שמירה למרות חשד לכ
 const RECEIPT_DRAFT_KEY = 'tn_receipt_draft';
 let receivingDigitsMissTimer = null;
 let receivingDigitsMissNotified = '';
-const APP_VERSION = '30';        // מוצג בהגדרות; תואם למטמון sw.js
+const APP_VERSION = '31';        // מוצג בהגדרות; תואם למטמון sw.js
 let VAT = 0.18;                  // מע"מ — ניתן לשינוי בהגדרות (נשמר בענן)
 let signMarginPct = 25;          // % רווח מומלץ למבצעים — ניתן לשינוי בהגדרות
 let storeName = 'מיני מרקט שלום'; // שם החנות לשלטים — ניתן לשינוי בהגדרות
@@ -11132,7 +11133,8 @@ function mergeReceiptExternalOffsets(existing, additions) {
     if (!x || !(Number(x.qty) > 0) || !x.productId) return;
     const key = x.id || [x.otherId || '', x.productId, x.dir || '', Number(x.qty) || 0].join('|');
     if (seen.has(key)) return;
-    seen.add(key); out.push({ ...x, id: key, qty: r2(Number(x.qty) || 0) });
+    const qty = Number(x.qty) || 0;
+    seen.add(key); out.push({ ...x, id: key, qty: x.source === 'manual-value' ? Math.round(qty * 1000000) / 1000000 : r2(qty) });
   });
   return out;
 }
@@ -11148,7 +11150,11 @@ function consumeStoredReceiptOffsets(rc, shortItems, overItems) {
     list.filter(it => it.productId === x.productId && (Number(it.n) || 0) > 0).forEach(it => {
       if (left <= 0) return;
       const take = Math.min(Number(it.n) || 0, left);
-      if (take > 0) { it.n = r2((Number(it.n) || 0) - take); left = r2(left - take); used = r2(used + take); }
+      if (take > 0) {
+        const precise = x.source === 'manual-value';
+        const roundQty = v => precise ? Math.round(v * 1000000) / 1000000 : r2(v);
+        it.n = roundQty((Number(it.n) || 0) - take); left = roundQty(left - take); used = roundQty(used + take);
+      }
     });
     if (used > 0) applied.push({ ...x, id: key, qty: used });
   });
@@ -11283,6 +11289,60 @@ function receiptOffsets(rc) {
   }
   (di.overItems || []).forEach(l => out.push({ productId: l.productId, name: l.name, d: -(Number(l.n) || 0), price: Number(l.price) || 0 }));
   return out;
+}
+function openOffsetSides() {
+  const out = [];
+  receipts.forEach(rc => {
+    receiptOffsets(rc).forEach(x => {
+      const qty = Math.abs(Number(x.d) || 0), price = Number(x.price) || 0;
+      if (!(qty > 0) || !(price > 0) || !x.productId) return;
+      out.push({ receipt: rc, receiptId: rc.id, productId: x.productId, name: x.name || '', dir: x.d > 0 ? 'short' : 'over', qty, price, value: r2(qty * price) });
+    });
+  });
+  return out;
+}
+function offsetSideDate(side) { return storedReceiptDate(side && side.receipt) || todayStr(); }
+function offsetSideQtyText(side) {
+  const q = Number(side && side.qty) || 0;
+  return Math.abs(q - Math.round(q)) < 0.001 ? Math.round(q) + ' יח׳' : 'יתרה בשווי ₪' + fmtMoney((Number(side && side.value) || 0));
+}
+function manualOffsetCandidates(origin) {
+  if (!origin) return [];
+  return openOffsetSides().filter(x => x.dir !== origin.dir && !(x.receiptId === origin.receiptId && x.productId === origin.productId && x.dir === origin.dir)).map(x => {
+    const amount = r2(Math.min(Number(origin.value) || 0, Number(x.value) || 0));
+    const sameProduct = origin.productId === x.productId;
+    const samePrice = Math.round(origin.price * 100) === Math.round(x.price * 100);
+    const sameReceipt = origin.receiptId === x.receiptId;
+    return { ...x, amount, sameProduct, samePrice, sameReceipt, rank: (sameProduct ? 0 : (samePrice ? 1 : 2)) + (sameReceipt ? 0 : 0.1) };
+  }).filter(x => x.amount > 0).sort((a, b) => a.rank - b.rank || offsetSideDate(b).localeCompare(offsetSideDate(a)) || a.name.localeCompare(b.name, 'he'));
+}
+function findOpenOffsetSide(receiptId, productId, dir) {
+  return openOffsetSides().find(x => x.receiptId === receiptId && x.productId === productId && x.dir === dir) || null;
+}
+function manualOffsetGroupId(shortSide, overSide) {
+  return 'xov3|' + Date.now() + '|' + Math.random().toString(36).slice(2, 8) + '|' + shortSide.receiptId + '|' + overSide.receiptId;
+}
+function manualOffsetEntry(groupId, own, other, amount, qty) {
+  return {
+    id: groupId + '|' + own.dir + '|' + own.receiptId + '|' + own.productId,
+    groupId, otherId: other.receiptId, productId: own.productId, name: own.name,
+    qty: Math.round((Number(qty) || 0) * 1000000) / 1000000, dir: own.dir, at: Date.now(), source: 'manual-value', amountEx: r2(amount),
+    shortName: own.dir === 'short' ? own.name : other.name,
+    overName: own.dir === 'over' ? own.name : other.name,
+    shortProductId: own.dir === 'short' ? own.productId : other.productId,
+    overProductId: own.dir === 'over' ? own.productId : other.productId
+  };
+}
+function manualOffsetSummary(entry) {
+  return 'קיזוז ידני: ' + htmlEscape(entry.shortName || '') + ' ⇄ ' + htmlEscape(entry.overName || '') + ' · ₪' + fmtMoney(entry.amountEx || 0);
+}
+function receiptDiffRowHtml(rc, item, dir) {
+  const side = { qty: Number(item.n) || 0, price: Number(item.price) || 0, value: lineTotalFromUnit(item.price, item.n) };
+  const isShort = dir === 'short';
+  return '<div class="flex items-center justify-between gap-2 py-1.5 ' + (isShort ? 'text-rose-700' : 'text-amber-700') + '">' +
+    '<div class="min-w-0"><div class="font-bold truncate">' + (isShort ? 'חסר: ' : 'עודף: ') + htmlEscape(item.name) + '</div><div class="text-[11px] opacity-80">' + offsetSideQtyText(side) + ' · ₪' + fmtMoney(side.value) + '</div></div>' +
+    '<button data-role="rc-offset-choose" data-id="' + htmlEscape(rc.id) + '" data-product="' + htmlEscape(item.productId) + '" data-dir="' + dir + '" class="btn-tap shrink-0 bg-white border ' + (isShort ? 'border-rose-300 text-rose-700' : 'border-amber-300 text-amber-700') + ' rounded-lg px-2.5 py-2 text-[11px] font-black"><i class="fa-solid fa-scale-balanced"></i> מצא קיזוז</button>' +
+  '</div>';
 }
 function findOffsetMatch(rc, preferredOtherId, preferredProductId, preferredOtherProductId) {
   if (!rc) return null;
@@ -11453,6 +11513,102 @@ async function applyOffset(rcId, otherId, productId, otherProductId) {
   showToast(stillOpen ? 'הקיזוז לפריט אושר — נשאר הפרש פתוח לטיפול' : 'הקיזוז לפריט אושר — שתי התעודות מאוזנות', null, null, 3200);
   if (currentView === 'receiptsHistory') renderReceiptsHistory();
 }
+function closeManualOffsetPicker() {
+  const old = document.getElementById('manualOffsetOverlay');
+  if (old) old.remove();
+  manualOffsetOrigin = null;
+}
+function manualOffsetCandidateTag(c) {
+  if (c.sameProduct) return '<span class="bg-emerald-100 text-emerald-800 px-2 py-0.5 rounded-full">אותו מוצר</span>';
+  if (c.samePrice) return '<span class="bg-blue-100 text-blue-800 px-2 py-0.5 rounded-full">אותו מחיר</span>';
+  return '<span class="bg-amber-100 text-amber-800 px-2 py-0.5 rounded-full">קיזוז לפי שווי</span>';
+}
+function openManualOffsetPicker(receiptId, productId, dir) {
+  closeManualOffsetPicker();
+  const origin = findOpenOffsetSide(receiptId, productId, dir);
+  if (!origin) { showToast('הפער הזה כבר נסגר או השתנה', null, null, 2600); return; }
+  manualOffsetOrigin = origin;
+  const candidates = manualOffsetCandidates(origin);
+  const ov = document.createElement('div');
+  ov.id = 'manualOffsetOverlay';
+  ov.className = 'fixed inset-0 bg-slate-900/65 backdrop-blur-sm z-[125] flex items-end sm:items-center justify-center p-0 sm:p-4';
+  ov.setAttribute('role', 'dialog'); ov.setAttribute('aria-modal', 'true'); ov.setAttribute('aria-label', 'בחירת קיזוז');
+  const originLabel = origin.dir === 'short' ? 'חוסר' : 'עודף';
+  const oppositeLabel = origin.dir === 'short' ? 'עודפים' : 'חוסרים';
+  ov.innerHTML = '<div class="bg-white w-full max-w-md rounded-t-3xl sm:rounded-3xl shadow-2xl max-h-[88vh] flex flex-col overflow-hidden">' +
+    '<div class="p-4 border-b border-slate-100 flex items-center gap-3"><div class="w-11 h-11 rounded-2xl bg-indigo-100 text-indigo-700 flex items-center justify-center"><i class="fa-solid fa-scale-balanced"></i></div><div class="flex-1 min-w-0"><div class="font-black text-slate-900 text-lg">בחר קיזוז</div><div class="text-xs text-slate-500 font-bold">מוצגים רק ' + oppositeLabel + ' פתוחים שאפשר לבחור</div></div><button data-mo-close class="btn-tap w-11 h-11 rounded-xl bg-slate-100 text-slate-600" aria-label="סגור"><i class="fa-solid fa-xmark"></i></button></div>' +
+    '<div class="p-4 overflow-y-auto"><div class="rounded-2xl ' + (origin.dir === 'short' ? 'bg-rose-50 border-rose-200' : 'bg-amber-50 border-amber-200') + ' border p-3 mb-3"><div class="text-[11px] font-black uppercase text-slate-500">הפער שבחרת</div><div class="font-black text-slate-900 mt-0.5">' + originLabel + ': ' + htmlEscape(origin.name) + '</div><div class="text-xs font-bold text-slate-600">' + offsetSideQtyText(origin) + ' · ₪' + fmtMoney(origin.value) + ' · תעודה ' + dDisp(offsetSideDate(origin)) + '</div></div>' +
+    (candidates.length ? '<div class="space-y-2">' + candidates.map((c, i) => '<button data-mo-pick="' + i + '" class="btn-tap w-full text-right border-2 border-slate-200 hover:border-indigo-400 rounded-2xl p-3 bg-white"><div class="flex items-start justify-between gap-2"><div class="min-w-0"><div class="font-black text-slate-900 truncate">' + htmlEscape(c.name) + '</div><div class="text-xs font-bold text-slate-500 mt-0.5">' + offsetSideQtyText(c) + ' · תעודה ' + dDisp(offsetSideDate(c)) + (c.sameReceipt ? ' · אותה תעודה' : '') + '</div></div><div class="shrink-0 text-left"><div class="font-black text-indigo-700">קיזוז ₪' + fmtMoney(c.amount) + '</div><div class="text-[10px] font-black mt-1">' + manualOffsetCandidateTag(c) + '</div></div></div></button>').join('') + '</div>' : '<div class="text-center py-10 text-slate-400"><i class="fa-solid fa-scale-unbalanced text-3xl mb-2"></i><div class="font-black">אין כרגע ' + oppositeLabel + ' פתוחים לקיזוז</div><div class="text-xs font-bold mt-1">לא מוצגים כאן מוצרים רגילים מהתעודות.</div></div>') +
+    '</div></div>';
+  ov.addEventListener('click', e => {
+    if (e.target === ov || e.target.closest('[data-mo-close]')) { closeManualOffsetPicker(); return; }
+    const b = e.target.closest('[data-mo-pick]'); if (!b) return;
+    const c = candidates[Number(b.dataset.moPick)]; if (c) renderManualOffsetConfirm(origin, c, ov);
+  });
+  document.body.appendChild(ov);
+}
+function renderManualOffsetConfirm(origin, candidate, ov) {
+  const shortSide = origin.dir === 'short' ? origin : candidate;
+  const overSide = origin.dir === 'over' ? origin : candidate;
+  const maxAmount = r2(Math.min(shortSide.value, overSide.value));
+  const shortBefore = receiptPayableBaseEx(shortSide.receipt);
+  ov.firstElementChild.innerHTML = '<div class="p-4 border-b border-slate-100 flex items-center gap-3"><button data-mo-back class="btn-tap w-11 h-11 rounded-xl bg-slate-100 text-slate-600" aria-label="חזרה"><i class="fa-solid fa-arrow-right"></i></button><div class="flex-1"><div class="font-black text-slate-900 text-lg">אישור קיזוז מכוון</div><div class="text-xs text-slate-500 font-bold">בדוק את ההשפעה לפני האישור</div></div><button data-mo-close class="btn-tap w-11 h-11 rounded-xl bg-slate-100 text-slate-600"><i class="fa-solid fa-xmark"></i></button></div>' +
+    '<div class="p-4 overflow-y-auto"><div class="grid grid-cols-2 gap-2"><div class="bg-rose-50 border border-rose-200 rounded-2xl p-3"><div class="text-[11px] font-black text-rose-600">חוסר</div><div class="font-black text-slate-900 truncate">' + htmlEscape(shortSide.name) + '</div><div class="text-xs font-bold text-slate-600">₪' + fmtMoney(shortSide.value) + '</div></div><div class="bg-amber-50 border border-amber-200 rounded-2xl p-3"><div class="text-[11px] font-black text-amber-600">עודף</div><div class="font-black text-slate-900 truncate">' + htmlEscape(overSide.name) + '</div><div class="text-xs font-bold text-slate-600">₪' + fmtMoney(overSide.value) + '</div></div></div>' +
+    '<div class="mt-3 bg-indigo-50 border-2 border-indigo-200 rounded-2xl p-4"><label class="block text-xs font-black text-indigo-900 mb-1">סכום לקיזוז ללא מע״מ — עד ₪' + fmtMoney(maxAmount) + '</label><div class="flex items-center gap-2 bg-white border-2 border-indigo-200 rounded-xl px-3"><span class="font-black text-slate-400">₪</span><input id="manualOffsetAmount" type="text" inputmode="decimal" value="' + priceFieldVal(maxAmount) + '" class="w-full h-12 text-center text-xl font-black outline-none"></div></div>' +
+    '<div id="manualOffsetImpact" class="mt-3"></div>' +
+    '<div class="mt-3 bg-amber-50 border border-amber-200 rounded-xl p-3 text-xs font-bold text-amber-900"><i class="fa-solid fa-triangle-exclamation"></i> העודף לא חויב בתעודה. באישור אתה מחשיב אותו כהשלמה לחוסר ומוסיף את שווי הקיזוז לתשלום. ללא אישור החוק הרגיל נשאר ללא שינוי.</div>' +
+    '<button data-mo-confirm class="btn-tap mt-3 w-full bg-indigo-600 text-white rounded-2xl py-3.5 font-black text-base"><i class="fa-solid fa-check"></i> אשר קיזוז</button></div>';
+  const input = ov.querySelector('#manualOffsetAmount'), impact = ov.querySelector('#manualOffsetImpact'), confirmBtn = ov.querySelector('[data-mo-confirm]');
+  const refresh = () => {
+    const amount = r2(parseFloat(String(input.value || '').replace(',', '.')) || 0);
+    const valid = amount > 0 && amount <= maxAmount + 0.01;
+    confirmBtn.disabled = !valid; confirmBtn.classList.toggle('opacity-40', !valid);
+    impact.innerHTML = valid ? '<div class="grid grid-cols-3 gap-1 text-center"><div class="bg-slate-50 rounded-xl p-2"><div class="text-[10px] font-bold text-slate-400">לפני</div><div class="font-black">₪' + fmtMoney(shortBefore) + '</div></div><div class="bg-indigo-50 rounded-xl p-2"><div class="text-[10px] font-bold text-indigo-500">יתווסף</div><div class="font-black text-indigo-700">+₪' + fmtMoney(amount) + '</div></div><div class="bg-emerald-50 rounded-xl p-2"><div class="text-[10px] font-bold text-emerald-600">אחרי</div><div class="font-black text-emerald-800">₪' + fmtMoney(r2(shortBefore + amount)) + '</div></div></div>' : '<div class="text-xs font-black text-rose-600">הזן סכום בין ₪0.01 ל־₪' + fmtMoney(maxAmount) + '</div>';
+  };
+  input.addEventListener('input', refresh); refresh();
+  ov.querySelector('[data-mo-back]').addEventListener('click', () => openManualOffsetPicker(origin.receiptId, origin.productId, origin.dir));
+  ov.querySelector('[data-mo-close]').addEventListener('click', closeManualOffsetPicker);
+  confirmBtn.addEventListener('click', async () => {
+    const amount = r2(parseFloat(String(input.value || '').replace(',', '.')) || 0);
+    confirmBtn.disabled = true;
+    await applyManualValueOffset(shortSide, overSide, amount);
+  });
+}
+async function applyManualValueOffset(shortSide, overSide, requestedAmount) {
+  const currentShort = findOpenOffsetSide(shortSide.receiptId, shortSide.productId, 'short');
+  const currentOver = findOpenOffsetSide(overSide.receiptId, overSide.productId, 'over');
+  if (!currentShort || !currentOver) { closeManualOffsetPicker(); showToast('אחד הפערים כבר השתנה — פתח את הבחירה מחדש', null, null, 3000); if (currentView === 'receiptsHistory') renderReceiptsHistory(); return; }
+  const maxAmount = r2(Math.min(currentShort.value, currentOver.value));
+  const amount = r2(Number(requestedAmount) || 0);
+  if (!(amount > 0) || amount > maxAmount + 0.01) { showToast('סכום הקיזוז כבר אינו זמין', null, null, 2600); return; }
+  const shortQty = amount / currentShort.price, overQty = amount / currentOver.price;
+  const groupId = manualOffsetGroupId(currentShort, currentOver);
+  const shortEntry = manualOffsetEntry(groupId, currentShort, currentOver, amount, shortQty);
+  const overEntry = manualOffsetEntry(groupId, currentOver, currentShort, amount, overQty);
+  const shortRc = currentShort.receipt, overRc = currentOver.receipt;
+  const sameReceipt = shortRc.id === overRc.id;
+  const shortOffsets = mergeReceiptExternalOffsets(shortRc.externalOffsets, [shortEntry].concat(sameReceipt ? [overEntry] : []));
+  const overOffsets = sameReceipt ? shortOffsets : mergeReceiptExternalOffsets(overRc.externalOffsets, [overEntry]);
+  const writes = sameReceipt
+    ? [{ op: 'update', path: dataPath('receipts', shortRc.id), data: { externalOffsets: shortOffsets, offsetClosed: false, offsetSchemaVersion: 3, offsetAt: Date.now() } }]
+    : [{ op: 'update', path: dataPath('receipts', shortRc.id), data: { externalOffsets: shortOffsets, offsetClosed: false, offsetSchemaVersion: 3, offsetAt: Date.now() } }, { op: 'update', path: dataPath('receipts', overRc.id), data: { externalOffsets: overOffsets, offsetClosed: false, offsetSchemaVersion: 3, offsetAt: Date.now() } }];
+  const saved = await runCloudTask('apply manual value offset', { op: 'batch', writes, operationId: groupId });
+  if (!saved) return;
+  shortRc.externalOffsets = shortOffsets; overRc.externalOffsets = overOffsets;
+  closeManualOffsetPicker(); buzz(24);
+  showToast('הקיזוז אושר — ₪' + fmtMoney(amount) + ' נוספו לתשלום במודע', null, null, 3400);
+  if (currentView === 'receiptsHistory') renderReceiptsHistory();
+}
+async function cancelReceiptOffset(receiptId, groupId) {
+  const affected = receipts.filter(rc => (rc.externalOffsets || []).some(x => (x.groupId || x.id) === groupId));
+  if (!affected.length) { showToast('הקיזוז כבר בוטל', null, null, 2200); return; }
+  const updates = affected.map(rc => ({ rc, offsets: (rc.externalOffsets || []).filter(x => (x.groupId || x.id) !== groupId) }));
+  const saved = await runCloudTask('cancel receipt offset', { op: 'batch', writes: updates.map(x => ({ op: 'update', path: dataPath('receipts', x.rc.id), data: { externalOffsets: x.offsets, offsetClosed: false, offsetSchemaVersion: 3 } })), operationId: makeOperationId('offset_cancel') });
+  if (!saved) return;
+  updates.forEach(x => { x.rc.externalOffsets = x.offsets; });
+  buzz(16); showToast('הקיזוז בוטל — חוק החוסר והעודף הרגיל חזר לפעול', null, null, 3200);
+  if (currentView === 'receiptsHistory') renderReceiptsHistory();
+}
 function renderReceiptsHistory() {
   const head = '<div class="px-1 py-1 mb-2"><h2 class="font-black text-2xl text-slate-800">תעודות קליטה</h2><div class="text-xs text-slate-500 font-bold">פתח קודם את מה שדורש טיפול</div></div>';
   const filterBtn = (key, label) => '<button data-role="rc-history-filter" data-filter="' + key + '" class="btn-tap px-3 py-2 rounded-lg text-xs font-black whitespace-nowrap ' + (receiptHistoryFilter === key ? 'bg-blue-600 text-white' : 'bg-white text-slate-600 border border-slate-200') + '">' + label + '</button>';
@@ -11532,8 +11688,8 @@ function renderReceiptsHistory() {
         (rc.noteTotalInc != null ? '<div class="text-[11px] text-slate-500 font-bold mt-1 px-1"><i class="fa-solid fa-file-invoice"></i> ' + (rc.noteParts && rc.noteParts.length > 1 ? rc.noteParts.length + ' תעודות ספק: ' + rc.noteParts.map(x => '₪' + fmtMoney(normNote(x).amount)).join(' + ') + ' = ₪' + fmtMoney(rc.noteTotalInc) : 'תעודת ספק: ₪' + fmtMoney(rc.noteTotalInc)) + '</div>' : '') +
         (effectiveOpen ? '<div class="mt-2 bg-rose-50 border border-rose-200 rounded-xl p-2.5 text-xs">' +
           '<div class="font-black text-rose-700 mb-1"><i class="fa-solid fa-triangle-exclamation"></i> הפרשים מול התעודה</div>' +
-          di.shortItems.map(s => '<div class="flex justify-between text-rose-600"><span>חסר: ' + htmlEscape(s.name) + '</span><span>' + s.n + ' יח׳</span></div>').join('') +
-          di.overItems.map(s => '<div class="flex justify-between text-amber-600"><span>עודף: ' + htmlEscape(s.name) + '</span><span>' + s.n + ' יח׳</span></div>').join('') +
+          di.shortItems.map(s => receiptDiffRowHtml(rc, s, 'short')).join('') +
+          di.overItems.map(s => receiptDiffRowHtml(rc, s, 'over')).join('') +
           (di.unresolvedUnitsGap ? '<div class="flex justify-between text-rose-700 font-black"><span>פער יחידות שטרם שויך</span><span>' + Math.abs(di.unresolvedUnitsGap) + ' (' + (di.unresolvedUnitsGap > 0 ? 'חסרות' : 'עודפות') + ')</span></div>' : '') +
           (di.amountGapOpen ? '<div class="flex justify-between text-rose-700 font-black"><span>פער סכום שטרם שויך</span><span>₪' + fmtMoney(Math.abs(di.unresolvedAmountGap)) + '</span></div>' : '') +
           (rc.noteTotalInc != null ? '<div class="mt-1 pt-1 border-t border-rose-200 text-rose-700/80">תעודת ספק ₪' + fmtMoney(rc.noteTotalInc) + (rc.noteParts && rc.noteParts.length > 1 ? ' (' + rc.noteParts.map(x => '₪' + fmtMoney(normNote(x).amount)).join(' + ') + ')' : '') + ' · לתשלום ₪' + fmtMoney(payableEx) + '</div>' : '') +
@@ -11566,7 +11722,11 @@ function renderReceiptsHistory() {
         })() +
         supplierCreditClaimCardHtml(rc) +
         (((rc.supplierPromoMismatchItems || []).length) ? '<div class="mt-2 bg-amber-50 border border-amber-200 rounded-xl p-2.5 text-xs text-amber-800"><div class="font-black mb-1"><i class="fa-solid fa-triangle-exclamation"></i> מבצע מוגדר במערכת אך לא הופיע אצל הספק</div><div class="font-bold">' + (rc.supplierPromoMismatchItems || []).map(x => htmlEscape(x.name)).join(' · ') + '</div></div>' : '') +
-        ((di.externalOffsets || []).length ? '<div class="mt-2 bg-emerald-50 border border-emerald-200 rounded-xl p-2.5 text-xs text-emerald-800"><div class="font-black mb-1"><i class="fa-solid fa-scale-balanced"></i> קיזוזים שאושרו מול תעודה אחרת</div>' + (di.externalOffsets || []).map(o => '<div class="font-bold">' + (Number(o.qty) || 0) + ' × ' + htmlEscape(o.name || '') + ' — קוזז</div>').join('') + (effectiveOpen ? '<div class="mt-1 pt-1 border-t border-emerald-200 text-rose-700 font-black"><i class="fa-solid fa-triangle-exclamation"></i> נשארו הפרשים נוספים — התעודה עדיין פתוחה</div>' : '<div class="mt-1 font-black">כל ההפרשים בתעודה הזאת טופלו ✓</div>') + '</div>' : '') +
+        ((rc.externalOffsets || []).length ? (function () {
+          const groups = [], seen = new Set();
+          (rc.externalOffsets || []).forEach(o => { const key = o.groupId || o.id; if (!key || seen.has(key)) return; seen.add(key); groups.push(o); });
+          return '<div class="mt-2 bg-emerald-50 border border-emerald-200 rounded-xl p-2.5 text-xs text-emerald-800"><div class="font-black mb-1"><i class="fa-solid fa-scale-balanced"></i> קיזוזים שאושרו במודע</div>' + groups.map(o => '<div class="flex items-center justify-between gap-2 py-1 border-b border-emerald-100 last:border-0"><div class="font-bold min-w-0">' + (o.source === 'manual-value' ? manualOffsetSummary(o) : ((Number(o.qty) || 0) + ' × ' + htmlEscape(o.name || '') + ' — קוזז')) + '</div><button data-role="rc-offset-cancel" data-id="' + htmlEscape(rc.id) + '" data-group="' + htmlEscape(o.groupId || o.id) + '" class="btn-tap shrink-0 bg-white border border-emerald-300 text-rose-600 rounded-lg px-2 py-1 text-[10px] font-black">בטל</button></div>').join('') + (effectiveOpen ? '<div class="mt-1 pt-1 border-t border-emerald-200 text-rose-700 font-black"><i class="fa-solid fa-triangle-exclamation"></i> נשארו הפרשים נוספים — התעודה עדיין פתוחה</div>' : '<div class="mt-1 font-black">כל ההפרשים בתעודה הזאת טופלו ✓</div>') + '</div>';
+        })() : '') +
         (legacyRecovering ? '<div class="mt-2 bg-amber-50 border border-amber-200 rounded-xl p-2.5 text-xs font-black text-amber-800"><i class="fa-solid fa-rotate"></i> משחזר קיזוז ישן ובודק מחדש את שאר החוסרים…</div>' : '') +
         (legacyRecovering ? '' : (function () { const m = findOffsetMatch(rc); if (!m) return ''; const od = new Date(m.other.timestamp).toLocaleDateString('he-IL');
             return '<div class="mt-2 bg-indigo-50 border-2 border-indigo-200 rounded-xl p-3">' +
@@ -14042,6 +14202,8 @@ app.addEventListener('click', (e) => {
   else if (role === 'rc-recon-cancel') { resetAiInvoiceScan(); reconcileData = null; setView('receiving'); }
   else if (role === 'rc-recon-save') saveReconciledReceipt();
   else if (role === 'rc-fix-open') openReceiptFix(id);
+  else if (role === 'rc-offset-choose') openManualOffsetPicker(id, t.dataset.product, t.dataset.dir);
+  else if (role === 'rc-offset-cancel') { const groupId = t.dataset.group; showConfirm('ביטול קיזוז', 'לבטל את הקיזוז המאושר? הסכום יוסר מהתשלום והחוסר והעודף יחזרו להיות פתוחים לפי החוק הרגיל.', 'בטל קיזוז', () => cancelReceiptOffset(id, groupId)); }
   else if (role === 'rc-offset') { const otherId = t.dataset.other, productId = t.dataset.product, otherProductId = t.dataset.otherProduct || productId; const rc = receipts.find(x => x.id === id); const other = receipts.find(x => x.id === otherId); const m = rc ? findOffsetMatch(rc, otherId, productId, otherProductId) : null; if (m && other) showConfirm('אישור קיזוז לפריט', (m.byPrice ? m.qty + ' × ' + m.name + ' מתקזזים מול ' + m.qty + ' × ' + m.otherName + ' (אותו מחיר ₪' + fmtMoney(m.price) + ') בתעודת ' : m.qty + ' × ' + m.name + ' מתקזזים מול תעודת ') + new Date(other.timestamp).toLocaleDateString('he-IL') + '. הקיזוז יחול רק על הפריט הזה; כל חוסר או עודף אחר יישאר פתוח לטיפול.', 'אשר קיזוז לפריט', () => applyOffset(id, otherId, productId, otherProductId)); }
   else if (role === 'rc-credit-verify') setReceiptSupplierCreditStatus(id, 'verified');
   else if (role === 'rc-credit-defer') showConfirm('העברת זיכוי לחודש הבא', 'הספק אמר שהזיכוי לא יופיע החודש אלא בחודש הבא? הדרישה לא תיעלם — היא תופיע באימות מרכזת של חודש היעד.', 'העבר לחודש הבא', () => setReceiptSupplierCreditStatus(id, 'deferred'));
