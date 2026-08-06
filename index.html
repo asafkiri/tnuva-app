@@ -566,6 +566,7 @@ let manualOffsetOrigin = null;
 let editingNotes = false;        // עריכת סכומי התעודות במסך פתוח
 let receiptOpened = false;       // האם נפתחה תעודה (שער לפני סריקה)
 let reconcileData = null;        // נתוני מסך השוואת תעודה
+let reconcileDetectiveRoundingGap = null; // סטיית עיגול זעירה שאושרה בבחירת פתרון של הבלש
 // v178: האם באמת הוזנו נתוני נייר (הקלדה ידנית / החלת סריקת AI) על noteQty.
 // עד שזה קורה, noteQty הוא עותק של מה שנסרק — והכותרת חייבת לומר את זה.
 let reconcilePaperEntered = false;
@@ -4897,7 +4898,7 @@ function openReconcile() {
   receivingDepositLines().forEach(dep => {
     reconcileData.push({ productId: 'deposit-recv-' + dep.product.id, name: dep.name, barcode: '', received: dep.qty, noteQty: dep.qty, price: dep.unit, basePrice: dep.unit, promoPct: 0, promoOn: false, checked: true, isDeposit: true });
   });
-  detectiveOpen = false; noteCheckOpen = false; noteCheckAuto = false; noteCheckRows = []; noteCheckRes = null; reconcileCheckMode = false; noteCheckQtyMode = false; rcStep = null; noteCheckForceQty = false; ncPromoResult = null; reconcileSupplierDiscount = 0; reconcileSupplierPromoItems = []; reconcilePromoMismatchItems = []; reconcileSupplierCreditClaim = null; manualSearchTerm = ''; manualAssigned = []; manualSearchOpen = false; manualPromoMarks = {}; reconcilePaperEntered = false;
+  detectiveOpen = false; noteCheckOpen = false; noteCheckAuto = false; noteCheckRows = []; noteCheckRes = null; reconcileCheckMode = false; noteCheckQtyMode = false; rcStep = null; noteCheckForceQty = false; ncPromoResult = null; reconcileSupplierDiscount = 0; reconcileSupplierPromoItems = []; reconcilePromoMismatchItems = []; reconcileSupplierCreditClaim = null; manualSearchTerm = ''; manualAssigned = []; manualSearchOpen = false; manualPromoMarks = {}; reconcilePaperEntered = false; reconcileDetectiveRoundingGap = null;
   resetAiInvoiceScan();
   resetDetectiveQuestions();
   setView('reconcile');
@@ -4910,7 +4911,9 @@ function reconcileGap() { return r2((receiptNoteTotal || 0) + (Number(reconcileS
 function reconcileUnitsBalanced() { const g = reconcileUnitsGap(); return g == null || g === 0; }
 function reconcileMoneyBalanced() {
   const exactUnitAnchor = receiptNoteUnits != null && reconcileUnitsGap() === 0;
-  return receiptMoneyMatches(reconcileNoteInc(), (receiptNoteTotal || 0) + (Number(reconcileSupplierDiscount) || 0), exactUnitAnchor);
+  if (receiptMoneyMatches(reconcileNoteInc(), (receiptNoteTotal || 0) + (Number(reconcileSupplierDiscount) || 0), exactUnitAnchor)) return true;
+  const gap = reconcileGap();
+  return reconcileDetectiveRoundingGap != null && Math.abs(gap) <= 0.05 && Math.abs(gap - reconcileDetectiveRoundingGap) < 0.001;
 }
 function reconcileIsBalanced() { return reconcileMoneyBalanced() && reconcileUnitsBalanced(); }
 function reconcileAssigned() {
@@ -5798,10 +5801,19 @@ function detectiveSolutionsHtml(result, opts) {
   const rows = result.solutions.map((sol, si) => {
     const comps = sol.components.map((c, ci) => {
       const dir = c.delta > 0 ? 'חסר' : 'עודף';
-      const optionUi = c.allocations.length === 1
-        ? '<div class="font-black text-slate-800 text-sm">' + detectiveAllocationLabel(c.allocations[0]) + '</div>'
-        : '<select id="' + selectPrefix + si + '_' + ci + '" class="w-full h-11 mt-1 px-2 border-2 border-indigo-200 rounded-xl bg-white font-black text-sm text-slate-700">' +
-          c.allocations.map((a, ai) => '<option value="' + ai + '">' + detectiveAllocationLabel(a) + '</option>').join('') + '</select>';
+      const indexed = c.allocations.map((a, ai) => ({ a, ai }));
+      const productsAtPrice = indexed.filter(x => x.a.moves.length === 1);
+      const rareCombos = indexed.filter(x => x.a.moves.length > 1).slice(0, 4);
+      const mainId = selectPrefix + si + '_' + ci;
+      const rareId = mainId + '_rare';
+      const productUi = productsAtPrice.length === 1
+        ? '<div class="font-black text-slate-800 text-sm">' + detectiveAllocationLabel(productsAtPrice[0].a) + '</div><input id="' + mainId + '" type="hidden" value="' + productsAtPrice[0].ai + '">'
+        : '<div class="text-[10px] font-black text-indigo-700 mt-1">אותו מחיר — בחר את המוצר המדויק</div><select id="' + mainId + '" data-role="detective-main-choice" data-peer="' + rareId + '" class="w-full h-11 mt-1 px-2 border-2 border-indigo-200 rounded-xl bg-white font-black text-sm text-slate-700">' +
+          productsAtPrice.map(x => '<option value="' + x.ai + '">' + detectiveAllocationLabel(x.a) + '</option>').join('') + '</select>';
+      const rareUi = rareCombos.length
+        ? '<details class="mt-2 rounded-xl border border-slate-200 bg-white"><summary class="px-2.5 py-2 text-[11px] font-black text-slate-500">צירופים נדירים · הצג עד 4</summary><div class="px-2.5 pb-2"><select id="' + rareId + '" data-role="detective-rare-choice" class="w-full h-11 px-2 border-2 border-slate-200 rounded-xl bg-white font-bold text-xs text-slate-700"><option value="">בחר צירוף נדיר…</option>' + rareCombos.map(x => '<option value="' + x.ai + '">' + detectiveAllocationLabel(x.a) + '</option>').join('') + '</select></div></details>'
+        : '';
+      const optionUi = productUi + rareUi;
       const boxTag = c.allocations.every(a => a.moves.every(m => m.bs > 0)) ? ' · 📦 כפולות ארגז' : '';
       return '<div class="rounded-xl bg-indigo-50/70 border border-indigo-100 p-2.5 mt-1.5">' +
         '<div class="text-xs font-black ' + (c.delta > 0 ? 'text-rose-700' : 'text-amber-700') + '">' + dir + ' ' + Math.abs(c.delta) + ' יח׳ במחיר ' + detectiveComponentPriceLabel(c) + boxTag + '</div>' + optionUi +
@@ -5830,7 +5842,9 @@ function detectiveApplyResolvedResult(result, i, selectPrefix) {
   const sol = result.solutions[i], chosen = [], totals = new Map(), moveInfo = new Map();
   sol.components.forEach((c, ci) => {
     const sel = $(selectPrefix + i + '_' + ci);
-    const ai = sel ? Math.max(0, parseInt(sel.value, 10) || 0) : 0;
+    const rareSel = $(selectPrefix + i + '_' + ci + '_rare');
+    const rareValue = rareSel && rareSel.value !== '' ? parseInt(rareSel.value, 10) : null;
+    const ai = rareValue != null && isFinite(rareValue) ? Math.max(0, rareValue) : (sel ? Math.max(0, parseInt(sel.value, 10) || 0) : 0);
     const alloc = c.allocations[ai] || c.allocations[0];
     if (alloc) alloc.moves.forEach(m => {
       chosen.push(m);
@@ -5876,6 +5890,8 @@ function detectiveApplyResolvedResult(result, i, selectPrefix) {
       }
     }
   });
+  const roundingGap = reconcileGap();
+  reconcileDetectiveRoundingGap = Math.abs(roundingGap) <= 0.05 ? roundingGap : null;
   return chosen;
 }
 function detectiveApplySolution(i) {
@@ -10674,11 +10690,11 @@ function reconcileAddItem(pid) {
 function reconcileSetNoteLive(productId, val) {
   const l = (reconcileData || []).find(x => x.productId === productId); if (!l) return;
   let q = parseInt((val || '').toString().replace(/[^0-9]/g, ''), 10); if (isNaN(q) || q < 0) q = 0;
-  l.noteQty = q; reconcilePaperEntered = true; refreshReconcileHeader();
+  l.noteQty = q; reconcilePaperEntered = true; reconcileDetectiveRoundingGap = null; refreshReconcileHeader();
 }
 function reconcileStepNote(productId, delta) {
   const l = (reconcileData || []).find(x => x.productId === productId); if (!l) return;
-  l.noteQty = Math.max(0, (Number(l.noteQty) || 0) + delta); refreshReconcile();
+  l.noteQty = Math.max(0, (Number(l.noteQty) || 0) + delta); reconcileDetectiveRoundingGap = null; refreshReconcile();
 }
 function reconcileStepRecv(productId, delta) {
   const l = (reconcileData || []).find(x => x.productId === productId); if (!l) return;
@@ -10691,7 +10707,7 @@ function reconcileSetRecvLive(productId, val) {
 }
 function reconcileSetPriceLive(productId, val) {
   const l = (reconcileData || []).find(x => x.productId === productId); if (!l) return;
-  const n = parseFloat((val || '').toString().replace(/[^0-9.]/g, '')); l.price = isFinite(n) ? n : 0; refreshReconcileHeader();
+  const n = parseFloat((val || '').toString().replace(/[^0-9.]/g, '')); l.price = isFinite(n) ? n : 0; reconcileDetectiveRoundingGap = null; refreshReconcileHeader();
 }
 function saveReconciledReceipt(opts) {
   opts = opts || {};
@@ -13821,6 +13837,10 @@ app.addEventListener('input', (e) => {
 
 app.addEventListener('change', (e) => {
   const t = e.target;
+  if (t && t.getAttribute && t.getAttribute('data-role') === 'detective-main-choice') {
+    const rare = $(t.dataset.peer || ''); if (rare) rare.value = '';
+    return;
+  }
   if (t && t.id === 'backupImportFile') { handleBackupFile(t.files && t.files[0]); return; }
   if (t && t.getAttribute && t.getAttribute('data-role') === 'ai-file') {
     const docIndex = parseInt(t.dataset.doc, 10);
