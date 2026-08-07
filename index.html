@@ -602,7 +602,7 @@ let receiptDupConfirmed = false; // אישור שמירה למרות חשד לכ
 const RECEIPT_DRAFT_KEY = 'tn_receipt_draft';
 let receivingDigitsMissTimer = null;
 let receivingDigitsMissNotified = '';
-const APP_VERSION = '34';        // מוצג בהגדרות; תואם למטמון sw.js
+const APP_VERSION = '35';        // מוצג בהגדרות; תואם למטמון sw.js
 let VAT = 0.18;                  // מע"מ — ניתן לשינוי בהגדרות (נשמר בענן)
 let signMarginPct = 25;          // % רווח מומלץ למבצעים — ניתן לשינוי בהגדרות
 let storeName = 'מיני מרקט שלום'; // שם החנות לשלטים — ניתן לשינוי בהגדרות
@@ -4959,6 +4959,7 @@ function reconcileAssignedHtml() {
 }
 // ===== "הבלש" — מציע מי אחראי להפרש שלא שויך =====
 let detectiveOpen = false;
+let detectiveStrictNote = ''; // v35: סיבת הוויתור של הבלש הקפדני — מוצגת במסך הסריקה
 let detectiveScope = null; // בשלב שאחרי הברקודים: מגביל את החיפוש רק למה שאומת על הנייר
 let detectiveQuestionState = { fingerprint: '', asked: 0, constraints: [] };
 function resetDetectiveQuestions() { detectiveQuestionState = { fingerprint: '', asked: 0, constraints: [] }; }
@@ -5251,6 +5252,9 @@ function detectiveStageMeta(stage, gapCents, unitGap) {
   }
   if (stage === DETECTIVE_SEARCH_PURE_SHORT) {
     return { step: 'שלב 1 מתוך 2 · חוסר בלבד', text: 'לא נמצא מוצר שלם שחסר, לכן הבלש בדק חוסר בלבד — כולל כמות חלקית של מוצר שנסרק.' };
+  }
+  if (unitGap == null) {
+    return { step: 'שלב 1 מתוך 2 · לפי כסף ושורות', text: 'אין מונה יחידות על נייר תנובה — הבלש עבד לפי שני העדים שיש: הכסף ומונה השורות, ורק על סיפור יחיד ומדויק.' };
   }
   const hasPureDirection = unitGap != null && unitGap !== 0 && Math.sign(gapCents) !== 0 && Math.sign(gapCents) === Math.sign(unitGap);
   if (!hasPureDirection) {
@@ -5556,6 +5560,56 @@ function detectivePromoFlipSolve(gap, unitGap) {
   }
   return null;
 }
+// ===== v35: הבלש הקפדני של תנובה =====
+// שני עדים: הכסף ומונה השורות ("פריטים"). ההכרעה: הבלש מדבר רק כשהסיפור
+// מוכח — עדים מסכימים, סגירה מדויקת עד עיגול-שורה (חצי אגורה, בלי מעבר
+// ההרחבה הישן ל-5 אגורות), והסבר יחיד. כל מקרה אחר עובר לסריקה, בקול
+// וברור. עדיף בלש שותק מבלש מנחש — במחיר של יותר סריקות, לפי בקשתו.
+function detectiveTnuvaStrictSolve(gap, gapCents, groups) {
+  detectiveStrictNote = '';
+  const rcLineCount = (reconcileData || []).filter(l => !l.isDeposit).length;
+  const linesKnown = receiptNoteLines != null;
+  const typedLines = linesKnown ? Number(receiptNoteLines) : null;
+  const linesGap = linesKnown ? typedLines - rcLineCount : null; // חיובי = שורות חסרות
+  // עדים סותרים ⇒ אין סיפור עקבי של משוואה אחת ⇒ סריקה.
+  if (linesKnown && gapCents > 0 && linesGap < 0) {
+    detectiveStrictNote = 'הכסף חסר, אבל נקלטו ' + rcLineCount + ' שורות מול ' + typedLines + ' מודפסות — העדים סותרים.';
+    return null;
+  }
+  if (linesKnown && gapCents < 0 && linesGap > 0) {
+    detectiveStrictNote = 'הכסף עודף, אבל חסרות ' + linesGap + ' שורות מול המודפס — העדים סותרים.';
+    return null;
+  }
+  // חסרות 2+ שורות: הסבר של שורה אחת אינו יכול להיות שלם. (החריג הנדיר של
+  // אותו קוד פעמיים על הנייר קיים — הסריקה תזהה אותו; הבלש לא מנחש אותו.)
+  if (linesKnown && gapCents > 0 && linesGap >= 2) {
+    detectiveStrictNote = 'חסרות ' + linesGap + ' שורות מול המודפס — פתרון של שורה אחת לא סוגר את זה.';
+    return null;
+  }
+  const linesMatch = linesKnown && linesGap === 0;
+  // v19: אימות-סיפור. מניין תואם ⇒ רק טעות כמות בשורה קיימת; מניין חסר
+  // שורה אחת ⇒ רק שורה שלמה שלא נקלטה. פתרון שסותר את העד נפסל.
+  const storyOk = s => {
+    if (gap <= 0 || !linesKnown) return true;
+    try {
+      return s.components.every(c => (c.allocations[0].moves || []).every(m => linesMatch ? !m.ext : !!m.ext));
+    } catch (e) { return true; }
+  };
+  // v35: בלי מעבר הרחבה. או שהכסף נסגר עד עיגול-שורה (50 = חצי אגורה), או כלום.
+  const found = [];
+  groups.forEach(g => {
+    const center = gapCents / g.priceCents;
+    for (let d = Math.floor(center) - 1; d <= Math.ceil(center) + 1; d++) {
+      if (!d || Math.abs(g.priceCents * d - gapCents) > 50) continue;
+      const s = detectiveMakeSolution([{ group: g, delta: d }], g.priceCents * d - gapCents, DETECTIVE_SEARCH_MIXED);
+      if (s && storyOk(s)) found.push(s);
+    }
+  });
+  // v35: הסבר מוצג רק כשהוא יחיד. שתי היסטוריות שמתאימות = עמימות = סריקה.
+  if (found.length === 1) return detectiveFinishStage(found, gap, null, 1, 50, true, DETECTIVE_SEARCH_MIXED);
+  if (found.length > 1) detectiveStrictNote = found.length + ' הסברים שונים מתאימים לפער באותה מידה — הבלש לא בוחר בניחוש.';
+  return null;
+}
 function detectiveSolutions() {
   const gap = reconcileGap(), gapCents = Math.round(gap * 10000), unitGap = reconcileUnitsGap();
   if (reconcileIsBalanced()) return null;
@@ -5573,41 +5627,10 @@ function detectiveSolutions() {
     const flip = detectivePromoFlipSolve(gap, unitGap);
     if (flip) return flip;
   }
-  // תעודות ישנות ללא עוגן יחידות: שומרים את התנהגות המוצר הבודד, בלי לנחש צירופים.
-  if (unitGap == null) {
-    // v14: איסוף דו-שלבי. הסבילות האחידה של 5 אגורות הכניסה לכל חוסר נפוץ
-    // גם שכנים רחוקים (5.38, 5.37 ליד 5.36; 15.657×1 ליד 7.8285×2) —
-    // מעל 4 פתרונות → הצפה → סריקה. חוסר אמיתי כמעט תמיד מדויק עד
-    // עיגול-שורה (חצי אגורה), אז קודם אוספים רק מדויקים; רק אם אין —
-    // מרחיבים ל-5 אגורות. עודף ממילא מוגבל לשורות שנסרקו (מעט מועמדים).
-    // v19: אימות-סיפור. במשוואה אחת (כסף בלבד) חלוקה נקייה במחיר איננה
-    // הוכחה — צירופי מקרים שכיחים, ובניסויי שגיאות-כפולות הבלש "מצא" תמיד.
-    // שורת הפריטים היא העד השני: מניין תואם ⇒ רק טעות כמות בשורה קיימת;
-    // מניין חסר ⇒ רק שורה שלמה שלא נקלטה. פתרון שסותר את העד נפסל, ואם
-    // לא שרד כלום — מוותרים בקול. עדיף בלש שותק מבלש מנחש.
-    const rcLineCount = (reconcileData || []).filter(l => !l.isDeposit).length;
-    const linesKnown = receiptNoteLines != null;
-    const linesMatch = linesKnown && rcLineCount === Number(receiptNoteLines);
-    const storyOk = s => {
-      if (gap <= 0 || !linesKnown) return true;
-      try {
-        return s.components.every(c => (c.allocations[0].moves || []).every(m => linesMatch ? !m.ext : !!m.ext));
-      } catch (e) { return true; }
-    };
-    for (const tol of [50, 500]) {
-      const found = [];
-      groups.forEach(g => {
-        const center = gapCents / g.priceCents;
-        for (let d = Math.floor(center) - 1; d <= Math.ceil(center) + 1; d++) {
-          if (!d || Math.abs(g.priceCents * d - gapCents) > tol) continue;
-        const s = detectiveMakeSolution([{ group: g, delta: d }], g.priceCents * d - gapCents, DETECTIVE_SEARCH_MIXED);
-          if (s && storyOk(s)) found.push(s);
-        }
-      });
-      if (found.length) return detectiveFinishStage(found, gap, null, 1, tol, true, DETECTIVE_SEARCH_MIXED);
-    }
-    return null;
-  }
+  // תעודות ללא עוגן יחידות (תנובה): המצב הקפדני — v35, הכרעת המנהל 7.8:
+  // "עדיף יותר סריקות מבלש שמנחש". הצעה מוצגת רק כשהסיפור מוכח משני עדים
+  // (כסף + מונה שורות), נסגר עד עיגול-שורה, ויחיד. כל השאר — ויתור בקול.
+  if (unitGap == null) return detectiveTnuvaStrictSolve(gap, gapCents, groups);
   // קודם בודקים הסבר טהור לפי כיוון ההפרש; חוסר+עודף יחד הוא גיבוי בלבד.
   // שומרים על כלל הבטיחות הישן: פתרון מדויק תמיד קודם לפתרון מקורב,
   // גם אם ההסבר המקורב הוא "טהור" יותר.
@@ -5766,7 +5789,7 @@ function detectiveIsSimpleSafeResult(result) {
   // v13: הענף חסר-עוגן-היחידות מחפש בסבילות הייעודית שלו (500 = 5 אגורות,
   // חיפוש כספי בלבד) ומדווח אותה בתוצאה — תקרת האגורה של יטבתה פסלה אותו
   // אוטומטית. בהיעדר עוגן יחידות התקרה היא סבילות הענף; עם עוגן — כמו שהיה.
-  const tolCap = (result && result.unitGap == null) ? 500 : ((result && result.promoFlip) ? 150 : 100);
+  const tolCap = (result && result.unitGap == null) ? 50 : ((result && result.promoFlip) ? 150 : 100); // v35: בלי עוגן יחידות — רק סגירה עד עיגול-שורה
   if (!result || !result.complete || result.overflow || result.level !== 1 || result.toleranceCents > tolCap) return false;
   if (!Array.isArray(result.solutions) || !result.solutions.length || result.solutions.length > 4) return false;
   // v13 (תנובה): בלי עוגן יחידות בכלל (unitGap==null) המנוע מחפש רק בשלב
@@ -9737,7 +9760,7 @@ function aiInvoiceCaptureHtml() {
       '<button data-role="ai-add-photo" data-doc="' + i + '" class="btn-tap w-full bg-slate-100 text-slate-700 rounded-xl py-2.5 font-black"><i class="fa-solid fa-camera"></i> ' + (doc.pages.length ? 'הוסף עמוד נוסף' : 'צלם תעודה') + '</button></div>';
   }).join('');
   const ready = aiAllPagesOrientationConfirmed();
-  return '<div class="bg-white rounded-2xl border-2 border-violet-200 p-4 shadow-sm mb-24"><div class="font-black text-xl text-slate-800"><i class="fa-solid fa-camera-retro text-violet-600"></i> סריקה חכמה של התעודות</div><div class="rounded-xl bg-emerald-50 border-2 border-emerald-300 p-2.5 text-[12px] font-black text-emerald-800 mt-2"><i class="fa-solid fa-circle-check"></i> הסריקה פעילה ומחוברת לשירות הפענוח של תנובה.</div><div class="text-xs text-slate-500 font-bold leading-relaxed mt-1 mb-2">הבלש הפשוט לא פתר את הפער. צלם פעם אחת כל עמוד מכל תעודה. התמונות נשלחות לפענוח בלבד ואינן נשמרות באפליקציה.</div><div class="rounded-xl bg-blue-50 border border-blue-200 p-2 text-[11px] font-black text-blue-800 mb-3"><i class="fa-solid fa-expand"></i> כל צילום נפתח בגודל גדול. סובב עד שהכותרת למעלה והכתב ישר, ואז אשר. ללא אישור התמונה לא תישלח.</div>' +
+  return '<div class="bg-white rounded-2xl border-2 border-violet-200 p-4 shadow-sm mb-24"><div class="font-black text-xl text-slate-800"><i class="fa-solid fa-camera-retro text-violet-600"></i> סריקה חכמה של התעודות</div><div class="rounded-xl bg-emerald-50 border-2 border-emerald-300 p-2.5 text-[12px] font-black text-emerald-800 mt-2"><i class="fa-solid fa-circle-check"></i> הסריקה פעילה ומחוברת לשירות הפענוח של תנובה.</div>' + (detectiveStrictNote ? '<div class="rounded-xl bg-rose-50 border-2 border-rose-300 p-2.5 text-[12px] font-black text-rose-800 mt-2"><i class="fa-solid fa-user-secret"></i> הבלש ויתר בקול: ' + htmlEscape(detectiveStrictNote) + '</div>' : '') + '<div class="text-xs text-slate-500 font-bold leading-relaxed mt-1 mb-2">הבלש הפשוט לא פתר את הפער. צלם פעם אחת כל עמוד מכל תעודה. התמונות נשלחות לפענוח בלבד ואינן נשמרות באפליקציה.</div><div class="rounded-xl bg-blue-50 border border-blue-200 p-2 text-[11px] font-black text-blue-800 mb-3"><i class="fa-solid fa-expand"></i> כל צילום נפתח בגודל גדול. סובב עד שהכותרת למעלה והכתב ישר, ואז אשר. ללא אישור התמונה לא תישלח.</div>' +
     (aiScanError ? '<div class="rounded-xl bg-rose-50 border border-rose-300 p-2.5 text-xs font-black text-rose-700 mb-3">' + htmlEscape(aiScanError) + '</div>' : '') + docCards +
     '<button data-role="ai-run" ' + (ready ? '' : 'disabled') + ' class="btn-tap w-full rounded-xl py-3.5 font-black ' + (ready ? 'bg-violet-600 text-white' : 'bg-slate-200 text-slate-400') + '"><i class="fa-solid fa-wand-magic-sparkles"></i> פענח את כל התעודות ב-AI</button>' +
     '<div class="text-[10px] text-slate-400 font-bold text-center mt-2">בדרך כלל מתבצעת קריאת AI אחת. אם הקריאה חסרה או אינה נסגרת מול הסכום והיחידות, המערכת עשויה לנסות עד שתי זוויות נוספות.</div><button data-role="rc-goto-manual" class="btn-tap w-full bg-white border border-slate-200 text-slate-500 rounded-xl py-2 font-bold text-xs mt-2">או: בדיקה ידנית בלי סריקה</button><button data-role="rc-goto-manual" class="btn-tap w-full text-slate-400 py-2 font-black text-xs underline">המשך בלי AI — בדיקה ידנית</button></div>';
