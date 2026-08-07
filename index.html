@@ -602,7 +602,7 @@ let receiptDupConfirmed = false; // אישור שמירה למרות חשד לכ
 const RECEIPT_DRAFT_KEY = 'tn_receipt_draft';
 let receivingDigitsMissTimer = null;
 let receivingDigitsMissNotified = '';
-const APP_VERSION = '35';        // מוצג בהגדרות; תואם למטמון sw.js
+const APP_VERSION = '37';        // מוצג בהגדרות; תואם למטמון sw.js
 let VAT = 0.18;                  // מע"מ — ניתן לשינוי בהגדרות (נשמר בענן)
 let signMarginPct = 25;          // % רווח מומלץ למבצעים — ניתן לשינוי בהגדרות
 let storeName = 'מיני מרקט שלום'; // שם החנות לשלטים — ניתן לשינוי בהגדרות
@@ -5605,9 +5605,13 @@ function detectiveTnuvaStrictSolve(gap, gapCents, groups) {
       if (s && storyOk(s)) found.push(s);
     }
   });
-  // v35: הסבר מוצג רק כשהוא יחיד. שתי היסטוריות שמתאימות = עמימות = סריקה.
-  if (found.length === 1) return detectiveFinishStage(found, gap, null, 1, 50, true, DETECTIVE_SEARCH_MIXED);
-  if (found.length > 1) detectiveStrictNote = found.length + ' הסברים שונים מתאימים לפער באותה מידה — הבלש לא בוחר בניחוש.';
+  // v37 (הכרעתו): עד 4 אפשרויות, הטובות קודם — לפי ניקוד הסבירות הקיים
+  // (מסווג-השורות, מורכבות, שארית). כל אפשרות = קבוצת מחיר אחת: כל המוצרים
+  // באותו מחיר בדיוק, והבחירה הסופית נעשית בתוך כרטיס האפשרות (v212).
+  if (found.length) {
+    found.sort((a, b) => (b.score - a.score) || (a.residualCents - b.residualCents));
+    return detectiveFinishStage(found.slice(0, 4), gap, null, 1, 50, true, DETECTIVE_SEARCH_MIXED);
+  }
   return null;
 }
 function detectiveSolutions() {
