@@ -602,7 +602,7 @@ let receiptDupConfirmed = false; // אישור שמירה למרות חשד לכ
 const RECEIPT_DRAFT_KEY = 'tn_receipt_draft';
 let receivingDigitsMissTimer = null;
 let receivingDigitsMissNotified = '';
-const APP_VERSION = '44';
+const APP_VERSION = '45';
 // v40: תג גרסה קבוע בפינת המסך — לדעת בשנייה איזו גרסה באמת רצה על המכשיר
 // (עוזר במיוחד מול מטמון ה-PWA). pointer-events:none — לעולם לא חוסם מגע.
 document.body.insertAdjacentHTML('beforeend', '<div id="appVerBadge" style="position:fixed;bottom:4px;left:6px;z-index:9999;pointer-events:none;font-size:10px;font-weight:800;color:#64748b;opacity:.55;direction:rtl">גרסה ' + APP_VERSION + '</div>');        // מוצג בהגדרות; תואם למטמון sw.js
@@ -9799,7 +9799,9 @@ function aiInvoiceCaptureHtml() {
           ? '<button data-role="ai-apply" class="btn-tap w-full bg-violet-600 text-white rounded-xl py-3.5 font-black"><i class="fa-solid fa-file-circle-check"></i> סגור תעודה עם החוסרים</button>'
           : '<div class="rounded-xl bg-slate-100 text-slate-400 text-center py-3.5 font-black text-sm"><i class="fa-solid fa-lock ml-1"></i>סגירת תעודה תיפתח אחרי שכל השורות ייסגרו</div>' +
             '<button data-role="ai-edit-images" class="btn-tap w-full bg-white border-2 border-violet-300 text-violet-700 rounded-xl py-3 font-black"><i class="fa-solid fa-camera-rotate"></i> תיקון תעודה — חזרה לצילומים</button>') +
-        '<button data-role="rc-recon-cancel" class="btn-tap w-full bg-white border border-slate-200 text-slate-500 rounded-xl py-2.5 font-black text-xs"><i class="fa-solid fa-rotate-right"></i> ביטול — חזרה לסריקה לתיקון הכמויות</button></div>';
+        // v45: הכפתור הזה היה כפילות של "חזור לסריקה" שבסרגל התחתון הקבוע
+        // (אותו data-role בדיוק) — שני כפתורים זהים זה מתחת לזה. הוסר.
+        '</div>';
     }
     return '<div class="bg-white rounded-2xl border-2 ' + (ev.valid ? 'border-violet-300' : 'border-amber-300') + ' p-4 shadow-sm mb-24">' +
       '<div class="font-black text-xl text-slate-800 mb-1"><i class="fa-solid fa-wand-magic-sparkles text-violet-600"></i> תוצאות הסריקה החכמה</div>' +
