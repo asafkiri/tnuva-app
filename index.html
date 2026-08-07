@@ -602,7 +602,7 @@ let receiptDupConfirmed = false; // אישור שמירה למרות חשד לכ
 const RECEIPT_DRAFT_KEY = 'tn_receipt_draft';
 let receivingDigitsMissTimer = null;
 let receivingDigitsMissNotified = '';
-const APP_VERSION = '31';        // מוצג בהגדרות; תואם למטמון sw.js
+const APP_VERSION = '32';        // מוצג בהגדרות; תואם למטמון sw.js
 let VAT = 0.18;                  // מע"מ — ניתן לשינוי בהגדרות (נשמר בענן)
 let signMarginPct = 25;          // % רווח מומלץ למבצעים — ניתן לשינוי בהגדרות
 let storeName = 'מיני מרקט שלום'; // שם החנות לשלטים — ניתן לשינוי בהגדרות
@@ -4639,8 +4639,7 @@ function renderReceiving() {
         '<div class="flex items-center gap-2 min-w-0"><i class="fa-solid fa-file-invoice text-blue-600"></i><div class="min-w-0"><div class="text-[11px] text-slate-400 font-bold">סכום התעודה (ללא מע״מ)' + (receiptNotes.length > 1 ? ' · ' + receiptNotes.length + ' תעודות' : '') + (receiptNoteLines != null ? ' · ' + receiptNoteLines + ' שורות' : '') + '</div><div class="font-black text-slate-800">' + (receiptNoteTotal != null ? '₪' + fmtMoney(receiptNoteTotal) : 'ללא אימות') + (receiptDocDate ? '<span class="text-xs text-blue-600 mr-2">· ' + dDisp(receiptDocDate) + '</span>' : '') + '</div></div></div>' +
         '<div class="flex items-center gap-1.5 shrink-0"><button data-role="rc-notes-edit" class="btn-tap text-xs font-bold text-blue-600 bg-blue-50 px-2.5 py-2 rounded-lg"><i class="fa-solid fa-pen"></i> ערוך</button><button data-role="rc-cancel" class="btn-tap text-xs font-bold text-red-500 bg-red-50 px-2.5 py-2 rounded-lg"><i class="fa-solid fa-xmark"></i></button></div>' +
       '</div>';
-  const amountGap = receiptNoteTotal != null ? r2(receiptNoteTotal - t.ex) : null;
-  const progress = '<div class="sticky top-[7.5rem] z-20 bg-slate-900 text-white rounded-2xl p-3 shadow-xl mb-3"><div class="flex items-center justify-between gap-2"><div><div class="text-xs text-slate-300 font-bold">שלב 2 · סריקת מוצרים</div><div class="font-black text-lg">₪' + fmtMoney(t.ex) + (receiptNoteTotal != null ? ' / ₪' + fmtMoney(receiptNoteTotal) : '') + '</div></div><div class="text-left"><div class="font-black">' + receiptList.length + (receiptNoteLines != null ? '/' + receiptNoteLines : '') + ' שורות</div><div class="text-xs font-bold ' + (amountGap == null || Math.abs(amountGap) <= 0.02 ? 'text-emerald-300' : 'text-amber-300') + '">' + (amountGap == null ? 'ללא יעד סכום' : (Math.abs(amountGap) <= 0.02 ? 'הסכום תואם ✓' : 'פער ₪' + fmtMoney(Math.abs(amountGap)))) + '</div></div></div></div>';
+  const progress = receivingProgressHtml(t);
   app.innerHTML = banner + topButtons + noteBar + progress +
     '<button data-role="rc-scan" class="btn-tap w-full bg-blue-600 text-white rounded-2xl py-4 font-black text-lg flex items-center justify-center gap-3 shadow-lg mb-2"><i class="fa-solid fa-barcode text-2xl"></i> סרוק פריט לתעודה</button>' +
     '<details class="bg-white rounded-2xl border border-slate-200 shadow-sm mb-4"><summary class="cursor-pointer p-3 font-black text-sm text-slate-600"><i class="fa-solid fa-circle-question text-slate-400"></i> לא מצליח לסרוק?</summary><div class="px-3 pb-3">' +
@@ -4686,10 +4685,27 @@ function receiptTotalsHtml(t) {
     meHtml +
   '</div>';
 }
+// v32: סרגל ההתקדמות חולץ לפונקציה משותפת עם id קבוע (rcProgress), כדי
+// שאפשר יהיה להחליף אותו כירורגית בזמן הקלדה בלי לבנות את המסך מחדש —
+// בנייה מלאה באמצע הקלדה מפילה את הפוקוס והמקלדת.
+function receivingProgressHtml(t) {
+  const amountGap = receiptNoteTotal != null ? r2(receiptNoteTotal - t.ex) : null;
+  return '<div id="rcProgress" class="sticky top-[7.5rem] z-20 bg-slate-900 text-white rounded-2xl p-3 shadow-xl mb-3"><div class="flex items-center justify-between gap-2"><div><div class="text-xs text-slate-300 font-bold">שלב 2 · סריקת מוצרים</div><div class="font-black text-lg">₪' + fmtMoney(t.ex) + (receiptNoteTotal != null ? ' / ₪' + fmtMoney(receiptNoteTotal) : '') + '</div></div><div class="text-left"><div class="font-black">' + receiptList.length + (receiptNoteLines != null ? '/' + receiptNoteLines : '') + ' שורות</div><div class="text-xs font-bold ' + (amountGap == null || Math.abs(amountGap) <= 0.02 ? 'text-emerald-300' : 'text-amber-300') + '">' + (amountGap == null ? 'ללא יעד סכום' : (Math.abs(amountGap) <= 0.02 ? 'הסכום תואם ✓' : 'פער ₪' + fmtMoney(Math.abs(amountGap)))) + '</div></div></div></div>';
+}
 function refreshReceipt() { if (currentView === 'receiving') renderReceiving(); }
+// v32 הבאג (אותו באג שנמצא ביטבתה): הקלדת כמות בשדה (rc-qty) רצה על אירוע
+// input, ולכן עדכנה רק את שורת המוצר ואת הסה"כ התחתון (rcTotals) — סרגל
+// ההתקדמות הדביק ומונה "X שורות" נצבעים רק בבנייה מלאה של המסך, אז הם
+// נשארו קפואים על הערכים שמלפני ההקלדה עד הפעולה הבאה. מעכשיו נקודת
+// הרענון האחת מעדכנת את שלושתם יחד, מאותו חישוב totals אחד.
 function refreshReceiptTotals() {
+  const t = receiptTotals();
   const wrap = $('rcTotals');
-  if (wrap) wrap.outerHTML = receiptTotalsHtml(receiptTotals());
+  if (wrap) wrap.outerHTML = receiptTotalsHtml(t);
+  const prog = $('rcProgress');
+  if (prog) prog.outerHTML = receivingProgressHtml(t);
+  const cnt = $('rcCount');
+  if (cnt) cnt.textContent = receiptList.length + ' שורות';
 }
 function buildReceiptRow(it) {
   const p = products.find(x => x.id === it.productId);
@@ -13837,6 +13853,10 @@ app.addEventListener('input', (e) => {
 
 app.addEventListener('change', (e) => {
   const t = e.target;
+  // v32: בסיום הקלדת כמות (blur/Enter) בנייה מלאה אחת — הפוקוס כבר עוזב את
+  // השדה ממילא, וזה מרפא גם מחירי יחידה ותגי מבצע בשורות אחרות אם הכמות
+  // שהוקלדה חצתה סף של מבצע סל.
+  if (t && t.getAttribute && t.getAttribute('data-role') === 'rc-qty') { refreshReceipt(); return; }
   if (t && t.getAttribute && t.getAttribute('data-role') === 'detective-main-choice') {
     const rare = $(t.dataset.peer || ''); if (rare) rare.value = '';
     return;
