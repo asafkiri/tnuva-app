@@ -602,7 +602,7 @@ let receiptDupConfirmed = false; // אישור שמירה למרות חשד לכ
 const RECEIPT_DRAFT_KEY = 'tn_receipt_draft';
 let receivingDigitsMissTimer = null;
 let receivingDigitsMissNotified = '';
-const APP_VERSION = '32';        // מוצג בהגדרות; תואם למטמון sw.js
+const APP_VERSION = '33';        // מוצג בהגדרות; תואם למטמון sw.js
 let VAT = 0.18;                  // מע"מ — ניתן לשינוי בהגדרות (נשמר בענן)
 let signMarginPct = 25;          // % רווח מומלץ למבצעים — ניתן לשינוי בהגדרות
 let storeName = 'מיני מרקט שלום'; // שם החנות לשלטים — ניתן לשינוי בהגדרות
@@ -1198,6 +1198,7 @@ function renderView() {
   else if (currentView === 'health') renderHealth();
   else if (currentView === 'backup') renderBackup();
   else if (currentView === 'actionLog') renderActionLog();
+  else if (currentView === 'analysis') renderAnalysis();
   updateCart();
   updateBackBarLabel();
 }
@@ -3672,6 +3673,12 @@ function onScanned(val) {
     closeScanner();
     return;
   }
+  if (scanPurpose === 'analysis') { // v33: סריקה במסך הניתוח — פגיעה אחת, סוגרים וקופצים למוצר
+    scanBeep(); buzz(40);
+    closeScanner();
+    anApplyScannedCode(val);
+    return;
+  }
   if (scanPurpose === 'receiving' || scanPurpose === 'returns' || scanPurpose === 'promo') {
     const now = Date.now();
     if (val === lastScanCode && (now - lastScanTime) < 1400) {
@@ -4612,10 +4619,11 @@ function renderReceiving() {
   const openRecs = receipts.filter(r => receiptDiscrepancyInfo(r).open);
   const banner = openRecs.length ? '<button data-role="rc-history" class="btn-tap w-full bg-rose-50 border border-rose-200 text-rose-700 rounded-xl py-2.5 px-3 font-bold text-sm flex items-center justify-between gap-2 mb-3"><span><i class="fa-solid fa-clipboard-question"></i> ' + openRecs.length + ' תעודות עם הפרש פתוח</span><span class="text-xs font-black bg-rose-100 px-2 py-0.5 rounded-lg">לטיפול ←</span></button>' : '';
   const topButtons =
-    '<details class="bg-white border border-slate-200 rounded-xl mb-3 overflow-hidden"><summary class="btn-tap cursor-pointer px-3 py-2.5 font-black text-slate-600 text-sm flex items-center justify-between"><span><i class="fa-solid fa-screwdriver-wrench text-slate-400"></i> ניהול</span><i class="fa-solid fa-chevron-down hist-chevron"></i></summary><div class="flex gap-2 p-2 pt-0">' +
+    '<details class="bg-white border border-slate-200 rounded-xl mb-3 overflow-hidden"><summary class="btn-tap cursor-pointer px-3 py-2.5 font-black text-slate-600 text-sm flex items-center justify-between"><span><i class="fa-solid fa-screwdriver-wrench text-slate-400"></i> ניהול</span><i class="fa-solid fa-chevron-down hist-chevron"></i></summary><div class="grid grid-cols-2 gap-2 p-2 pt-0">' +
       '<button data-role="rc-prices" class="btn-tap flex-1 bg-white border border-slate-200 rounded-xl py-2.5 font-black text-slate-700 text-xs flex items-center justify-center gap-1.5"><i class="fa-solid fa-tags text-blue-600"></i> מוצרים ומחירים</button>' +
       '<button data-role="rc-promos" class="btn-tap flex-1 bg-white border border-slate-200 rounded-xl py-2.5 font-black text-slate-700 text-xs flex items-center justify-center gap-1.5"><i class="fa-solid fa-percent text-rose-600"></i> מבצעים</button>' +
       '<button data-role="rc-history" class="btn-tap flex-1 bg-white border border-slate-200 rounded-xl py-2.5 font-black text-slate-700 text-xs flex items-center justify-center gap-1.5"><i class="fa-solid fa-folder-open text-blue-600"></i> תעודות</button>' +
+      '<button data-role="rc-analysis" class="btn-tap bg-white border border-slate-200 rounded-xl py-2.5 font-black text-slate-700 text-xs flex items-center justify-center gap-1.5"><i class="fa-solid fa-chart-simple text-emerald-600"></i> ניתוח מוצרים</button>' +
     '</div></details>';
   if (!opened) {
     app.innerHTML = banner + topButtons +
@@ -13656,6 +13664,363 @@ $('segReturns').addEventListener('click', () => setView('returns'));
 $('segReceiving').addEventListener('click', () => setView('receiving'));
 $('btnSettings').addEventListener('click', () => setView('settings'));
 $('btnNotes').addEventListener('click', () => setView('notes'));
+// ===== ניתוח מוצרים (v33) =====
+// מסך קריאה בלבד: אפס כתיבות לענן, אפס נגיעה בקליטה/עוגנים/בלש/תשלום.
+// ציר הזמן = תאריך הנייר (docDate) — אותה אמת כמו ההיסטוריה ודוח התשלום.
+let anPreset = 'd30';          // month | d30 | d90 | d180 | manual — ברירת מחדל 30 יום
+let anFrom = '';               // YYYY-MM-DD (טווח ידני)
+let anTo = '';
+let anQuery = '';
+let anSelectedKey = null;
+let anData = null;             // { rows, rcCount, retCount, crateRetKinds, fromD, toD, source, truncated }
+let anBusy = false;
+let anError = '';
+let anSeq = 0;
+
+// שורות פיקדון (בקבוקי מיץ עתידיים) — כסף, לא מוצר. מוחרגות מהניתוח לגמרי.
+function anIsDepositLine(l) { return !!(l && (l.isDeposit || String(l.productId || '').indexOf('deposit-') === 0)); }
+
+// תאריך האמת של מסמך: תאריך הנייר, ואם אין — תאריך ההקלדה, ואם אין — מהחותמת.
+function anDocDate(doc) {
+  const d = doc && (doc.docDate || doc.date);
+  if (d) return d;
+  const ts = Number(doc && doc.timestamp) || 0;
+  return ts ? new Date(ts).toLocaleDateString('en-CA') : '';
+}
+
+function anDateShift(days) { return new Date(Date.now() + days * 864e5).toLocaleDateString('en-CA'); }
+
+function anRangeBounds() {
+  const today = todayStr();
+  if (anPreset === 'manual' && anFrom) {
+    const to = anTo || today;
+    if (anFrom <= to) return { fromD: anFrom, toD: to };
+  }
+  if (anPreset === 'month') return { fromD: today.slice(0, 8) + '01', toD: today };
+  if (anPreset === 'd90') return { fromD: anDateShift(-90), toD: today };
+  if (anPreset === 'd180') return { fromD: anDateShift(-180), toD: today };
+  return { fromD: anDateShift(-30), toD: today };
+}
+
+// הזיכרון מחזיק את 100 התעודות ו-20 החזרות האחרונות (לפי הקלדה). ציר הניתוח הוא
+// תאריך נייר — שיכול לפגר אחרי ההקלדה — לכן הכלל שמרני: מלא בזיכרון או ענן.
+function anMemoryCovers(rcs, rets) {
+  const R = rcs || receipts, T = rets || returns;
+  return R.length < 100 && T.length < 20;
+}
+
+// ליבת הניתוח — פונקציה טהורה: תעודות + חזרות + טווח תאריכי-נייר + קטלוג ← שורות.
+// התאמה: productId ← ברקוד מנורמל ← שם מדויק. ארגזים מסומנים (crate) ולא מדורגים.
+function analysisAggregate(rcs, rets, fromD, toD, catalog) {
+  const list = catalog || products;
+  const byId = new Map(), byBc = new Map(), byName = new Map();
+  list.forEach(p => {
+    byId.set(p.id, p);
+    const b = normalizeBarcode(p.barcode || ''); if (b && !byBc.has(b)) byBc.set(b, p);
+    const n = String(p.name || '').trim(); if (n && !byName.has(n)) byName.set(n, p);
+  });
+  const rows = new Map();
+  let rcCount = 0, retCount = 0;
+  const rowFor = (l) => {
+    let p = null;
+    if (l.productId && byId.has(l.productId)) p = byId.get(l.productId);
+    const bc = normalizeBarcode(l.barcode || '');
+    if (!p && bc && byBc.has(bc)) p = byBc.get(bc);
+    const nm = String(l.name || '').trim();
+    if (!p && !bc && nm && byName.has(nm)) p = byName.get(nm);
+    const key = p ? 'p:' + p.id : (bc ? 'b:' + bc : (nm ? 'n:' + nm : ''));
+    if (!key) return null;
+    let r = rows.get(key);
+    if (!r) {
+      r = { key, name: p ? p.name : (nm || bc), barcode: p ? (p.barcode || '') : (l.barcode || ''), inCatalog: !!p, crate: p ? isQuickCrate(p) : false, recvUnits: 0, recvValue: 0, retUnits: 0, retValue: 0, lastRecv: null, lastRet: null, prices: [] };
+      rows.set(key, r);
+    }
+    return r;
+  };
+  const newer = (d, ts, cur) => !cur || d > cur.d || (d === cur.d && ts > cur.ts);
+  (rcs || []).forEach(rc => {
+    const dd = anDocDate(rc);
+    if (!dd || dd < fromD || dd > toD) return;
+    rcCount++;
+    const ts = Number(rc.timestamp) || 0;
+    (rc.items || []).forEach(l => {
+      if (anIsDepositLine(l)) return;
+      const r = rowFor(l); if (!r) return;
+      const qty = Number(l.qty) || 0;
+      const unit = Number(l.unitPrice) || 0;
+      const val = (l.lineTotal != null) ? (Number(l.lineTotal) || 0) : r2(unit * qty);
+      r.recvUnits += qty; r.recvValue = r2(r.recvValue + val);
+      if (r.lastRecv && dd === r.lastRecv.d && ts === r.lastRecv.ts) { r.lastRecv.qty += qty; }
+      else if (newer(dd, ts, r.lastRecv)) { r.lastRecv = { d: dd, ts, qty, unit }; }
+      r.prices.push({ d: dd, ts, qty, unit });
+    });
+  });
+  (rets || []).forEach(rt => {
+    const dd = anDocDate(rt);
+    if (!dd || dd < fromD || dd > toD) return;
+    retCount++;
+    const ts = Number(rt.timestamp) || 0;
+    const status = rt.credited ? (rt.creditStatus === 'open' ? 'partial' : 'full') : 'pending';
+    (rt.items || []).forEach(l => {
+      if (anIsDepositLine(l)) return;
+      const r = rowFor(l); if (!r) return;
+      const qty = Number(l.qty) || 0;
+      const unit = Number(l.unitPrice) || 0;
+      const val = (l.lineTotal != null) ? (Number(l.lineTotal) || 0) : r2(unit * qty);
+      r.retUnits += qty; r.retValue = r2(r.retValue + val);
+      if (r.lastRet && dd === r.lastRet.d && ts === r.lastRet.ts) { r.lastRet.qty += qty; }
+      else if (newer(dd, ts, r.lastRet)) { r.lastRet = { d: dd, ts, qty, unit, status }; }
+    });
+  });
+  const out = Array.from(rows.values());
+  out.forEach(r => {
+    r.prices.sort((a, b) => (a.d < b.d ? -1 : (a.d > b.d ? 1 : a.ts - b.ts)));
+    r.retPct = r.recvUnits > 0 ? Math.round((r.retUnits / r.recvUnits) * 1000) / 10 : null;
+  });
+  return { rows: out, rcCount, retCount };
+}
+
+// חיפוש: שם (מחרוזת) או ספרות מתוך הברקוד. קודם מוצרי קטלוג, אחר כך שורות מחוץ לקטלוג.
+function anBuildSearchResults(qRaw, rowsArr, catalog) {
+  const q = String(qRaw || '').trim();
+  if (!q) return [];
+  const digits = q.replace(/\D/g, '');
+  const isDigits = digits.length >= 3 && digits.length === q.replace(/\s/g, '').length;
+  const rowByKey = new Map((rowsArr || []).map(r => [r.key, r]));
+  const out = []; const seen = new Set();
+  (catalog || products).forEach(p => {
+    const nm = String(p.name || '');
+    const bc = normalizeBarcode(p.barcode || '');
+    const hit = isDigits ? (bc && bc.indexOf(digits) !== -1) : (nm.indexOf(q) !== -1);
+    if (!hit) return;
+    const key = 'p:' + p.id; if (seen.has(key)) return; seen.add(key);
+    out.push({ key, name: nm, barcode: p.barcode || '', row: rowByKey.get(key) || null });
+  });
+  (rowsArr || []).forEach(r => {
+    if (String(r.key).indexOf('p:') === 0 || seen.has(r.key)) return;
+    const hit = isDigits ? (normalizeBarcode(r.barcode || '').indexOf(digits) !== -1) : (String(r.name || '').indexOf(q) !== -1);
+    if (!hit) return; seen.add(r.key);
+    out.push({ key: r.key, name: r.name, barcode: r.barcode || '', row: r });
+  });
+  return out.slice(0, 8);
+}
+
+async function anLoadData() {
+  const b = anRangeBounds();
+  const seq = ++anSeq;
+  anError = '';
+  if (anMemoryCovers()) {
+    const agg = analysisAggregate(receipts, returns, b.fromD, b.toD, products);
+    anData = { rows: agg.rows, rcCount: agg.rcCount, retCount: agg.retCount, fromD: b.fromD, toD: b.toD, source: 'memory', truncated: false };
+    anBusy = false;
+    if (currentView === 'analysis') renderAnalysis();
+    return;
+  }
+  anBusy = true;
+  if (currentView === 'analysis') renderAnalysis();
+  // תאריך נייר יכול לפגר אחרי ההקלדה — מרפדים את שאילתת החותמות ב-45 יום אחורה
+  const fromTs = Date.parse(b.fromD + 'T00:00:00') - 45 * 864e5;
+  const toTs = Date.parse(b.toD + 'T23:59:59') + 2 * 864e5;
+  let rcs = null, rets = null;
+  try {
+    const rcRef = collection(db, 'artifacts', appId, 'public', 'data', 'receipts');
+    const retRef = collection(db, 'artifacts', appId, 'public', 'data', 'returns');
+    const snaps = await Promise.all([
+      getDocs(query(rcRef, where('timestamp', '>=', fromTs), where('timestamp', '<=', toTs), orderBy('timestamp', 'desc'), limit(800))),
+      getDocs(query(retRef, where('timestamp', '>=', fromTs), where('timestamp', '<=', toTs), orderBy('timestamp', 'desc'), limit(300)))
+    ]);
+    rcs = snaps[0].docs.map(d => ({ id: d.id, ...d.data() }));
+    rets = snaps[1].docs.map(d => ({ id: d.id, ...d.data() }));
+  } catch (e) {
+    console.warn('analysis range fetch failed', e);
+  }
+  if (seq !== anSeq) return; // נבחר טווח חדש בינתיים
+  anBusy = false;
+  if (rcs) {
+    const agg = analysisAggregate(rcs, rets || [], b.fromD, b.toD, products);
+    anData = { rows: agg.rows, rcCount: agg.rcCount, retCount: agg.retCount, fromD: b.fromD, toD: b.toD, source: 'cloud', truncated: rcs.length >= 800 };
+  } else {
+    const agg = analysisAggregate(receipts, returns, b.fromD, b.toD, products);
+    anData = { rows: agg.rows, rcCount: agg.rcCount, retCount: agg.retCount, fromD: b.fromD, toD: b.toD, source: 'partial', truncated: false };
+    anError = 'לא הצלחתי למשוך את כל ההיסטוריה מהענן כרגע — מוצג ממה שבזיכרון (עד 100 תעודות ו-20 תעודות חזרה אחרונות).';
+  }
+  if (currentView === 'analysis') renderAnalysis();
+}
+
+// v33: ברקוד שנסרק במסך הניתוח — התאמה אחת נכנסת ישר לכרטיס המוצר,
+// כמה התאמות נשארות כרשימת תוצאות, אפס התאמות משאירות את הקוד בתיבה + טוסט.
+function anApplyScannedCode(raw) {
+  const code = normalizeBarcode(raw);
+  if (!code) return 'none';
+  const rowsArr = (anData && anData.rows) || [];
+  const res = anBuildSearchResults(code, rowsArr, products);
+  if (res.length === 1) {
+    anSelectedKey = res[0].key; anQuery = '';
+    renderAnalysis(); window.scrollTo({ top: 0 });
+    return 'picked';
+  }
+  anQuery = code;
+  renderAnalysis();
+  if (!res.length) showToast('לא נמצא: ' + code, null, null, 2600);
+  return res.length ? 'list' : 'none';
+}
+
+function anAgoText(d) {
+  const days = Math.floor((Date.parse(todayStr() + 'T12:00:00') - Date.parse(d + 'T12:00:00')) / 864e5);
+  if (!isFinite(days) || days <= 0) return 'היום';
+  if (days === 1) return 'אתמול';
+  return 'לפני ' + days + ' ימים';
+}
+function anPctText(r) { return r.retPct == null ? '—' : String(r.retPct).replace(/\.0$/, '') + '%'; }
+function anRetStatusHtml(st) {
+  if (st === 'full') return '<span class="text-emerald-600">זוכתה ✓</span>';
+  if (st === 'partial') return '<span class="text-amber-600">זוכתה חלקית</span>';
+  return '<span class="text-amber-600">ממתינה לזיכוי</span>';
+}
+
+function anSearchResultsHtml() {
+  const rowsArr = (anData && anData.rows) || [];
+  const res = anBuildSearchResults(anQuery, rowsArr, products);
+  if (!String(anQuery || '').trim()) return '';
+  if (!res.length) return '<div class="text-center text-sm text-slate-400 font-bold py-3">לא נמצא מוצר מתאים</div>';
+  return res.map(x => {
+    const hint = x.row
+      ? ('נקלט ' + x.row.recvUnits + ' יח׳ · הוחזר ' + x.row.retUnits + ' יח׳ בטווח')
+      : 'אין תנועה בטווח שנבחר';
+    return '<button data-role="an-pick" data-key="' + htmlEscape(x.key) + '" class="btn-tap w-full text-right bg-white border border-slate-200 rounded-xl px-3 py-2.5 mb-1.5 flex items-center justify-between gap-2">' +
+      '<span class="min-w-0"><span class="block font-black text-sm text-slate-800 truncate">' + htmlEscape(x.name) + '</span>' +
+      '<span class="block text-[11px] text-slate-400">' + hint + '</span></span>' +
+      '<i class="fa-solid fa-chevron-left text-slate-300"></i></button>';
+  }).join('');
+}
+
+function anPriceHistoryHtml(r) {
+  const ps = r.prices || [];
+  if (!ps.length) return '';
+  const marked = ps.map((p, i) => {
+    const prev = i > 0 ? ps[i - 1].unit : null;
+    const diff = prev == null ? 0 : r2(p.unit - prev);
+    return { d: p.d, qty: p.qty, unit: p.unit, diff };
+  });
+  const show = marked.slice(-12).reverse();
+  const older = marked.length - show.length;
+  const rowsHtml = show.map(p => {
+    const arrow = p.diff > 0.004
+      ? '<span class="text-[11px] font-black text-rose-600"><i class="fa-solid fa-arrow-up"></i> +' + fmtMoney(p.diff) + '</span>'
+      : (p.diff < -0.004 ? '<span class="text-[11px] font-black text-emerald-600"><i class="fa-solid fa-arrow-down"></i> ' + fmtMoney(p.diff) + '</span>' : '');
+    return '<div class="flex items-center justify-between gap-2 py-1.5 border-b border-slate-100 last:border-0">' +
+      '<span class="text-xs font-bold text-slate-500">' + dDisp(p.d) + '</span>' +
+      '<span class="text-xs font-bold text-slate-500">' + p.qty + ' יח׳</span>' +
+      '<span class="text-sm font-black text-slate-800">₪' + fmtMoney(p.unit) + ' ' + arrow + '</span>' +
+    '</div>';
+  }).join('');
+  return '<div class="mt-3 pt-2 border-t border-slate-100"><div class="text-xs font-black text-slate-500 mb-1"><i class="fa-solid fa-shekel-sign ml-1"></i>מחיר ליחידה בכל קליטה (לפי תאריך הנייר)</div>' + rowsHtml +
+    (older > 0 ? '<div class="text-[11px] text-slate-400 font-bold pt-1.5">ועוד ' + older + ' קליטות קודמות בטווח</div>' : '') + '</div>';
+}
+
+function anSelectedCardHtml() {
+  if (!anSelectedKey || !anData) return '';
+  let r = (anData.rows || []).find(x => x.key === anSelectedKey) || null;
+  let name = r ? r.name : '', barcode = r ? r.barcode : '', crate = r ? r.crate : false;
+  if (!r && String(anSelectedKey).indexOf('p:') === 0) {
+    const p = products.find(x => 'p:' + x.id === anSelectedKey);
+    if (!p) return '';
+    name = p.name; barcode = p.barcode || ''; crate = isQuickCrate(p);
+  } else if (!r) { return ''; }
+  const crateTag = crate ? ' <span class="text-[10px] font-black text-indigo-700 bg-indigo-50 border border-indigo-200 rounded px-1.5 py-0.5 align-middle">ארגז</span>' : '';
+  const stats = r
+    ? '<div class="grid grid-cols-3 gap-2 text-center mt-3">' +
+        '<div class="bg-blue-50 border border-blue-100 rounded-xl py-2"><div class="text-lg font-black text-blue-700">' + r.recvUnits + '</div><div class="text-[10px] font-black text-blue-600">נקלטו · ₪' + fmtMoney(r.recvValue) + '</div></div>' +
+        '<div class="bg-rose-50 border border-rose-100 rounded-xl py-2"><div class="text-lg font-black text-rose-700">' + r.retUnits + '</div><div class="text-[10px] font-black text-rose-600">הוחזרו · ₪' + fmtMoney(r.retValue) + '</div></div>' +
+        '<div class="bg-slate-50 border border-slate-200 rounded-xl py-2"><div class="text-lg font-black text-slate-700">' + anPctText(r) + '</div><div class="text-[10px] font-black text-slate-500">אחוז חזרות</div></div>' +
+      '</div>' +
+      '<div class="mt-3 space-y-1.5">' +
+        '<div class="flex items-center justify-between gap-2"><span class="text-xs font-black text-slate-500">קליטה אחרונה בטווח</span><span class="text-sm font-bold text-slate-800">' + (r.lastRecv ? (dDisp(r.lastRecv.d) + ' <span class="text-[11px] text-slate-400">(' + anAgoText(r.lastRecv.d) + ')</span> · ' + r.lastRecv.qty + ' יח׳ · ₪' + fmtMoney(r.lastRecv.unit) + ' ליח׳') : '—') + '</span></div>' +
+        '<div class="flex items-center justify-between gap-2"><span class="text-xs font-black text-slate-500">חזרה אחרונה בטווח</span><span class="text-sm font-bold text-slate-800">' + (r.lastRet ? (dDisp(r.lastRet.d) + ' <span class="text-[11px] text-slate-400">(' + anAgoText(r.lastRet.d) + ')</span> · ' + r.lastRet.qty + ' יח׳ · ' + anRetStatusHtml(r.lastRet.status) ) : '—') + '</span></div>' +
+      '</div>' +
+      anPriceHistoryHtml(r)
+    : '<div class="text-center text-sm text-slate-400 font-bold py-4">אין קליטות או חזרות למוצר הזה בטווח שנבחר</div>';
+  return '<div class="bg-white rounded-2xl border-2 border-blue-200 p-4 shadow-sm mb-3">' +
+    '<div class="flex items-start justify-between gap-2">' +
+      '<div class="min-w-0"><div class="font-black text-slate-800 truncate">' + htmlEscape(name) + crateTag + '</div>' +
+      (barcode ? '<div class="text-[11px] text-slate-400" dir="ltr">' + htmlEscape(barcode) + '</div>' : '') + '</div>' +
+      '<button data-role="an-clear" class="btn-tap shrink-0 text-xs font-black text-slate-400 bg-slate-100 rounded-lg px-2.5 py-1.5"><i class="fa-solid fa-xmark"></i></button>' +
+    '</div>' + stats + '</div>';
+}
+
+function anTopListHtml() {
+  const rowsArr = (anData && anData.rows) || [];
+  // דירוג לפי אחוז חזרות (החלטת המנהל, יטבתה v236). ארגזים לא מדורגים —
+  // החזרה היומית שלהם היא חלק מהשיטה, לא איתות; הם נשארים זמינים בחיפוש.
+  const withRet = rowsArr.filter(r => r.retUnits > 0);
+  const crateKinds = withRet.filter(r => r.crate).length;
+  const top = withRet.filter(r => !r.crate).sort((a, b) => {
+    const pa = a.retPct == null ? -1 : a.retPct, pb = b.retPct == null ? -1 : b.retPct;
+    if (pb !== pa) return pb - pa;
+    if (b.retUnits !== a.retUnits) return b.retUnits - a.retUnits;
+    return b.retValue - a.retValue;
+  }).slice(0, 10);
+  const crateNote = crateKinds > 0 ? '<div class="text-[11px] text-slate-400 font-bold pt-2">' + crateKinds + ' סוגי ארגזים עם חזרות בטווח — לא מדורגים, זמינים בחיפוש</div>' : '';
+  const head = '<div class="font-black text-slate-700 text-sm mb-1"><i class="fa-solid fa-rotate-left text-rose-500 ml-1"></i>הכי הרבה חזרות בתקופה <span class="text-[10px] text-slate-400">· לפי אחוז</span></div>';
+  if (!top.length) return '<div class="bg-white rounded-2xl border border-slate-200 p-4 shadow-sm mb-3">' + head + '<div class="text-center text-sm text-slate-400 font-bold py-3">אין חזרות מוצרים בטווח שנבחר</div>' + crateNote + '</div>';
+  const rowsHtml = top.map((r, i) => {
+    const sub = r.retPct == null
+      ? 'הוחזרו ' + r.retUnits + ' יח׳ · ₪' + fmtMoney(r.retValue) + ' · לא נקלט בטווח'
+      : 'הוחזרו ' + r.retUnits + ' מתוך ' + r.recvUnits + ' יח׳ שנקלטו · ₪' + fmtMoney(r.retValue);
+    return '<button data-role="an-pick" data-key="' + htmlEscape(r.key) + '" class="btn-tap w-full text-right flex items-center gap-2.5 py-2 border-b border-slate-100 last:border-0">' +
+      '<span class="shrink-0 w-6 h-6 rounded-full bg-rose-50 text-rose-600 text-[11px] font-black flex items-center justify-center">' + (i + 1) + '</span>' +
+      '<span class="min-w-0 flex-1"><span class="block font-black text-sm text-slate-800 truncate">' + htmlEscape(r.name) + '</span>' +
+      '<span class="block text-[11px] text-slate-400 font-bold">' + sub + '</span></span>' +
+      '<span class="shrink-0 text-sm font-black text-rose-600">' + anPctText(r) + '</span>' +
+    '</button>';
+  }).join('');
+  return '<div class="bg-white rounded-2xl border border-slate-200 p-4 shadow-sm mb-3">' + head + rowsHtml + crateNote + '</div>';
+}
+
+function renderAnalysis() {
+  const b = anRangeBounds();
+  const chips = [
+    { p: 'd30', label: '30 יום' },
+    { p: 'month', label: 'החודש' },
+    { p: 'd90', label: '90 יום' },
+    { p: 'd180', label: 'חצי שנה' },
+    { p: 'manual', label: 'טווח ידני' }
+  ].map(c => '<button data-role="an-preset" data-preset="' + c.p + '" class="btn-tap px-3 py-2 rounded-xl text-xs font-black border-2 ' + (anPreset === c.p ? 'bg-blue-600 border-blue-600 text-white' : 'bg-white border-slate-200 text-slate-700') + '">' + c.label + '</button>').join('');
+  const manualRow = anPreset === 'manual'
+    ? '<div class="flex items-center gap-2 mt-2">' +
+        '<input id="anFrom" type="date" value="' + htmlEscape(anFrom) + '" class="flex-1 border border-slate-200 rounded-lg px-2 py-2 text-sm font-bold text-slate-700 bg-white min-w-0">' +
+        '<span class="text-slate-400 font-black text-xs shrink-0">עד</span>' +
+        '<input id="anTo" type="date" value="' + htmlEscape(anTo) + '" class="flex-1 border border-slate-200 rounded-lg px-2 py-2 text-sm font-bold text-slate-700 bg-white min-w-0">' +
+        '<button data-role="an-apply" class="btn-tap shrink-0 bg-blue-600 text-white rounded-lg px-3 py-2 text-xs font-black">החל</button>' +
+      '</div>'
+    : '';
+  const coverage = anData
+    ? '<div class="text-[11px] text-slate-400 font-bold mt-2">' + dDisp(anData.fromD) + ' – ' + dDisp(anData.toD) + ' · ' + anData.rcCount + ' תעודות קליטה · ' + anData.retCount + ' תעודות חזרה · לפי תאריך הנייר' + (anData.truncated ? ' · <span class="text-amber-600">הטווח גדול — נקראו 800 התעודות האחרונות בלבד</span>' : '') + '</div>'
+    : '';
+  const warn = anError ? '<div class="bg-amber-50 border border-amber-200 rounded-xl px-3 py-2 text-xs font-bold text-amber-800 mt-2">' + anError + '</div>' : '';
+  const busyHtml = anBusy ? '<div class="text-center py-8 text-slate-400 font-black"><i class="fa-solid fa-circle-notch fa-spin text-2xl mb-2"></i><div>מושך היסטוריה מהענן…</div></div>' : '';
+  const emptyHtml = (!anBusy && anData && !anData.rows.length) ? '<div class="text-center py-8 text-slate-400 font-bold">אין תעודות בטווח שנבחר</div>' : '';
+  app.innerHTML =
+    '<div class="bg-white rounded-2xl border border-slate-200 p-4 shadow-sm mb-3">' +
+      '<div class="flex items-center gap-2 mb-1"><i class="fa-solid fa-chart-simple text-emerald-600"></i><div class="font-black text-slate-800">ניתוח מוצרים</div></div>' +
+      '<div class="text-[11px] text-slate-400 font-bold mb-2.5">קליטות וחזרות לפי מוצר · קריאה בלבד — שום דבר כאן לא משנה נתונים</div>' +
+      '<div class="flex flex-wrap gap-1.5">' + chips + '</div>' + manualRow + coverage + warn +
+    '</div>' +
+    (busyHtml || (
+      '<div class="bg-white rounded-2xl border border-slate-200 p-3 shadow-sm mb-3">' +
+        '<div class="flex gap-2">' +
+        '<div class="relative flex-1"><i class="fa-solid fa-magnifying-glass absolute right-3 top-1/2 -translate-y-1/2 text-slate-300 text-sm"></i>' +
+        '<input id="anSearch" type="text" value="' + htmlEscape(anQuery) + '" placeholder="חפש מוצר — שם או ספרות מהברקוד" class="w-full border border-slate-200 rounded-xl pr-9 pl-3 py-2.5 text-sm font-bold text-slate-700 outline-none focus:border-blue-500"></div>' +
+        '<button data-role="an-scan" class="btn-tap shrink-0 bg-blue-600 text-white rounded-xl px-4 flex items-center justify-center" aria-label="סרוק ברקוד"><i class="fa-solid fa-barcode text-lg"></i></button>' +
+      '</div>' +
+        '<div id="anSearchResults" class="mt-2">' + anSearchResultsHtml() + '</div>' +
+      '</div>' +
+      anSelectedCardHtml() +
+      emptyHtml +
+      anTopListHtml()
+    ));
+}
+
 $('backToOrder').addEventListener('click', () => setView(['trash', 'health', 'backup', 'actionLog', 'contacts'].includes(currentView) ? 'settings' : mainMode));
 $('cartBtn').addEventListener('click', () => { if (mainMode === 'returns') openReturnsSend(); else if (mainMode === 'receiving') finishReceipt(); else openSendCurrent(); });
 $('promptCancel').addEventListener('click', hidePrompt);
@@ -13727,6 +14092,7 @@ app.addEventListener('input', (e) => {
   if (t.id === 'rcDocDate') { receiptDocDate = t.value || null; saveReceiptDraft(); return; }
   if (t.id === 'retDigits') { refreshReturnsDigits(t.value); return; }
   if (t.id === 'priceSearch') { priceQuery = t.value; refreshPricesList(priceQuery); return; }
+  if (t.id === 'anSearch') { anQuery = t.value; const el = $('anSearchResults'); if (el) el.innerHTML = anSearchResultsHtml(); return; } // v33
   if (t.id === 'promoSearch') { promoSearch = t.value; refreshPromoProdList(promoSearch); return; }
   if (t.id === 'promoMin' || t.id === 'promoCarton') { updatePromoHint(); return; }
   if (role === 'rc-qty') { setReceiptQty(t.dataset.id, t.value); return; }
@@ -13918,6 +14284,28 @@ app.addEventListener('click', (e) => {
   if (unitBtn) { toggleUnit(unitBtn.dataset.id, unitBtn); buzz(8); return; }
   const t = e.target.closest('[data-role]'); if (!t) return;
   const role = t.dataset.role, id = t.dataset.id;
+  // v33: ניתוח מוצרים — כל הפעולות כאן הן תצוגה בלבד
+  if (role === 'an-preset') {
+    const p = t.dataset.preset || 'd30';
+    if (p === 'manual') {
+      const b0 = anRangeBounds();
+      if (!anFrom) anFrom = b0.fromD;
+      if (!anTo) anTo = b0.toD;
+      anPreset = 'manual'; renderAnalysis();
+    } else { anPreset = p; renderAnalysis(); anLoadData(); }
+    return;
+  }
+  if (role === 'an-apply') {
+    const f = $('anFrom'), t2 = $('anTo');
+    const nf = f ? f.value : anFrom, nt = (t2 ? t2.value : anTo) || todayStr();
+    if (!nf || !isFinite(Date.parse(nf + 'T00:00:00')) || nf > nt) { showToast('טווח תאריכים לא תקין', null, null, 2400); return; }
+    anFrom = nf; anTo = nt; anPreset = 'manual';
+    renderAnalysis(); anLoadData();
+    return;
+  }
+  if (role === 'an-pick') { anSelectedKey = t.dataset.key || null; anQuery = ''; renderAnalysis(); window.scrollTo({ top: 0 }); return; }
+  if (role === 'an-clear') { anSelectedKey = null; renderAnalysis(); return; }
+  if (role === 'an-scan') { scanPurpose = 'analysis'; openScanner(); return; } // v33
   if (role === 'ai-add-photo') { const input = $('aiDocFile_' + (parseInt(t.dataset.doc, 10) || 0)); if (input) input.click(); return; }
   if (role === 'ai-live-cam') { aiOpenLiveCamera(parseInt(t.dataset.doc, 10) || 0); return; }
   if (role === 'ai-review-page') { aiOpenOrientationReview(parseInt(t.dataset.doc, 10) || 0, parseInt(t.dataset.page, 10) || 0, true); if (currentView === 'reconcile') renderReconcile(); return; }
@@ -14278,6 +14666,7 @@ app.addEventListener('click', (e) => {
   else if (role === 'pr-create') openProdModal(null, false, t.dataset.code);
   else if (role === 'edit-prod') { const p = products.find(x => x.id === id); if (p) openProdModal(p, false); }
   else if (role === 'rc-history') setView('receiptsHistory');
+  else if (role === 'rc-analysis') { anSelectedKey = null; anQuery = ''; setView('analysis'); anLoadData(); } // v33
   else if (role === 'rc-plus') changeReceiptQty(id, 1);
   else if (role === 'rc-minus') changeReceiptQty(id, -1);
   else if (role === 'rc-remove') removeReceiptLine(id);
