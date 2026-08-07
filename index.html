@@ -602,7 +602,10 @@ let receiptDupConfirmed = false; // אישור שמירה למרות חשד לכ
 const RECEIPT_DRAFT_KEY = 'tn_receipt_draft';
 let receivingDigitsMissTimer = null;
 let receivingDigitsMissNotified = '';
-const APP_VERSION = '37';        // מוצג בהגדרות; תואם למטמון sw.js
+const APP_VERSION = '40';
+// v40: תג גרסה קבוע בפינת המסך — לדעת בשנייה איזו גרסה באמת רצה על המכשיר
+// (עוזר במיוחד מול מטמון ה-PWA). pointer-events:none — לעולם לא חוסם מגע.
+document.body.insertAdjacentHTML('beforeend', '<div id="appVerBadge" style="position:fixed;bottom:4px;left:6px;z-index:9999;pointer-events:none;font-size:10px;font-weight:800;color:#64748b;opacity:.55;direction:rtl">גרסה ' + APP_VERSION + '</div>');        // מוצג בהגדרות; תואם למטמון sw.js
 let VAT = 0.18;                  // מע"מ — ניתן לשינוי בהגדרות (נשמר בענן)
 let signMarginPct = 25;          // % רווח מומלץ למבצעים — ניתן לשינוי בהגדרות
 let storeName = 'מיני מרקט שלום'; // שם החנות לשלטים — ניתן לשינוי בהגדרות
@@ -5849,6 +5852,10 @@ function detectiveSolutionsHtml(result, opts) {
   const buttonRole = opts.postBarcode ? 'post-detective-solution' : 'detective-solution';
   const stageMeta = detectiveStageMeta(result.searchStage, Math.round((Number(result.gap) || 0) * 100), result.unitGap);
   const promoCard = detectivePromoCardHtml();
+  // v38: "הכי סבירה" נטענת רק כשיש פער ניקוד אמיתי מול השנייה (15 = יותר
+  // ממבצע+גלוי ביחד). כשהניקודים צמודים — אין תג, והנייר מכריע.
+  const bestClear = result.solutions.length < 2
+    || result.solutions.slice(1).every(s => (Number(result.solutions[0].score) || 0) - (Number(s.score) || 0) >= 15);
   const rows = result.solutions.map((sol, si) => {
     const comps = sol.components.map((c, ci) => {
       const dir = c.delta > 0 ? 'חסר' : 'עודף';
@@ -5872,7 +5879,7 @@ function detectiveSolutionsHtml(result, opts) {
     }).join('');
     const residual = sol.residualCents >= 100 ? '<span class="text-[10px] font-bold text-slate-400"> · סטיית עיגול ₪' + fmtMoney(sol.residualCents / 10000) + '</span>' : '';
     return '<div class="rounded-2xl border-2 ' + (si === 0 ? 'border-indigo-300 bg-indigo-50/30' : 'border-slate-200 bg-white') + ' p-3 mt-2">' +
-      '<div class="font-black text-slate-800 text-sm">אפשרות ' + (si + 1) + (si === 0 ? ' <span class="text-[10px] text-white bg-indigo-600 px-1.5 py-0.5 rounded">הכי סבירה</span>' : '') + residual + '</div>' +
+      '<div class="font-black text-slate-800 text-sm">אפשרות ' + (si + 1) + (si === 0 && bestClear ? ' <span class="text-[10px] text-white bg-indigo-600 px-1.5 py-0.5 rounded">הכי סבירה</span>' : '') + residual + '</div>' +
       comps +
       '<button data-role="' + buttonRole + '" data-i="' + si + '" class="btn-tap w-full bg-indigo-600 text-white rounded-xl py-2.5 font-black text-sm mt-2"><i class="fa-solid fa-check"></i> ' + (result.unitGap == null ? 'בדקתי מול הנייר — זה מה שקרה' : 'זה מה שקרה — אשר') + '</button>' +
     '</div>';
