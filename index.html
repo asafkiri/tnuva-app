@@ -602,7 +602,7 @@ let receiptDupConfirmed = false; // אישור שמירה למרות חשד לכ
 const RECEIPT_DRAFT_KEY = 'tn_receipt_draft';
 let receivingDigitsMissTimer = null;
 let receivingDigitsMissNotified = '';
-const APP_VERSION = '42';
+const APP_VERSION = '43';
 // v40: תג גרסה קבוע בפינת המסך — לדעת בשנייה איזו גרסה באמת רצה על המכשיר
 // (עוזר במיוחד מול מטמון ה-PWA). pointer-events:none — לעולם לא חוסם מגע.
 document.body.insertAdjacentHTML('beforeend', '<div id="appVerBadge" style="position:fixed;bottom:4px;left:6px;z-index:9999;pointer-events:none;font-size:10px;font-weight:800;color:#64748b;opacity:.55;direction:rtl">גרסה ' + APP_VERSION + '</div>');        // מוצג בהגדרות; תואם למטמון sw.js
@@ -8634,7 +8634,12 @@ function aiEvaluateInvoiceScan(payload) {
   // v34 תנובה: אין מונה יחידות על הנייר — העד השני הוא מונה "פריטים" (שורות),
   // אחרי שהמתאם הוציא החזרות וזיכויים. עוגן שלא הוקלד נחשב מסופק, כמו בכסף.
   const unitsVerified = tnuvaLinesVerified(returned, aiScanDocuments);
-  const supplierDiscount = Math.max(0, verifiedDocumentDiscountCents / 100);
+  // v43 תנובה: סד ההנחה המודפס הוא חומר-אימות בלבד — הוא כבר שירת את בדיקת
+  // ברוטו−הנחה=נטו של השורות למעלה. המחירים באפליקציה כוללים את המבצעים,
+  // ולכן ההנחה לעולם לא נגררת קדימה: לא לבדיקת הסגירה (הבאג מהטבילה —
+  // "צפוי 92.29, נמצא 72.77", ההנחה 19.52 נספרה פעמיים) ולא לתעודה שתישמר
+  // (calculatedEx היה מוריד אותה שוב מהתשלום). אפס כאן מרפא את כל הצרכנים.
+  const supplierDiscount = 0;
   const closure = aiFindingsClosure({ aggregates, findings, supplierDiscount }, findings);
   if (findingsReady && !closure.ok) errors.push(closure.reason || 'הממצאים אינם סוגרים את פער היחידות והסכום');
   const uniqueErrors = Array.from(new Set(errors));
