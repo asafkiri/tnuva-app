@@ -602,7 +602,7 @@ let receiptDupConfirmed = false; // אישור שמירה למרות חשד לכ
 const RECEIPT_DRAFT_KEY = 'tn_receipt_draft';
 let receivingDigitsMissTimer = null;
 let receivingDigitsMissNotified = '';
-const APP_VERSION = '40';
+const APP_VERSION = '42';
 // v40: תג גרסה קבוע בפינת המסך — לדעת בשנייה איזו גרסה באמת רצה על המכשיר
 // (עוזר במיוחד מול מטמון ה-PWA). pointer-events:none — לעולם לא חוסם מגע.
 document.body.insertAdjacentHTML('beforeend', '<div id="appVerBadge" style="position:fixed;bottom:4px;left:6px;z-index:9999;pointer-events:none;font-size:10px;font-weight:800;color:#64748b;opacity:.55;direction:rtl">גרסה ' + APP_VERSION + '</div>');        // מוצג בהגדרות; תואם למטמון sw.js
@@ -7822,6 +7822,14 @@ function aiUnknownProductCreateContextStatus(context, barcodeValue, requireActiv
   return { ok: true, barcode: expected, row, verified };
 }
 function aiResolveInvoiceBarcode(row) {
+  // v42 תנובה: קוד מודפס שהותאם דטרמיניסטית (חוק mod-1e8) למוצר עם ברקוד
+  // קצר מ-6 ספרות (ארגזים, בקבוק פיקדון) — אין "ברקוד מלא" שעומד בכללי
+  // הראיות של יטבתה, אבל ההתאמה ודאית: הקוד על הנייר הוא-הוא הברקוד בקטלוג.
+  if (String(row && row.barcodeMatchMethod || '') === 'tnuva_code_exact') {
+    const p = (products || []).find(x => x.id === (row && row.__tnuvaProductId));
+    if (p) return { product: p, barcode: normalizeBarcode(p.barcode || ''), observed: String(row && row.supplierItemCode || ''), method: 'tnuva_code_exact' };
+    return { error: 'המוצר שהותאם לפי הקוד אינו קיים עוד במאגר' };
+  }
   const readType = String(row && row.barcodeReadType || '');
   const method = String(row && row.barcodeMatchMethod || '');
   const observedRaw = row && row.barcodeObserved != null ? row.barcodeObserved : (row && row.barcodePattern != null ? row.barcodePattern : '');
@@ -8367,7 +8375,7 @@ function aiEvaluateInvoiceScan(payload) {
       const arithmeticError = qty == null ? '' : aiRowArithmeticError(row, qty);
       if (arithmeticError) { errors.push(rowPrefix + arithmeticError); unusableRows++; if (!rowUnusableReason) rowUnusableReason = arithmeticError; }
       if (rowUnusableReason) {
-        residuals.push({ docNumber: index + 1, documentIndex: index, lineNumber: rowNumber, sourcePage: Number(row.sourcePage), rowRegion: row.rowRegion || null, description: String(row.description || '').trim(), qty, amount: cents == null ? null : cents / 100, reason: rowUnusableReason, raw: { unit: row.unitPriceExVat, gross: row.grossLineTotalExVat, discount: row.lineDiscountExVat, total: row.lineTotalExVat } });
+        residuals.push({ docNumber: index + 1, documentIndex: index, lineNumber: rowNumber, sourcePage: Number(row.sourcePage), rowRegion: row.rowRegion || null, description: String(row.description || '').trim(), qty, amount: cents == null ? null : cents / 100, reason: rowUnusableReason, raw: { code: row.supplierItemCode, unit: row.unitPriceExVat, gross: row.grossLineTotalExVat, discount: row.lineDiscountExVat, total: row.lineTotalExVat } }); // v41: הקוד המודפס באבחון
       }
       const rowConfidence = Number(row.confidence);
       if (!isFinite(rowConfidence) || rowConfidence < 0.55) warnings.push(rowPrefix + 'ביטחון הקריאה נמוך — השורה תאושר רק אם הברקוד, החשבון והסיכומים נסגרים');
@@ -8524,7 +8532,7 @@ function aiEvaluateInvoiceScan(payload) {
     unresolvedBarcodeRows++;
     errors.push(pending.rowPrefix + (pending.resolution.error || 'הברקוד לא זוהה במאגר'));
     if (pending.qty != null && pending.cents != null && !pending.arithmeticError) {
-      residuals.push({ docNumber: pending.docIndex + 1, documentIndex: pending.docIndex, lineNumber: pending.rowNumber, sourcePage: Number(pending.row.sourcePage), rowRegion: pending.row.rowRegion || null, description: String(pending.row.description || '').trim(), qty: pending.qty, amount: pending.cents / 100, reason: pending.fallbackReason || pending.resolution.error || 'לא זוהה מוצר מתאים במאגר', raw: { unit: pending.row.unitPriceExVat, gross: pending.row.grossLineTotalExVat, discount: pending.row.lineDiscountExVat, total: pending.row.lineTotalExVat, conf: pending.row.confidence } });
+      residuals.push({ docNumber: pending.docIndex + 1, documentIndex: pending.docIndex, lineNumber: pending.rowNumber, sourcePage: Number(pending.row.sourcePage), rowRegion: pending.row.rowRegion || null, description: String(pending.row.description || '').trim(), qty: pending.qty, amount: pending.cents / 100, reason: pending.fallbackReason || pending.resolution.error || 'לא זוהה מוצר מתאים במאגר', raw: { code: pending.row.supplierItemCode, unit: pending.row.unitPriceExVat, gross: pending.row.grossLineTotalExVat, discount: pending.row.lineDiscountExVat, total: pending.row.lineTotalExVat, conf: pending.row.confidence } });
     }
     const builtSuggestion = aiBuildPendingSuggestion(pending);
     if (builtSuggestion) barcodeSuggestions.push(builtSuggestion);
@@ -8836,6 +8844,13 @@ function tnuvaAdaptScanPayload(payload) {
         rowRegion: null,
         barcode: fullBarcode || null,
         barcodeReadType: fullBarcode ? 'full' : 'unreadable',
+        // v42: תעודת-הזהות של ההתאמה — בדיוק כמו ששרת יטבתה מדביק. הצנרת
+        // הוותיקה מאמתת לפי barcodeMatchMethod+barcodeObserved; בלעדיהם כל
+        // שורה נפלה לשגיאה הגנרית (הבאג שנמצא 7.8). ברקוד קצר (<6 ספרות —
+        // ארגזים/פיקדון) לא עומד בכלל הראיות של exact_full ומקבל ענף ייעודי.
+        barcodeObserved: fullBarcode || null,
+        barcodeMatchMethod: fullBarcode ? (fullBarcode.length < 6 ? 'tnuva_code_exact' : 'exact_full') : null,
+        __tnuvaProductId: product ? product.id : null,
         catalogHintId: null,
         catalogCandidateHintIds: [],
         supplierItemCode: row && row.code != null ? String(row.code) : null,
@@ -9373,10 +9388,25 @@ function aiScanDiagnosticsHtml(ev) {
     // v180: המספרים הגולמיים כפי שה-AI קרא אותם, לכל שורה תקועה. בלי זה
     // כשל חשבון הוא ניחוש מרחוק; עם זה צילום מסך אחד מספיק כדי לראות איזה
     // תא נקרא לא נכון (ומה הסימן שלו).
+    // v41: חקירת הקודים — הנתון המכריע של תנובה. שורת סיכום אחת על האינדקס
+    // (כמה מוצרים ניתנים להתאמה בכלל), ולכל שורה תקועה: הקוד המודפס שחזר
+    // מהשרת ← הקוד הנגזר (mod 1e8) ← האם קיים במאגר.
+    let codeIndex = null;
+    try { codeIndex = tnuvaBuildCodeIndex(); } catch (e) {}
+    if (codeIndex) {
+      const sample = codeIndex.map.size ? (() => { const [c, p] = codeIndex.map.entries().next().value; return ' · דוגמה: ' + c + '←' + String(p.name || '').slice(0, 20); })() : '';
+      lines.push('אינדקס קודים: ' + codeIndex.map.size + ' מוצרים ניתנים להתאמה · התנגשויות: ' + codeIndex.ambiguous.size + sample);
+    }
     (Array.isArray(ev.residuals) ? ev.residuals : []).slice(0, 6).forEach(r => {
       if (!r || !r.raw) return;
       const show = v => (v == null || v === '' ? '—' : String(v));
+      let codeTrace = ' · קוד מודפס ' + show(r.raw.code);
+      if (codeIndex && r.raw.code != null && r.raw.code !== '') {
+        const derived = tnuvaCodeOf(String(r.raw.code));
+        codeTrace += ' ← נגזר ' + show(derived) + ' ← במאגר: ' + (derived ? (codeIndex.map.has(derived) ? 'כן' : (codeIndex.ambiguous.has(derived) ? 'התנגשות' : 'לא')) : '—');
+      }
       lines.push('שורה תקועה · תעודה ' + r.docNumber + ' שורה ' + r.lineNumber + ' · יח ' + show(r.qty) +
+        codeTrace +
         ' · מחיר ' + show(r.raw.unit) + ' · ברוטו ' + show(r.raw.gross) +
         ' · הנחה ' + show(r.raw.discount) + ' · נטו ' + show(r.raw.total) +
         (r.raw.conf == null ? '' : ' · ביטחון ' + show(r.raw.conf)) +
