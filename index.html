@@ -570,7 +570,7 @@ let reconcileDetectiveRoundingGap = null; // סטיית עיגול זעירה ש
 // v178: האם באמת הוזנו נתוני נייר (הקלדה ידנית / החלת סריקת AI) על noteQty.
 // עד שזה קורה, noteQty הוא עותק של מה שנסרק — והכותרת חייבת לומר את זה.
 let reconcilePaperEntered = false;
-const AI_SCAN_WORKER_URL = 'https://yotvata-ai-scan-701905665767.europe-west1.run.app/scan';
+const AI_SCAN_WORKER_URL = 'https://tnuva-ai-scan-701905665767.europe-west1.run.app/scan'; // v34: שירות תנובה הנפרד
 let aiScanDocuments = [];        // תמונות בזיכרון בלבד — אינן נשמרות בטיוטה או בענן
 let aiScanBusy = false;
 let aiScanProgressText = '';
@@ -587,7 +587,7 @@ const AI_SCAN_MAX_AUTO_ROTATION_RETRIES = 2;
 const AI_SCAN_NETWORK_RETRIES = 2;
 const AI_SCAN_FETCH_TIMEOUT_MS = 300000;
 const AI_SCAN_NETWORK_RETRY_DELAY_MS = 2500;
-const AI_SCAN_MIN_SERVICE_VERSION = 127;
+const AI_SCAN_MIN_SERVICE_VERSION = 1; // v34: סדרת גרסאות חדשה של שרת תנובה (v1+)
 const AI_BARCODE_SUFFIX_DIGITS = 6;
 let aiOrientationSession = null;
 let aiOrientationBusy = false;
@@ -602,7 +602,7 @@ let receiptDupConfirmed = false; // אישור שמירה למרות חשד לכ
 const RECEIPT_DRAFT_KEY = 'tn_receipt_draft';
 let receivingDigitsMissTimer = null;
 let receivingDigitsMissNotified = '';
-const APP_VERSION = '33';        // מוצג בהגדרות; תואם למטמון sw.js
+const APP_VERSION = '34';        // מוצג בהגדרות; תואם למטמון sw.js
 let VAT = 0.18;                  // מע"מ — ניתן לשינוי בהגדרות (נשמר בענן)
 let signMarginPct = 25;          // % רווח מומלץ למבצעים — ניתן לשינוי בהגדרות
 let storeName = 'מיני מרקט שלום'; // שם החנות לשלטים — ניתן לשינוי בהגדרות
@@ -6190,7 +6190,7 @@ function reconcileRowHtml(l) {
 function resetAiInvoiceScan() {
   aiCloseOrientationReview();
   const source = receiptNotes.length ? receiptNotes.map(normNote) : [{ amount: receiptNoteTotal, units: receiptNoteUnits }];
-  aiScanDocuments = source.map((note, i) => ({ noteIndex: i, amount: note.amount, units: note.units, pages: [] }));
+  aiScanDocuments = source.map((note, i) => ({ noteIndex: i, amount: note.amount, units: note.units, lines: note.lines, pages: [] })); // v34: מונה השורות = העד השני של תנובה
   aiScanBusy = false; aiScanProgressText = ''; aiScanResponse = null; aiScanEvaluation = null; aiScanError = ''; aiScanAutoRotationNote = ''; aiScanAttemptCount = 0; reconcileAiAudit = null; aiUnknownProductCreateContext = null;
   aiAnalyzeBusy = false; aiAnalyzeError = ''; aiAnalyzeResult = null; // v187
 }
@@ -8290,7 +8290,8 @@ function aiEvaluateInvoiceScan(payload) {
     }
     if (!Array.isArray(doc.rows) || !doc.rows.length) {
       missingDocuments++;
-      errors.push('תעודה ' + (index + 1) + ': לא נקראה ממנה אף שורת מוצר — היא אינה משתתפת בהשוואה. צלם אותה שוב.');
+      if (doc.__tnuvaCredit) errors.push('תעודה ' + (index + 1) + ': חשבונית זיכוי — אינה נקלטת בסריקה. הקלד אותה כתעודת זיכוי בנפרד והסר את צילומיה מכאן.');
+      else errors.push('תעודה ' + (index + 1) + ': לא נקראה ממנה אף שורת מוצר — היא אינה משתתפת בהשוואה. צלם אותה שוב.');
     }
     if (Number(doc.pageCount) !== inputDoc.pages.length) errors.push('תעודה ' + (index + 1) + ': מספר העמודים שפוענחו אינו זהה למספר התמונות שצולמו');
     const subtotalCents = aiMoneyCents(doc.subtotalExVat);
@@ -8588,9 +8589,9 @@ function aiEvaluateInvoiceScan(payload) {
   const totalVerified = expectedTotalCents != null && extractedTotalCents === expectedTotalCents && aiScanDocuments.every((inputDoc, index) => {
     const doc = returned.get(index); return doc && aiMoneyCents(doc.subtotalExVat) === aiMoneyCents(inputDoc.amount);
   });
-  const unitsVerified = receiptNoteUnits != null && extractedUnits === Number(receiptNoteUnits) && aiScanDocuments.every((inputDoc, index) => {
-    const doc = returned.get(index); return doc && inputDoc.units != null && aiDocRowUnits(doc) === Number(inputDoc.units); // v179: בלי פיקדון
-  });
+  // v34 תנובה: אין מונה יחידות על הנייר — העד השני הוא מונה "פריטים" (שורות),
+  // אחרי שהמתאם הוציא החזרות וזיכויים. עוגן שלא הוקלד נחשב מסופק, כמו בכסף.
+  const unitsVerified = tnuvaLinesVerified(returned, aiScanDocuments);
   const supplierDiscount = Math.max(0, verifiedDocumentDiscountCents / 100);
   const closure = aiFindingsClosure({ aggregates, findings, supplierDiscount }, findings);
   if (findingsReady && !closure.ok) errors.push(closure.reason || 'הממצאים אינם סוגרים את פער היחידות והסכום');
@@ -8676,7 +8677,7 @@ async function aiRequestInvoiceScan(token, documents) {
         noteIndex: d.noteIndex,
         pages: d.pages.map(p => p.dataUrl),
         expectedSubtotalExVat: Number(d.amount) > 0 ? r2(Number(d.amount)) : null,
-        expectedUnits: Number.isFinite(Number(d.units)) && Number(d.units) > 0 ? Math.round(Number(d.units)) : null
+        expectedLines: Number.isFinite(Number(d.lines)) && Number(d.lines) > 0 ? Math.round(Number(d.lines)) : null // v34
       })),
       // שלב ההתאמה הראשון בשרת משתמש רק במוצרים שנסרקו והגיעו. נשלחים
       // מזהים בלבד; השרת בוחר מתוכם רשומות מהקטלוג המקומי ואינו סומך על
@@ -8729,19 +8730,113 @@ async function aiFetchWithRetry(url, options) {
   }
   throw new Error('הרשת נכשלה');
 }
+// ===== v34: מתאם הסריקה של תנובה =====
+// השרת של תנובה מחזיר שורות עם הקוד המודפס (עד 8 ספרות) במקום ברקוד, כי זה
+// מה שיש על הנייר. המתאם ממיר כל תשובה לצורה שהצנרת הוותיקה מיטבתה יודעת
+// לעכל: קוד ← מוצר לפי החוק הקבוע (הקוד = הברקוד mod 1e8, אפסים מובילים
+// נופלים), והברקוד המלא מהקטלוג נשתל בשורה כראיה מלאה. קוד לא מזוהה נשאר
+// unreadable ומקבל את מסלול "מוצר לא מוכר" הקיים. החזרות וחשבוניות זיכוי
+// אינן נקלטות בסריקה — הן מוסרות מהשורות עם אזהרה רועשת ומוקלדות בנפרד.
+function tnuvaCodeOf(barcode) {
+  const digits = normalizeBarcode(barcode || '');
+  if (!digits) return null;
+  const tail = digits.slice(-8).replace(/^0+/, '');
+  return tail || null;
+}
+function tnuvaBuildCodeIndex() {
+  const map = new Map();
+  const ambiguous = new Set();
+  (products || []).forEach(p => {
+    const code = tnuvaCodeOf(p.barcode);
+    if (!code) return;
+    if (map.has(code) && map.get(code).id !== p.id) { ambiguous.add(code); return; }
+    map.set(code, p);
+  });
+  ambiguous.forEach(code => map.delete(code)); // התנגשות קודים = אין התאמה אוטומטית, השורה תטופל ידנית
+  return { map, ambiguous };
+}
+// v34: אימות מונה השורות — לכל תעודה שהוקלד לה "פריטים", מספר שורות הפריטים
+// שנקראו (אחרי שהמתאם הוציא החזרות וזיכויים) חייב להיות זהה במדויק.
+// עוגן שלא הוקלד נחשב מסופק, כמו בכלל הכסף.
+function tnuvaLinesVerified(returnedMap, docsInput) {
+  return (docsInput || []).every((inputDoc, index) => {
+    const doc = returnedMap.get(index);
+    if (!doc) return false;
+    const typed = inputDoc && inputDoc.lines != null ? Number(inputDoc.lines) : null;
+    if (typed == null) return true;
+    return (Array.isArray(doc.rows) ? doc.rows.length : 0) === typed;
+  });
+}
+function tnuvaAdaptScanPayload(payload) {
+  const scan = payload && payload.scan;
+  if (!scan || !Array.isArray(scan.documents)) return payload;
+  if (!Array.isArray(scan.warnings)) scan.warnings = [];
+  const built = tnuvaBuildCodeIndex();
+  const appVat = r2((Number(VAT) || 0) * 100);
+  scan.documents.forEach(doc => {
+    if (!doc) return;
+    const rows = Array.isArray(doc.rows) ? doc.rows : [];
+    const items = [], returnRows = [];
+    rows.forEach(row => { (row && row.section === 'returns' ? returnRows : items).push(row); });
+    const isCredit = doc.docType === 'credit';
+    if (isCredit) {
+      doc.__tnuvaCredit = true;
+      const sum = r2(items.reduce((s, r) => s + (Number(r && r.lineTotalExVat) || 0), 0));
+      scan.warnings.push('חשבונית זיכוי' + (doc.docNumber ? ' ' + doc.docNumber : '') + ' (' + items.length + ' שורות, ₪' + fmtMoney(sum) + ') — הסריקה אינה קולטת זיכויים. הקלד אותה כתעודת זיכוי בנפרד.');
+    }
+    if (returnRows.length) {
+      const retSum = r2(returnRows.reduce((s, r) => s + (Number(r && r.lineTotalExVat) || 0), 0));
+      scan.warnings.push('המסמך מכיל מקטע החזרות (' + returnRows.length + ' שורות, ₪' + fmtMoney(retSum) + ') — ההחזרות אינן נקלטות בסריקה. הקלד אותן במסך החזרות.');
+    }
+    if (doc.vatPct != null && Number.isFinite(Number(doc.vatPct)) && r2(Number(doc.vatPct)) !== appVat) {
+      scan.warnings.push('המע"מ המודפס על הנייר (' + r2(Number(doc.vatPct)) + '%) שונה מהמוגדר באפליקציה (' + appVat + '%) — בדוק את ההגדרה. כל החישובים משתמשים בהגדרת האפליקציה בלבד.');
+    }
+    const kept = isCredit ? [] : items;
+    doc.rows = kept.map(row => {
+      const code = tnuvaCodeOf(row && row.code);
+      const product = code && !built.ambiguous.has(code) ? (built.map.get(code) || null) : null;
+      const fullBarcode = product ? normalizeBarcode(product.barcode || '') : '';
+      return {
+        sourcePage: Number(row && row.sourcePage) || 1,
+        lineNumber: row && row.lineNumber != null ? Number(row.lineNumber) : null,
+        rowRegion: null,
+        barcode: fullBarcode || null,
+        barcodeReadType: fullBarcode ? 'full' : 'unreadable',
+        catalogHintId: null,
+        catalogCandidateHintIds: [],
+        supplierItemCode: row && row.code != null ? String(row.code) : null,
+        description: String((row && row.description) || ''),
+        quantity: row && row.quantity != null ? Number(row.quantity) : null,
+        unitPriceExVat: row && row.unitPriceExVat != null ? Number(row.unitPriceExVat) : null,
+        grossLineTotalExVat: row && row.lineTotalExVat != null ? Number(row.lineTotalExVat) : null,
+        lineDiscountExVat: null,
+        lineTotalExVat: row && row.lineTotalExVat != null ? Number(row.lineTotalExVat) : null,
+        promotionText: row && row.promoStar ? '*' : null,
+        confidence: row && isFinite(Number(row.confidence)) ? Number(row.confidence) : 0
+      };
+    });
+    doc.invoiceNumber = doc.docNumber == null ? null : String(doc.docNumber);
+    // סד ההנחה המרוכז של תנובה ← הנחת-מסמך שצנרת v132 כבר יודעת לאמת:
+    // סכום השורות (ברוטו) פחות ההנחה חייב להיסגר בדיוק על הנטו המודפס.
+    doc.documentDiscountExVat = doc.promoDiscountExVat == null ? null : Number(doc.promoDiscountExVat);
+    doc.printedUnits = null; // בתנובה אין מונה יחידות מודפס
+    doc.printedLines = doc.itemsPrintedLines == null ? null : Number(doc.itemsPrintedLines);
+  });
+  return payload;
+}
 async function aiRequestSingleDocScan(token, pages, expected) {
   const response = await aiFetchWithRetry(AI_SCAN_WORKER_URL, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + token },
     body: JSON.stringify({
+      // v34 תנובה: עוגן כסף + מונה "פריטים" (שורות). בלי קטלוג ובלי מזהים —
+      // ההתאמה קוד→מוצר נעשית כולה בטלפון, במתאם שאחרי התשובה.
       documents: [{
         noteIndex: 0,
         pages: pages.map(p => p.dataUrl),
         expectedSubtotalExVat: expected && Number(expected.amount) > 0 ? r2(Number(expected.amount)) : null,
-        expectedUnits: expected && Number.isFinite(Number(expected.units)) && Number(expected.units) > 0 ? Math.round(Number(expected.units)) : null
-      }],
-      receivedProductIds: aiReceivedProductIds(),
-      catalog: products.map(p => ({ id: p.id, name: p.name || '', barcode: normalizeBarcode(p.barcode || '') })).filter(p => /^\d{6,20}$/.test(p.barcode))
+        expectedLines: expected && Number.isFinite(Number(expected.lines)) && Number(expected.lines) > 0 ? Math.round(Number(expected.lines)) : null
+      }]
     })
   });
   const payload = await response.json().catch(() => ({}));
@@ -8758,6 +8853,7 @@ async function aiRequestSingleDocScan(token, pages, expected) {
     error.fatal = fatal;
     throw error;
   }
+  tnuvaAdaptScanPayload(payload); // v34: המרה לצורת הצנרת לפני כל שימוש
   return payload;
 }
 // v179: סכימת יחידות של מסמך שחזר מה-AI — בלי שורות פיקדון. זה כלל v176
@@ -8777,7 +8873,7 @@ function aiSingleDocScore(returnedDoc, inputDoc) {
   const subtotalCents = returnedDoc ? aiMoneyCents(returnedDoc.subtotalExVat) : null;
   const expectedCents = aiMoneyCents(inputDoc.amount);
   // עוגן שלא הוקלד נחשב מסופק — אחרת תעודה בלי עוגן הייתה נסרקת שלוש פעמים תמיד.
-  const unitsExact = inputDoc.units == null ? 1 : (units === Number(inputDoc.units) ? 1 : 0);
+  const unitsExact = inputDoc.lines == null ? 1 : (rows.length === Number(inputDoc.lines) ? 1 : 0); // v34 תנובה: העד השני הוא מונה השורות ("פריטים")
   const subtotalExact = expectedCents == null ? 1 : (subtotalCents != null && subtotalCents === expectedCents ? 1 : 0);
   const hasContent = rows.length > 0 && units > 0 ? 1 : 0;
   const confidence = returnedDoc && isFinite(Number(returnedDoc.confidence)) ? Number(returnedDoc.confidence) : 0;
@@ -9067,6 +9163,10 @@ function aiAnalyzeClaimsPlainText() {
 }
 async function aiRunAnalyzer(options) {
   const auto = !!(options && options.auto);
+  // v34 תנובה: מצב "המנתח" קיים רק בשרת של יטבתה; שרת תנובה מריץ סריקה בלבד.
+  // הקוד נשאר רדום — הכפתורים הוסתרו, וההרצה האוטומטית שאחרי סריקה שקטה.
+  const TNUVA_ANALYZER_AVAILABLE = false;
+  if (!TNUVA_ANALYZER_AVAILABLE) { if (!auto) showToast('המנתח אינו קיים בתנובה — הסריקה והבלש מכסים את הפערים', null, null, 3000); return; }
   if (aiAnalyzeBusy) return;
   const ev = aiScanEvaluation;
   if (!ev) { if (!auto) showToast('אין עדיין תוצאות סריקה לנתח', null, null, 2600); return; }
@@ -9171,7 +9271,7 @@ function aiAnalyzeHtml(ev) {
       '<div class="text-[10px] font-bold text-slate-500 mt-2">המנתח הוביל · יחידות ' + result.closure.actualUnitsDelta + '/' + result.closure.expectedUnitsDelta + ' · כסף ₪' + fmtMoney(result.closure.actualAmountDelta) + '/₪' + fmtMoney(result.closure.expectedAmountDelta) + (result.droppedClaims ? ' · ' + result.droppedClaims + ' טענות נדחו בשרת' : '') + '</div>' +
       '<div class="flex gap-2 mt-2">' +
         '<button data-role="ai-analyze-copy" class="btn-tap flex-1 bg-white border border-violet-300 text-violet-700 rounded-xl py-2 font-black text-xs"><i class="fa-solid fa-copy"></i> העתק לטענות מול הספק</button>' +
-        '<button data-role="ai-analyze" class="btn-tap bg-white border border-slate-300 text-slate-600 rounded-xl py-2 px-3 font-black text-xs"><i class="fa-solid fa-rotate-right"></i></button>' +
+        '' /* v34: כפתור המנתח הוסר — המצב לא קיים בשרת תנובה */ +
       '</div></div>';
   }
   // לא נסגר, נכשל, או שעדיין לא רץ — הממצאים שמוצגים הם של מנוע הסריקה.
@@ -9180,7 +9280,7 @@ function aiAnalyzeHtml(ev) {
   return '<div class="mt-3 rounded-xl border border-slate-200 bg-slate-50 p-2.5">' +
     '<div class="text-[11px] font-black text-slate-600"><i class="fa-solid fa-scale-unbalanced ml-1"></i>' + (result || aiAnalyzeError ? 'המנתח לא סגר את הפער — הממצאים למעלה הם של מנוע הסריקה' : 'המנתח לא רץ על התעודה הזאת') + '</div>' +
     (note ? '<div class="text-[10px] font-bold text-slate-500 mt-1">' + htmlEscape(note) + '</div>' : '') +
-    '<button data-role="ai-analyze" class="btn-tap w-full bg-white border border-slate-300 text-slate-600 rounded-xl py-2 font-black text-xs mt-2"><i class="fa-solid fa-scale-balanced"></i> ' + (result || aiAnalyzeError ? 'נסה לנתח שוב' : 'נתח את הפער') + '</button></div>';
+    '</div>'; // v34: כפתור המנתח הוסר — המצב לא קיים בשרת תנובה
 }
 function aiFindingHtml(f) {
   const cls = f.type === 'shortage' ? 'bg-rose-50 border-rose-200 text-rose-800' : (f.type === 'surplus' ? 'bg-amber-50 border-amber-200 text-amber-800' : (f.type === 'promo_missing' ? 'bg-orange-50 border-orange-300 text-orange-900' : 'bg-blue-50 border-blue-200 text-blue-900'));
@@ -9637,7 +9737,7 @@ function aiInvoiceCaptureHtml() {
       '<button data-role="ai-add-photo" data-doc="' + i + '" class="btn-tap w-full bg-slate-100 text-slate-700 rounded-xl py-2.5 font-black"><i class="fa-solid fa-camera"></i> ' + (doc.pages.length ? 'הוסף עמוד נוסף' : 'צלם תעודה') + '</button></div>';
   }).join('');
   const ready = aiAllPagesOrientationConfirmed();
-  return '<div class="bg-white rounded-2xl border-2 border-violet-200 p-4 shadow-sm mb-24"><div class="font-black text-xl text-slate-800"><i class="fa-solid fa-camera-retro text-violet-600"></i> סריקה חכמה של התעודות</div><div class="rounded-xl bg-amber-50 border-2 border-amber-300 p-2.5 text-[12px] font-black text-amber-800 mt-2"><i class="fa-solid fa-hourglass-half"></i> הסריקה תופעל בשלב 2 — שירות הפענוח של תנובה עדיין לא הוקם. בינתיים: קליטה ידנית.</div><div class="text-xs text-slate-500 font-bold leading-relaxed mt-1 mb-2">הבלש הפשוט לא פתר את הפער. צלם פעם אחת כל עמוד מכל תעודה. התמונות נשלחות לפענוח בלבד ואינן נשמרות באפליקציה.</div><div class="rounded-xl bg-blue-50 border border-blue-200 p-2 text-[11px] font-black text-blue-800 mb-3"><i class="fa-solid fa-expand"></i> כל צילום נפתח בגודל גדול. סובב עד שהכותרת למעלה והכתב ישר, ואז אשר. ללא אישור התמונה לא תישלח.</div>' +
+  return '<div class="bg-white rounded-2xl border-2 border-violet-200 p-4 shadow-sm mb-24"><div class="font-black text-xl text-slate-800"><i class="fa-solid fa-camera-retro text-violet-600"></i> סריקה חכמה של התעודות</div><div class="rounded-xl bg-emerald-50 border-2 border-emerald-300 p-2.5 text-[12px] font-black text-emerald-800 mt-2"><i class="fa-solid fa-circle-check"></i> הסריקה פעילה ומחוברת לשירות הפענוח של תנובה.</div><div class="text-xs text-slate-500 font-bold leading-relaxed mt-1 mb-2">הבלש הפשוט לא פתר את הפער. צלם פעם אחת כל עמוד מכל תעודה. התמונות נשלחות לפענוח בלבד ואינן נשמרות באפליקציה.</div><div class="rounded-xl bg-blue-50 border border-blue-200 p-2 text-[11px] font-black text-blue-800 mb-3"><i class="fa-solid fa-expand"></i> כל צילום נפתח בגודל גדול. סובב עד שהכותרת למעלה והכתב ישר, ואז אשר. ללא אישור התמונה לא תישלח.</div>' +
     (aiScanError ? '<div class="rounded-xl bg-rose-50 border border-rose-300 p-2.5 text-xs font-black text-rose-700 mb-3">' + htmlEscape(aiScanError) + '</div>' : '') + docCards +
     '<button data-role="ai-run" ' + (ready ? '' : 'disabled') + ' class="btn-tap w-full rounded-xl py-3.5 font-black ' + (ready ? 'bg-violet-600 text-white' : 'bg-slate-200 text-slate-400') + '"><i class="fa-solid fa-wand-magic-sparkles"></i> פענח את כל התעודות ב-AI</button>' +
     '<div class="text-[10px] text-slate-400 font-bold text-center mt-2">בדרך כלל מתבצעת קריאת AI אחת. אם הקריאה חסרה או אינה נסגרת מול הסכום והיחידות, המערכת עשויה לנסות עד שתי זוויות נוספות.</div><button data-role="rc-goto-manual" class="btn-tap w-full bg-white border border-slate-200 text-slate-500 rounded-xl py-2 font-bold text-xs mt-2">או: בדיקה ידנית בלי סריקה</button><button data-role="rc-goto-manual" class="btn-tap w-full text-slate-400 py-2 font-black text-xs underline">המשך בלי AI — בדיקה ידנית</button></div>';
