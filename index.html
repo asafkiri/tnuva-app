@@ -602,7 +602,7 @@ let receiptDupConfirmed = false; // אישור שמירה למרות חשד לכ
 const RECEIPT_DRAFT_KEY = 'tn_receipt_draft';
 let receivingDigitsMissTimer = null;
 let receivingDigitsMissNotified = '';
-const APP_VERSION = '43';
+const APP_VERSION = '44';
 // v40: תג גרסה קבוע בפינת המסך — לדעת בשנייה איזו גרסה באמת רצה על המכשיר
 // (עוזר במיוחד מול מטמון ה-PWA). pointer-events:none — לעולם לא חוסם מגע.
 document.body.insertAdjacentHTML('beforeend', '<div id="appVerBadge" style="position:fixed;bottom:4px;left:6px;z-index:9999;pointer-events:none;font-size:10px;font-weight:800;color:#64748b;opacity:.55;direction:rtl">גרסה ' + APP_VERSION + '</div>');        // מוצג בהגדרות; תואם למטמון sw.js
@@ -9388,6 +9388,15 @@ function aiScanDiagnosticsHtml(ev) {
   try {
     if (!ev) return '';
     const lines = [];
+    // v44: פירוט שערי האישור. הבאנר "לא נסגרה במלואה" יכול להיפתח גם כשרשימת
+    // השגיאות ריקה — כי valid נשען על שערים בוליאניים שקטים. בלי השורה הזאת
+    // כל אבחון של נעילה הוא ניחוש מרחוק (7.8 בשטח).
+    const gate = b => b === true ? 'כן' : 'לא';
+    lines.push('שערי סגירה · תקין: ' + gate(ev.valid) + ' · סכומים: ' + gate(ev.totalVerified) +
+      ' · שורות: ' + gate(ev.unitsVerified) + ' · ממצאים מוכנים: ' + gate(ev.findingsReady) +
+      ' · סגירת ממצאים: ' + gate(ev.closure && ev.closure.ok) +
+      ' · שגיאות: ' + ((ev.errors || []).length) + ' · הצעות ברקוד: ' + ((ev.barcodeSuggestions || []).length) +
+      (ev.closure && !ev.closure.ok ? ' · ' + String(ev.closure.reason || '') : ''));
     lines.push('אבחון v186 · סל שלם: ' + (ev.basketComplete ? 'כן' : 'לא') + ' · כל השורות שויכו: ' + (ev.allRowsMapped ? 'כן' : 'לא') + ' · תעודות שלא נקראו: ' + (Number(ev.missingDocuments) || 0) + ' מתוך ' + aiScanDocuments.length);
     (Array.isArray(ev.docSummaries) ? ev.docSummaries : []).forEach(summary => lines.push('תעודה ' + (Number(summary.noteIndex) + 1) + ': שורות ' + summary.rows + ' · יח׳ ' + summary.units + ' · סכום שנקרא ₪' + fmtMoney(Number(summary.subtotal) || 0) + ' · סכום השורות ₪' + fmtMoney(Number(summary.rowsSum) || 0)));
     // v180: המספרים הגולמיים כפי שה-AI קרא אותם, לכל שורה תקועה. בלי זה
