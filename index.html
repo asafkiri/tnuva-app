@@ -602,7 +602,7 @@ let receiptDupConfirmed = false; // אישור שמירה למרות חשד לכ
 const RECEIPT_DRAFT_KEY = 'tn_receipt_draft';
 let receivingDigitsMissTimer = null;
 let receivingDigitsMissNotified = '';
-const APP_VERSION = '45';
+const APP_VERSION = '47';
 // v40: תג גרסה קבוע בפינת המסך — לדעת בשנייה איזו גרסה באמת רצה על המכשיר
 // (עוזר במיוחד מול מטמון ה-PWA). pointer-events:none — לעולם לא חוסם מגע.
 document.body.insertAdjacentHTML('beforeend', '<div id="appVerBadge" style="position:fixed;bottom:4px;left:6px;z-index:9999;pointer-events:none;font-size:10px;font-weight:800;color:#64748b;opacity:.55;direction:rtl">גרסה ' + APP_VERSION + '</div>');        // מוצג בהגדרות; תואם למטמון sw.js
@@ -1178,7 +1178,9 @@ function renderView() {
   const isMain = isOrder || isReturns || isReceiving;
   $('searchWrap').style.display = isOrder ? '' : 'none';
   $('modeTabs').style.display = isMain ? '' : 'none';
-  $('backBar').classList.toggle('hidden', isMain);
+  // v46: במסך ההשוואה הפוטר הדביק ("חזור לסריקה") יושב מעל הסרגל הגלובלי —
+  // מסתירים את "חזרה להזמנה" כדי שלא יציץ מתחתיו ככפתור כפול.
+  $('backBar').classList.toggle('hidden', isMain || currentView === 'reconcile');
   updateModeTabs();
   if (isOrder) renderOrder();
   else if (isReturns) renderReturns();
@@ -7830,6 +7832,13 @@ function aiResolveInvoiceBarcode(row) {
     if (p) return { product: p, barcode: normalizeBarcode(p.barcode || ''), observed: String(row && row.supplierItemCode || ''), method: 'tnuva_code_exact' };
     return { error: 'המוצר שהותאם לפי הקוד אינו קיים עוד במאגר' };
   }
+  // v47: קוד שתוקן בספרה אחת במתאם (מועמד יחיד + מחיר מאשר) — אותה זהות ודאית
+  // של tnuva_code_exact, עם תיעוד הקוד המודפס המקורי כפי שנקרא בפועל.
+  if (String(row && row.barcodeMatchMethod || '') === 'tnuva_code_repair') {
+    const p = (products || []).find(x => x.id === (row && row.__tnuvaProductId));
+    if (p) return { product: p, barcode: normalizeBarcode(p.barcode || ''), observed: String((row.__tnuvaRepair && row.__tnuvaRepair.from) || row.supplierItemCode || ''), method: 'tnuva_code_repair' };
+    return { error: 'המוצר שהותאם לפי הקוד המתוקן אינו קיים עוד במאגר' };
+  }
   const readType = String(row && row.barcodeReadType || '');
   const method = String(row && row.barcodeMatchMethod || '');
   const observedRaw = row && row.barcodeObserved != null ? row.barcodeObserved : (row && row.barcodePattern != null ? row.barcodePattern : '');
@@ -8086,11 +8095,26 @@ function aiPrintedNameMatchesProduct(description, productName) {
   // ראיה מינימלית: לפחות שני אסימונים, או אסימון יחיד ארוך בהתאמה מדויקת.
   return shorter.length >= 2 || (shorter[0].length >= 5 && longer.includes(shorter[0]));
 }
+function aiNameFitScore(description, productName) {
+  // v47: ציון קרבת-שם דטרמיניסטי להכרעה בין מועמדים שווי-מחיר (זהה כספית).
+  const descTokens = aiNameTokens(description);
+  const nameTokens = aiNameTokens(productName);
+  if (!descTokens.length || !nameTokens.length) return 0;
+  let exact = 0, partial = 0;
+  descTokens.forEach(token => {
+    if (nameTokens.includes(token)) exact++;
+    else if (nameTokens.some(other => aiNameTokenMatches(token, other))) partial++;
+  });
+  // התאמה מדויקת שווה יותר מחלקית; עודף אסימונים בקטלוג מרחיק מהנייר.
+  return exact * 4 + partial - Math.abs(nameTokens.length - descTokens.length) * 0.25;
+}
 function aiAutoResolveMethodHe(method) {
   if (method === 'auto_local_name_price') return 'שם ומחיר תואמים בקטלוג';
   if (method === 'auto_local_name_qty_price_diff') return 'שם וכמות תואמים — המחיר שונה מהקטלוג';
   if (method === 'auto_local_name_qty') return 'שם, מחיר וכמות תואמים';
-  if (method === 'auto_local_name_same_price') return 'שם ומחיר (מועמדים שווי מחיר)';
+  if (method === 'auto_local_name_same_price') return 'המועמדים באותו מחיר — נבחר השם הקרוב ביותר (זהה כספית)';
+  if (method === 'auto_local_name_promo') return 'הכוכבית והמבצע הכריעו בין מועמדים באותו מחיר';
+  if (method === 'tnuva_code_repair') return 'תיקון ספרה אחת בקוד — המחיר אישר';
   if (method.indexOf('_qty_price') !== -1) return 'התאמת כמות ומחיר';
   if (method.indexOf('_qty') !== -1) return 'התאמת כמות לספירה';
   if (method === 'auto_name_price_unique') return 'המחיר מבדיל בין השמות הדומים';
@@ -8113,7 +8137,9 @@ function aiAutoResolvePendingRow(pending, aggregates) {
     for (const candidate of products) {
       if (!aiPrintedNameMatchesProduct(description, candidate.name)) continue;
       nameMatches.push({ product: candidate, barcode: normalizeBarcode(candidate.barcode || '') });
-      if (nameMatches.length > 6) { pending.fallbackReason = 'השם המודפס מתאים ליותר מדי מוצרים במאגר'; return null; }
+      // v47 (הכרעתו 8.8): התקרה 6 היא שתקעה את "משקה שיבולת שועל" — סינון
+      // המחיר, הכוכבית והשם רץ עכשיו על כל המועמדים; התקרה נשארת רק כרשת.
+      if (nameMatches.length > 40) { pending.fallbackReason = 'השם המודפס מתאים ליותר מדי מוצרים במאגר'; return null; }
     }
     if (!nameMatches.length) { pending.fallbackReason = 'השם המודפס לא נמצא במאגר המוצרים — בדוק את שם המוצר במאגר'; return null; }
     const priceMatches = nameMatches.filter(candidate => aiPriceCorroborates(row, qty, cents, candidate.product));
@@ -8133,9 +8159,21 @@ function aiAutoResolvePendingRow(pending, aggregates) {
     if (localQtyMatches.length === 1) {
       return { product: localQtyMatches[0].product, barcode: localQtyMatches[0].barcode, method: 'auto_local_name_qty' };
     }
-    const priceList = priceMatches.map(candidate => aiMoneyCents(Number(candidate.product.price) || 0));
+    // v47 (הכרעתו 8.8): עד המבצע — הכוכבית המודפסת על השורה מול סטטוס המבצע
+    // בקטלוג. תאום במבצע מול תאום שלא — הכוכבית מכריעה, ובדיקת סד ההנחה
+    // הקיימת מאמתת את הבחירה ברמת המסמך.
+    const rowStar = !!(row && row.promotionText);
+    const starAgree = priceMatches.filter(candidate => !!isPromoActive(candidate.product, todayStr()) === rowStar);
+    if (starAgree.length === 1) {
+      return { product: starAgree[0].product, barcode: starAgree[0].barcode, method: 'auto_local_name_promo' };
+    }
+    const pool = starAgree.length ? starAgree : priceMatches;
+    const priceList = pool.map(candidate => aiMoneyCents(Number(candidate.product.price) || 0));
     if (priceList.every(value => value != null && Math.abs(value - priceList[0]) <= 2)) {
-      return { product: priceMatches[0].product, barcode: priceMatches[0].barcode, method: 'auto_local_name_same_price' };
+      // מועמדים באותו מחיר ואותו סטטוס מבצע — הבחירה זהה כספית לחלוטין;
+      // נבחר השם הקרוב ביותר לנייר במקום הראשון השרירותי (הכרעתו 8.8).
+      const best = pool.slice().sort((a, b) => aiNameFitScore(description, b.product.name) - aiNameFitScore(description, a.product.name))[0];
+      return { product: best.product, barcode: best.barcode, method: 'auto_local_name_same_price' };
     }
     pending.fallbackReason = 'כמה מוצרים מתאימים לשם ולמחיר — אין הכרעה בטוחה';
     return null;
@@ -8412,6 +8450,12 @@ function aiEvaluateInvoiceScan(payload) {
       if (['unique_suffix', 'unique_full_pattern', 'unique_suffix_pattern'].includes(barcodeMatch.method)) warnings.push(product.name + ': הותאם בוודאות לפי הספרות שנקראו (' + barcodeMatch.observed + ')');
       if (['verified_suffix_name', 'verified_pattern_name', 'verified_one_digit_name'].includes(barcodeMatch.method)) warnings.push(product.name + ': הותאם אוטומטית לפי ראיית ברקוד יחידה ורמז שם תואם');
       if (barcodeMatch.method === 'verified_name_price') warnings.push(product.name + ': הותאם לפי שם יחיד והצלבת מחיר/חשבון מקומית');
+      // v47: תיקון ספרה בקוד — נספר ומתועד ביומן בדיוק כמו הכרעה אוטומטית.
+      if (barcodeMatch.method === 'tnuva_code_repair') {
+        const rep = row.__tnuvaRepair || {};
+        warnings.push(product.name + ': הקוד המודפס נקרא ' + (rep.from || '?') + ' ותוקן ל־' + (rep.to || '?') + ' — ספרה אחת, מחיר הקטלוג אישר');
+        autoResolutions.push({ documentIndex: index, rowIndex, lineNumber: rowNumber, sourcePage: Number(row.sourcePage), productId: product.id, productName: String(product.name || '').slice(0, 160), barcode, method: 'tnuva_code_repair', printedDescription: String(row.description || '').slice(0, 160), observed: rep.from || null, quantity: qty, lineTotalExVat: cents == null ? null : r2(cents / 100), rowConfidence: isFinite(rowConfidence) ? rowConfidence : 0 });
+      }
       // v183: מועמד הפיקדון נאסף לפני שער החשבון. ב-v182 שורת ה-ICE עצמה
       // נתקעה, ולכן המוצר לא נרשם כמועמד והשלמת שורת הפיקדון לא יכלה לרוץ.
       if (qty != null && qty > 0 && Number(product.deposit) > 0) docDepositCandidates.push({ product, qty, cents: Math.round(Number(product.deposit) * qty * 100) });
@@ -8802,6 +8846,47 @@ function tnuvaBuildCodeIndex() {
   ambiguous.forEach(code => map.delete(code)); // התנגשות קודים = אין התאמה אוטומטית, השורה תטופל ידנית
   return { map, ambiguous };
 }
+// v47 (הכרעתו 8.8): תיקון קוד שסוטה בספרה אחת — החלפת ספרה בודדת או היפוך שתי
+// ספרות סמוכות, שתי שגיאות הקריאה שנצפו בשטח על אותה שורה (10325618, 10326519).
+// מותר רק כשמצטרפות שתי עדויות: מועמד יחיד בכל האינדקס, ומחיר קטלוג שמאשר את
+// המחיר המודפס (בסיס או מבצע פעיל, ±2 אגורות). אחרת השורה נשארת גלויה כמו היום.
+function tnuvaCodeRepairCandidates(code) {
+  const out = new Set();
+  for (let i = 0; i < code.length; i++) {
+    for (let d = 0; d <= 9; d++) {
+      const ch = String(d);
+      if (ch !== code[i]) out.add(code.slice(0, i) + ch + code.slice(i + 1));
+    }
+    if (i + 1 < code.length && code[i] !== code[i + 1]) {
+      out.add(code.slice(0, i) + code[i + 1] + code[i] + code.slice(i + 2));
+    }
+  }
+  out.delete(code);
+  return out;
+}
+function tnuvaRepairCode(code, row, built) {
+  if (!code || code.length < 4) return null; // קודים קצרצרים — אין מספיק ראיות לתיקון
+  const hits = [];
+  tnuvaCodeRepairCandidates(code).forEach(candidate => {
+    if (built.ambiguous.has(candidate)) return;
+    const product = built.map.get(candidate);
+    if (product) hits.push({ code: candidate, product });
+  });
+  if (hits.length !== 1) return null; // ייחודיות בכל האינדקס — או כלום
+  const unit = row && row.unitPriceExVat != null ? Number(row.unitPriceExVat) : null;
+  const qty = row && row.quantity != null ? Number(row.quantity) : null;
+  const total = row && row.lineTotalExVat != null ? Number(row.lineTotalExVat) : null;
+  const effective = unit != null && isFinite(unit) ? aiMoneyCents(unit)
+    : (qty != null && qty > 0 && total != null && isFinite(total) ? Math.round(aiMoneyCents(total) / qty) : null);
+  if (effective == null) return null;
+  const base = Number(hits[0].product.price);
+  if (!isFinite(base) || base <= 0) return null;
+  const options = [aiMoneyCents(base)];
+  const pr = promoForProduct(hits[0].product.id, todayStr());
+  if (promoActive(pr, todayStr())) options.push(aiMoneyCents(discountedUnitPrice(base, Number(pr.pct) || 0)));
+  if (!options.some(option => option != null && Math.abs(option - effective) <= 2)) return null;
+  return hits[0];
+}
 // v34: אימות מונה השורות — לכל תעודה שהוקלד לה "פריטים", מספר שורות הפריטים
 // שנקראו (אחרי שהמתאם הוציא החזרות וזיכויים) חייב להיות זהה במדויק.
 // עוגן שלא הוקלד נחשב מסופק, כמו בכלל הכסף.
@@ -8841,7 +8926,10 @@ function tnuvaAdaptScanPayload(payload) {
     const kept = isCredit ? [] : items;
     doc.rows = kept.map(row => {
       const code = tnuvaCodeOf(row && row.code);
-      const product = code && !built.ambiguous.has(code) ? (built.map.get(code) || null) : null;
+      let product = code && !built.ambiguous.has(code) ? (built.map.get(code) || null) : null;
+      // v47 (הכרעתו 8.8): קוד שלא נמצא — ניסיון תיקון של ספרה אחת. נרשם ביומן.
+      let repair = null;
+      if (!product && code) { repair = tnuvaRepairCode(code, row, built); if (repair) product = repair.product; }
       const fullBarcode = product ? normalizeBarcode(product.barcode || '') : '';
       return {
         sourcePage: Number(row && row.sourcePage) || 1,
@@ -8853,9 +8941,10 @@ function tnuvaAdaptScanPayload(payload) {
         // הוותיקה מאמתת לפי barcodeMatchMethod+barcodeObserved; בלעדיהם כל
         // שורה נפלה לשגיאה הגנרית (הבאג שנמצא 7.8). ברקוד קצר (<6 ספרות —
         // ארגזים/פיקדון) לא עומד בכלל הראיות של exact_full ומקבל ענף ייעודי.
-        barcodeObserved: fullBarcode || null,
-        barcodeMatchMethod: fullBarcode ? (fullBarcode.length < 6 ? 'tnuva_code_exact' : 'exact_full') : null,
+        barcodeObserved: repair ? code : (fullBarcode || null),
+        barcodeMatchMethod: fullBarcode ? (repair ? 'tnuva_code_repair' : (fullBarcode.length < 6 ? 'tnuva_code_exact' : 'exact_full')) : null,
         __tnuvaProductId: product ? product.id : null,
+        __tnuvaRepair: repair ? { from: code, to: repair.code } : null,
         catalogHintId: null,
         catalogCandidateHintIds: [],
         supplierItemCode: row && row.code != null ? String(row.code) : null,
@@ -9397,7 +9486,7 @@ function aiScanDiagnosticsHtml(ev) {
       ' · סגירת ממצאים: ' + gate(ev.closure && ev.closure.ok) +
       ' · שגיאות: ' + ((ev.errors || []).length) + ' · הצעות ברקוד: ' + ((ev.barcodeSuggestions || []).length) +
       (ev.closure && !ev.closure.ok ? ' · ' + String(ev.closure.reason || '') : ''));
-    lines.push('אבחון v186 · סל שלם: ' + (ev.basketComplete ? 'כן' : 'לא') + ' · כל השורות שויכו: ' + (ev.allRowsMapped ? 'כן' : 'לא') + ' · תעודות שלא נקראו: ' + (Number(ev.missingDocuments) || 0) + ' מתוך ' + aiScanDocuments.length);
+    lines.push('אבחון v187 · סל שלם: ' + (ev.basketComplete ? 'כן' : 'לא') + ' · כל השורות שויכו: ' + (ev.allRowsMapped ? 'כן' : 'לא') + ' · תעודות שלא נקראו: ' + (Number(ev.missingDocuments) || 0) + ' מתוך ' + aiScanDocuments.length);
     (Array.isArray(ev.docSummaries) ? ev.docSummaries : []).forEach(summary => lines.push('תעודה ' + (Number(summary.noteIndex) + 1) + ': שורות ' + summary.rows + ' · יח׳ ' + summary.units + ' · סכום שנקרא ₪' + fmtMoney(Number(summary.subtotal) || 0) + ' · סכום השורות ₪' + fmtMoney(Number(summary.rowsSum) || 0)));
     // v180: המספרים הגולמיים כפי שה-AI קרא אותם, לכל שורה תקועה. בלי זה
     // כשל חשבון הוא ניחוש מרחוק; עם זה צילום מסך אחד מספיק כדי לראות איזה
@@ -9782,7 +9871,7 @@ function aiInvoiceCaptureHtml() {
         '<div class="rounded-xl bg-amber-50 border border-amber-300 p-3"><div class="font-black text-amber-900 text-sm"><i class="fa-solid fa-triangle-exclamation ml-1"></i>הסריקה לא נסגרה במלואה — סגירת התעודה נעולה עד תיקון.' + (ev.basketComplete ? '' : ' עודפים ובעיות מחיר/מבצע יוצגו כשכל השורות ייקראו.') + '</div>' +
         (blockingReasonsHtml ? '<details class="mt-2 text-right"><summary class="cursor-pointer text-[11px] font-black text-amber-800">מה לא נסגר?</summary><ul class="list-disc pr-5 mt-2 space-y-1 text-[10px] font-bold text-amber-800">' + blockingReasonsHtml + '</ul></details>' : '') + '</div>');
     const autoNote = Array.isArray(ev.autoResolutions) && ev.autoResolutions.length
-      ? '<div class="text-[10px] font-bold text-slate-500 text-center">' + ev.autoResolutions.length + ' שורות הותאמו אוטומטית לפי שם/מחיר/כמות — מתועד ביומן.</div>'
+      ? '<div class="text-[10px] font-bold text-slate-500 text-center">' + ev.autoResolutions.length + ' שורות הותאמו אוטומטית לפי קוד/שם/מחיר/מבצע/כמות — מתועד ביומן.</div>'
       : '';
     // v133: זרימת אישור וסגירה. המשתמש מאשר שאלה אכן הבעיות, ורק אז נפתחות
     // "סגור תעודה עם החוסרים" (כשהחשבון נסגר) או "תיקון תעודה".
