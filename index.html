@@ -602,7 +602,7 @@ let receiptDupConfirmed = false; // אישור שמירה למרות חשד לכ
 const RECEIPT_DRAFT_KEY = 'tn_receipt_draft';
 let receivingDigitsMissTimer = null;
 let receivingDigitsMissNotified = '';
-const APP_VERSION = '48';
+const APP_VERSION = '49';
 // v40: תג גרסה קבוע בפינת המסך — לדעת בשנייה איזו גרסה באמת רצה על המכשיר
 // (עוזר במיוחד מול מטמון ה-PWA). pointer-events:none — לעולם לא חוסם מגע.
 document.body.insertAdjacentHTML('beforeend', '<div id="appVerBadge" style="position:fixed;bottom:4px;left:6px;z-index:9999;pointer-events:none;font-size:10px;font-weight:800;color:#64748b;opacity:.55;direction:rtl">גרסה ' + APP_VERSION + '</div>');        // מוצג בהגדרות; תואם למטמון sw.js
@@ -9209,7 +9209,9 @@ function aiAnalyzePaperDocuments(ev) {
       doc: docNumber,
       invoiceNumber: doc.invoiceNumber || null,
       subtotalExVat: doc.subtotalExVat == null ? null : Number(doc.subtotalExVat),
+      documentDiscountExVat: doc.documentDiscountExVat == null ? null : Number(doc.documentDiscountExVat), // v49: סד ההנחה — בלעדיו הברוטו לא נסגר על הנטו אצל המנתח
       printedUnits: doc.printedUnits == null ? null : Number(doc.printedUnits),
+      printedLines: doc.printedLines == null ? null : Number(doc.printedLines),
       rows: (Array.isArray(doc.rows) ? doc.rows : []).map(row => ({
         line: row.lineNumber == null ? null : Number(row.lineNumber),
         description: String(row.description || ''),
@@ -9307,10 +9309,8 @@ function aiAnalyzeClaimsPlainText() {
 }
 async function aiRunAnalyzer(options) {
   const auto = !!(options && options.auto);
-  // v34 תנובה: מצב "המנתח" קיים רק בשרת של יטבתה; שרת תנובה מריץ סריקה בלבד.
-  // הקוד נשאר רדום — הכפתורים הוסתרו, וההרצה האוטומטית שאחרי סריקה שקטה.
-  const TNUVA_ANALYZER_AVAILABLE = false;
-  if (!TNUVA_ANALYZER_AVAILABLE) { if (!auto) showToast('המנתח אינו קיים בתנובה — הסריקה והבלש מכסים את הפערים', null, null, 3000); return; }
+  // v49: המנתח חי. שרת תנובה v4 פותח את מצב analyze בנוסח הנייר של תנובה —
+  // מחיר מלא + סד הנחה, מונה שורות, וסגירה בכסף בלבד כשאין עוגן יחידות.
   if (aiAnalyzeBusy) return;
   const ev = aiScanEvaluation;
   if (!ev) { if (!auto) showToast('אין עדיין תוצאות סריקה לנתח', null, null, 2600); return; }
@@ -9328,7 +9328,7 @@ async function aiRunAnalyzer(options) {
     if (!response.ok || !payload.ok) {
       const code = payload.error || '';
       // שרת ישן אינו מכיר mode ולכן קורא את הבקשה כסריקה בלי תמונות.
-      if (code === 'invalid_document_count' || code === 'invalid_analysis_input') throw new Error('שירות הסריקה עדיין בגרסה ישנה שאינה כוללת את המנתח — יש להעלות קודם את server.js החדש.');
+      if (code === 'invalid_document_count' || code === 'invalid_analysis_input' || code === 'mode_not_supported') throw new Error('שירות הסריקה עדיין בגרסה ישנה שאינה כוללת את המנתח — יש להעלות קודם את server.js החדש (גרסה 4).');
       if (code === 'rate_limited') throw new Error('בוצעו יותר מדי ניסיונות. המתן 10 דקות ונסה שוב.');
       if (code === 'invalid_auth' || code === 'auth_required') throw new Error('האימות המאובטח נכשל. רענן את האפליקציה ונסה שוב.');
       throw new Error('הניתוח לא הסתיים. הממצאים של הסריקה עצמה לא השתנו.');
@@ -9412,7 +9412,7 @@ function aiAnalyzeHtml(ev) {
       '<span class="rounded-full bg-emerald-100 text-emerald-800 px-2 py-0.5 text-[10px] font-black">נסגר בדיוק ✓</span></div>' +
       (result.summary ? '<div class="text-[11px] font-bold text-violet-800 mb-2">' + htmlEscape(tidyAiMoneyText(result.summary)) + '</div>' : '') +
       '<div class="space-y-2">' + result.claims.map(aiAnalyzeClaimCardHtml).join('') + '</div>' +
-      '<div class="text-[10px] font-bold text-slate-500 mt-2">המנתח הוביל · יחידות ' + result.closure.actualUnitsDelta + '/' + result.closure.expectedUnitsDelta + ' · כסף ₪' + fmtMoney(result.closure.actualAmountDelta) + '/₪' + fmtMoney(result.closure.expectedAmountDelta) + (result.droppedClaims ? ' · ' + result.droppedClaims + ' טענות נדחו בשרת' : '') + '</div>' +
+      '<div class="text-[10px] font-bold text-slate-500 mt-2">המנתח הוביל' + (result.closure.expectedUnitsDelta == null ? '' : ' · יחידות ' + result.closure.actualUnitsDelta + '/' + result.closure.expectedUnitsDelta) + ' · כסף ₪' + fmtMoney(result.closure.actualAmountDelta) + '/₪' + fmtMoney(result.closure.expectedAmountDelta) + (result.droppedClaims ? ' · ' + result.droppedClaims + ' טענות נדחו בשרת' : '') + '</div>' +
       '<div class="flex gap-2 mt-2">' +
         '<button data-role="ai-analyze-copy" class="btn-tap flex-1 bg-white border border-violet-300 text-violet-700 rounded-xl py-2 font-black text-xs"><i class="fa-solid fa-copy"></i> העתק לטענות מול הספק</button>' +
         '' /* v34: כפתור המנתח הוסר — המצב לא קיים בשרת תנובה */ +
@@ -9424,7 +9424,8 @@ function aiAnalyzeHtml(ev) {
   return '<div class="mt-3 rounded-xl border border-slate-200 bg-slate-50 p-2.5">' +
     '<div class="text-[11px] font-black text-slate-600"><i class="fa-solid fa-scale-unbalanced ml-1"></i>' + (result || aiAnalyzeError ? 'המנתח לא סגר את הפער — הממצאים למעלה הם של מנוע הסריקה' : 'המנתח לא רץ על התעודה הזאת') + '</div>' +
     (note ? '<div class="text-[10px] font-bold text-slate-500 mt-1">' + htmlEscape(note) + '</div>' : '') +
-    '</div>'; // v34: כפתור המנתח הוסר — המצב לא קיים בשרת תנובה
+    '<button data-role="ai-analyze" class="btn-tap w-full mt-2 bg-white border border-violet-300 text-violet-700 rounded-xl py-2 font-black text-xs"><i class="fa-solid fa-scale-balanced"></i> ' + (result || aiAnalyzeError ? 'הרץ את המנתח שוב' : 'הרץ את המנתח') + '</button>' +
+    '</div>'; // v49: הכפתור חזר — המצב חי בשרת תנובה v4
 }
 function aiFindingHtml(f) {
   const cls = f.type === 'shortage' ? 'bg-rose-50 border-rose-200 text-rose-800' : (f.type === 'surplus' ? 'bg-amber-50 border-amber-200 text-amber-800' : (f.type === 'promo_missing' ? 'bg-orange-50 border-orange-300 text-orange-900' : 'bg-blue-50 border-blue-200 text-blue-900'));
@@ -9487,7 +9488,7 @@ function aiScanDiagnosticsHtml(ev) {
       ' · סגירת ממצאים: ' + gate(ev.closure && ev.closure.ok) +
       ' · שגיאות: ' + ((ev.errors || []).length) + ' · הצעות ברקוד: ' + ((ev.barcodeSuggestions || []).length) +
       (ev.closure && !ev.closure.ok ? ' · ' + String(ev.closure.reason || '') : ''));
-    lines.push('אבחון v188 · סל שלם: ' + (ev.basketComplete ? 'כן' : 'לא') + ' · כל השורות שויכו: ' + (ev.allRowsMapped ? 'כן' : 'לא') + ' · תעודות שלא נקראו: ' + (Number(ev.missingDocuments) || 0) + ' מתוך ' + aiScanDocuments.length);
+    lines.push('אבחון v189 · סל שלם: ' + (ev.basketComplete ? 'כן' : 'לא') + ' · כל השורות שויכו: ' + (ev.allRowsMapped ? 'כן' : 'לא') + ' · תעודות שלא נקראו: ' + (Number(ev.missingDocuments) || 0) + ' מתוך ' + aiScanDocuments.length);
     (Array.isArray(ev.docSummaries) ? ev.docSummaries : []).forEach(summary => lines.push('תעודה ' + (Number(summary.noteIndex) + 1) + ': שורות ' + summary.rows + ' · יח׳ ' + summary.units + ' · סכום שנקרא ₪' + fmtMoney(Number(summary.subtotal) || 0) + ' · סכום השורות ₪' + fmtMoney(Number(summary.rowsSum) || 0)));
     // v180: המספרים הגולמיים כפי שה-AI קרא אותם, לכל שורה תקועה. בלי זה
     // כשל חשבון הוא ניחוש מרחוק; עם זה צילום מסך אחד מספיק כדי לראות איזה
