@@ -602,7 +602,7 @@ let receiptDupConfirmed = false; // אישור שמירה למרות חשד לכ
 const RECEIPT_DRAFT_KEY = 'tn_receipt_draft';
 let receivingDigitsMissTimer = null;
 let receivingDigitsMissNotified = '';
-const APP_VERSION = '50';
+const APP_VERSION = '51';
 // v40: תג גרסה קבוע בפינת המסך — לדעת בשנייה איזו גרסה באמת רצה על המכשיר
 // (עוזר במיוחד מול מטמון ה-PWA). pointer-events:none — לעולם לא חוסם מגע.
 document.body.insertAdjacentHTML('beforeend', '<div id="appVerBadge" style="position:fixed;bottom:4px;left:6px;z-index:9999;pointer-events:none;font-size:10px;font-weight:800;color:#64748b;opacity:.55;direction:rtl">גרסה ' + APP_VERSION + '</div>');        // מוצג בהגדרות; תואם למטמון sw.js
@@ -9040,15 +9040,20 @@ async function aiScanSingleDocPipeline(token, docIndex) {
     return { payload, doc, pages, score: aiSingleDocScore(doc, inputDoc) };
   };
   const isPerfect = attempt => attempt.score[0] === 1 && attempt.score[1] === 1 && attempt.score[2] === 1;
+  // v51: סיבוב אוטומטי רק על עדות לבעיית כיוון — קריאה שחזרה בלי תוכן שמיש
+  // (תעודה הפוכה/צדדית מניבה כלום). אי-סגירה מול העוגן או חוסר אמיתי אינם
+  // בעיית כיוון, וסיבוב עליהם רק שרף קריאות — ועם הקסקדה, גם קריאות Sol.
+  // ויתור מפורש של השרת ממילא עוצר את הצינור אחרי קריאה אחת (זריקת שגיאה).
+  const looksDisoriented = attempt => attempt.score[2] !== 1;
   let attempts = 1;
   let rotationText = '';
   let best = await runAttempt(inputDoc.pages);
-  if (!isPerfect(best) && AI_SCAN_MAX_AUTO_ROTATION_RETRIES > 0) {
+  if (looksDisoriented(best) && AI_SCAN_MAX_AUTO_ROTATION_RETRIES > 0) {
     const rotatedPlus = await aiBuildRotatedDocuments([{ noteIndex: 0, pages: inputDoc.pages }], [0], 1);
     const second = await runAttempt(rotatedPlus[0].pages);
     attempts = 2;
     if (aiSingleDocScoreBetter(second.score, best.score)) { best = second; rotationText = 'תעודה ' + (docIndex + 1) + ' יושרה אוטומטית ב־90°'; }
-    if (!isPerfect(best) && AI_SCAN_MAX_AUTO_ROTATION_RETRIES > 1) {
+    if (looksDisoriented(best) && AI_SCAN_MAX_AUTO_ROTATION_RETRIES > 1) {
       const bestIsOriginal = best.pages === inputDoc.pages;
       const thirdSource = bestIsOriginal ? inputDoc.pages : best.pages;
       const thirdTurns = bestIsOriginal ? 3 : 2;
