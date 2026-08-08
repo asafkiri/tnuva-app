@@ -602,7 +602,7 @@ let receiptDupConfirmed = false; // אישור שמירה למרות חשד לכ
 const RECEIPT_DRAFT_KEY = 'tn_receipt_draft';
 let receivingDigitsMissTimer = null;
 let receivingDigitsMissNotified = '';
-const APP_VERSION = '49';
+const APP_VERSION = '50';
 // v40: תג גרסה קבוע בפינת המסך — לדעת בשנייה איזו גרסה באמת רצה על המכשיר
 // (עוזר במיוחד מול מטמון ה-PWA). pointer-events:none — לעולם לא חוסם מגע.
 document.body.insertAdjacentHTML('beforeend', '<div id="appVerBadge" style="position:fixed;bottom:4px;left:6px;z-index:9999;pointer-events:none;font-size:10px;font-weight:800;color:#64748b;opacity:.55;direction:rtl">גרסה ' + APP_VERSION + '</div>');        // מוצג בהגדרות; תואם למטמון sw.js
@@ -8992,6 +8992,7 @@ async function aiRequestSingleDocScan(token, pages, expected) {
         : (code === 'invalid_auth' || code === 'auth_required') ? 'האימות המאובטח נכשל. רענן את האפליקציה ונסה שוב.'
         : (code === 'incomplete_model_output' || code === 'model_refusal' || code === 'invalid_model_output') ? 'ה-AI לא החזיר פענוח מלא ובטוח לתעודה זו.'
         : (code === 'openai_error' && payload.message) ? 'שירות ה-AI החזיר שגיאה: ' + payload.message
+        : (typeof payload.message === 'string' && payload.message.trim()) ? payload.message.trim() // v50: שרת שמוותר עם הסבר עברי (למשל anchor_pre_discount) — ההסבר מוצג כלשונו
         : 'הסריקה החכמה לא הצליחה לתעודה זו.'
     );
     error.fatal = fatal;
