@@ -602,7 +602,7 @@ let receiptDupConfirmed = false; // אישור שמירה למרות חשד לכ
 const RECEIPT_DRAFT_KEY = 'tn_receipt_draft';
 let receivingDigitsMissTimer = null;
 let receivingDigitsMissNotified = '';
-const APP_VERSION = '47';
+const APP_VERSION = '48';
 // v40: תג גרסה קבוע בפינת המסך — לדעת בשנייה איזו גרסה באמת רצה על המכשיר
 // (עוזר במיוחד מול מטמון ה-PWA). pointer-events:none — לעולם לא חוסם מגע.
 document.body.insertAdjacentHTML('beforeend', '<div id="appVerBadge" style="position:fixed;bottom:4px;left:6px;z-index:9999;pointer-events:none;font-size:10px;font-weight:800;color:#64748b;opacity:.55;direction:rtl">גרסה ' + APP_VERSION + '</div>');        // מוצג בהגדרות; תואם למטמון sw.js
@@ -8641,6 +8641,7 @@ function aiEvaluateInvoiceScan(payload) {
     const expected = paperPromoTriggered(productPromo)
       ? discountedUnitPrice(Number(a.product.price) || 0, Number(productPromo.pct) || 0)
       : r2(Number(a.product.price) || 0);
+    a.expectedUnitPrice = expected; // v48: מחיר-הסגירה נוסע להחלה — אותו עולם מחירים כמו הקליטה הידנית
     const quantityDiff = a.qty - received;
     if (quantityDiff > 0) findings.push({ type: 'shortage', productId: a.product.id, name: a.product.name, qty: quantityDiff, expectedPrice: expected, text: 'חסר ' + quantityDiff + ' × ' + a.product.name });
     else if (quantityDiff < 0 && basketComplete) findings.push({ type: 'surplus', productId: a.product.id, name: a.product.name, qty: -quantityDiff, expectedPrice: expected, text: 'עודף ' + (-quantityDiff) + ' × ' + a.product.name });
@@ -9486,7 +9487,7 @@ function aiScanDiagnosticsHtml(ev) {
       ' · סגירת ממצאים: ' + gate(ev.closure && ev.closure.ok) +
       ' · שגיאות: ' + ((ev.errors || []).length) + ' · הצעות ברקוד: ' + ((ev.barcodeSuggestions || []).length) +
       (ev.closure && !ev.closure.ok ? ' · ' + String(ev.closure.reason || '') : ''));
-    lines.push('אבחון v187 · סל שלם: ' + (ev.basketComplete ? 'כן' : 'לא') + ' · כל השורות שויכו: ' + (ev.allRowsMapped ? 'כן' : 'לא') + ' · תעודות שלא נקראו: ' + (Number(ev.missingDocuments) || 0) + ' מתוך ' + aiScanDocuments.length);
+    lines.push('אבחון v188 · סל שלם: ' + (ev.basketComplete ? 'כן' : 'לא') + ' · כל השורות שויכו: ' + (ev.allRowsMapped ? 'כן' : 'לא') + ' · תעודות שלא נקראו: ' + (Number(ev.missingDocuments) || 0) + ' מתוך ' + aiScanDocuments.length);
     (Array.isArray(ev.docSummaries) ? ev.docSummaries : []).forEach(summary => lines.push('תעודה ' + (Number(summary.noteIndex) + 1) + ': שורות ' + summary.rows + ' · יח׳ ' + summary.units + ' · סכום שנקרא ₪' + fmtMoney(Number(summary.subtotal) || 0) + ' · סכום השורות ₪' + fmtMoney(Number(summary.rowsSum) || 0)));
     // v180: המספרים הגולמיים כפי שה-AI קרא אותם, לכל שורה תקועה. בלי זה
     // כשל חשבון הוא ניחוש מרחוק; עם זה צילום מסך אחד מספיק כדי לראות איזה
@@ -10035,8 +10036,18 @@ function aiApplyInvoiceResult() {
     let line = (reconcileData || []).find(l => l.productId === a.product.id);
     const day = activeReceiptDate();
     const base = r2(Number(a.product.price) || 0), pr = promoForProduct(a.product.id, day), on = promoTriggered(pr, day), pct = on ? (Number(pr.pct) || 0) : 0;
-    if (!line) { line = { productId: a.product.id, name: a.product.name, barcode: a.product.barcode || '', received: 0, noteQty: 0, price: a.paperUnitPrice, basePrice: base, promoPct: pct, promoOn: on, checked: true }; reconcileData.unshift(line); }
-    line.noteQty = a.qty; line.price = a.paperUnitPrice; line.basePrice = base; line.promoPct = pct; line.promoOn = on; line.checked = true; line.aiPaperPriceOnly = true;
+    // v48: בתנובה השורה מחויבת במחיר מלא וסד ההנחה יורד פעם אחת בתחתית
+    // המסמך. כתיבת מחיר-הנייר המלא לשורות שברה את זהות העוגן (סכום השורות
+    // חייב להיסגר על הסכום שהוקלד, שכולל את המבצעים — הזהות שהוכחה בשטח
+    // בקליטה הידנית) ונעלה כל סגירה של תעודה עם מבצעים בדיוק בגובה ההנחה.
+    // התיקון: כשהנייר מאשר את מחיר המחירון והמבצע אומת בסד ההנחה, השורה
+    // נכתבת במחיר האפליקציה (כולל מבצע) — בדיוק כמו קליטה ידנית. מחיר
+    // שונה באמת (ממצא מחיר/מבצע-חסר) נשאר מחיר-הנייר, והפער בתביעת הזיכוי.
+    const hasPriceIssue = (Array.isArray(ev.findings) ? ev.findings : []).some(f => f && (f.type === 'price' || f.type === 'promo_missing') && f.productId === a.product.id);
+    const paperMatchesList = a.paperUnitPrice > 0 && Math.abs(a.paperUnitPrice - base) <= 0.02;
+    const lineUnitPrice = (!hasPriceIssue && paperMatchesList && Number(a.expectedUnitPrice) > 0) ? Number(a.expectedUnitPrice) : a.paperUnitPrice;
+    if (!line) { line = { productId: a.product.id, name: a.product.name, barcode: a.product.barcode || '', received: 0, noteQty: 0, price: lineUnitPrice, basePrice: base, promoPct: pct, promoOn: on, checked: true }; reconcileData.unshift(line); }
+    line.noteQty = a.qty; line.price = lineUnitPrice; line.basePrice = base; line.promoPct = pct; line.promoOn = on; line.checked = true; line.aiPaperPriceOnly = true;
   });
   // v166: הפיקדון נכנס כשורה נפרדת בתעודה — כמות מאושרת מראש (אין מה
   // לסרוק פיזית), מחיר יחידה לא מעוגל כדי שסכום השורה ייסגר באגורה
@@ -10058,13 +10069,14 @@ function aiApplyInvoiceResult() {
   const exactUnits = reconcileUnitsBalanced();
   const exactMoney = reconcileMoneyBalanced();
   if (!exactMoney || !exactUnits) {
+    const failGap = Math.abs(reconcileGap()); // הפער כפי שנמדד לפני ההחזרה לאחור
     reconcileData = before.data;
     reconcileSupplierDiscount = before.discount;
     reconcileSupplierPromoItems = before.supplierPromoItems;
     reconcilePromoMismatchItems = before.promoMismatchItems;
     reconcileSupplierCreditClaim = before.creditClaim;
     reconcileAiAudit = before.audit;
-    aiScanError = 'הפענוח עבר בדיקות ראשוניות, אבל אינו נסגר ביחידות ובגבול העיגול המותר. שום נתון לא שונה — צלם שוב.';
+    aiScanError = 'ההחלה לא נסגרה מול העוגן שהוקלד: פער ₪' + fmtMoney(failGap) + ' בין סכום שורות הנייר לסכום שהוקלד. שום נתון לא שונה.';
     aiScanEvaluation.valid = false; renderReconcile(); return;
   }
   if (confirmedMappings.length) {
