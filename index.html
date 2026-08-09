@@ -615,7 +615,7 @@ let receiptDupConfirmed = false; // אישור שמירה למרות חשד לכ
 const RECEIPT_DRAFT_KEY = 'tn_receipt_draft';
 let receivingDigitsMissTimer = null;
 let receivingDigitsMissNotified = '';
-const APP_VERSION = '53';
+const APP_VERSION = '54';
 // v40: תג גרסה קבוע בפינת המסך — לדעת בשנייה איזו גרסה באמת רצה על המכשיר
 // (עוזר במיוחד מול מטמון ה-PWA). pointer-events:none — לעולם לא חוסם מגע.
 document.body.insertAdjacentHTML('beforeend', '<div id="appVerBadge" style="position:fixed;bottom:4px;left:6px;z-index:9999;pointer-events:none;font-size:10px;font-weight:800;color:#64748b;opacity:.55;direction:rtl">גרסה ' + APP_VERSION + '</div>');        // מוצג בהגדרות; תואם למטמון sw.js
@@ -1756,9 +1756,32 @@ function renderTrash() {
     '</div>' +
     '<div class="space-y-3 pb-6">' + body + '</div>';
 }
+// v54: תכנון שחזור של רשומת מיזוג — פונקציה טהורה, ניתנת לבדיקה.
+// שחזור המקור לבד היה סופר את הפריטים פעמיים (הם כבר בתוך התעודה המאוחדת),
+// לכן רשומת מיזוג משוחזרת כביטול מלא של המיזוג — או נחסמת בקול אם זה כבר לא בטוח.
+function mergeRestorePlan(it, currentTarget) {
+  if (!it || it.reason !== 'merge-return' || !it.mergeTargetId || !it.mergeTargetBackup) return { mode: 'generic' };
+  if (!currentTarget) return { mode: 'source-only' };
+  if (currentTarget.credited) return { mode: 'blocked-credited' };
+  const before = Array.isArray(it.mergeTargetBackup.mergedFrom) ? it.mergeTargetBackup.mergedFrom.length : 0;
+  const now = Array.isArray(currentTarget.mergedFrom) ? currentTarget.mergedFrom.length : 0;
+  if (now > before + 1) return { mode: 'blocked-newer-merge' };
+  return { mode: 'full-unmerge' };
+}
 async function restoreTrashItem(trashId) {
   const it = trash.find(x => x.trashId === trashId);
   if (!it || !it.collectionName || !it.originalId || !it.data) { showToast('לא ניתן לשחזר את הרשומה הזאת', null, null, 3000); return; }
+  if (it.reason === 'merge-return' && it.mergeTargetId && it.mergeTargetBackup) {
+    const plan = mergeRestorePlan(it, returns.find(x => x.id === it.mergeTargetId));
+    if (plan.mode === 'blocked-credited') { showToast('התעודה המאוחדת כבר אומתה — בטל קודם את אימות הזיכוי שלה ואז שחזר.', null, null, 4500); return; }
+    if (plan.mode === 'blocked-newer-merge') { showToast('בוצע לתעודה מיזוג נוסף מאוחר יותר — שחזר קודם את רשומת המיזוג החדשה יותר בסל.', null, null, 4500); return; }
+    const writes = [{ op: 'set', path: dataPath('returns', it.originalId), data: cloneSafe({ ...it.data, id: it.originalId }) }];
+    if (plan.mode === 'full-unmerge') writes.push({ op: 'set', path: dataPath('returns', it.mergeTargetId), data: cloneSafe({ ...it.mergeTargetBackup, id: it.mergeTargetId }) });
+    writes.push({ op: 'delete', path: dataPath('trash', trashId) });
+    const okMerge = await runCloudTask('restore merged return pair', { op: 'batch', operationId: makeOperationId('trash_restore'), writes });
+    if (okMerge) showToast(plan.mode === 'full-unmerge' ? 'המיזוג בוטל — שתי התעודות שוחזרו למצבן שלפני המיזוג ✓' : 'תעודת המקור שוחזרה ✓', null, null, 2800);
+    return;
+  }
   const data = cloneSafe(it.data);
   data.id = it.originalId;
   if (it.collectionName === 'products' && data.barcode) {
@@ -11391,7 +11414,7 @@ async function delReceipt(id) {
 // ===== v52: מיזוג תעודות חזרה פתוחות =====
 // הנהג מזכה לרוב חזרה שבועית ויומית ביחד — מיזוג מאפשר לאמת זיכוי אחד מול תעודה אחת.
 // מותר רק בין תעודות פתוחות (טרם אומת זיכוי). התעודה שנבחרת נבלעת בתעודה הנוכחית,
-// ונמחקת עם גיבוי לסל המחזור + "בטל" מיידי — בדיוק כמו "מחק תעודה". פעולה אטומית בענן.
+// ונמחקת עם גיבוי לסל המחזור + "בטל" מיידי — בדיוק כמו "מחק תעודה". טרנזקציה אטומית בענן (v54): קריאה טרייה + אימות פתיחוּת בתוך הטרנזקציה; שחזור מהסל מבטל את כל המיזוג יחד.
 let retMergeTargetId = null;
 function retMergeBtnHtml(id) {
   return '<button data-role="ret-merge" data-id="' + id + '" class="btn-tap w-full mt-2 bg-white border border-purple-200 text-purple-700 rounded-xl py-2 font-black text-[11px]"><i class="fa-solid fa-layer-group"></i> מזג עם תעודה פתוחה אחרת</button>';
@@ -11469,32 +11492,46 @@ async function mergeReturnDocs(targetId, sourceId) {
   const source = returns.find(x => x.id === sourceId);
   if (!target || !source || target.credited || source.credited || targetId === sourceId) { showToast('המיזוג בוטל — אחת התעודות כבר לא פתוחה', null, null, 3000); return; }
   if (!db) { showToast('אין חיבור לענן — מיזוג דורש חיבור.', null, null, 3500); return; }
-  const targetBackup = cloneSafe({ ...target });
-  const sourceBackup = cloneSafe({ ...source });
-  const updateData = mergedReturnUpdateData(target, source);
   showCloudBusy();
   try {
-    const batch = writeBatch(db);
-    batch.update(doc(db, 'artifacts', appId, 'public', 'data', 'returns', targetId), updateData);
-    batch.set(doc(db, 'artifacts', appId, 'public', 'data', 'trash', trashDocId('returns', sourceId)), {
-      collectionName: 'returns', originalId: sourceId, reason: 'merge-return', deletedAt: Date.now(), data: sourceBackup
+    // v54: טרנזקציה במקום batch — קוראים את שתי התעודות טרי מהענן ומוודאים שהן עדיין פתוחות
+    // בתוך הטרנזקציה, כדי ששני מכשירים לא ידרסו זה את זה (מיזוג מול מיזוג, מיזוג מול אימות זיכוי).
+    const tRef = doc(db, 'artifacts', appId, 'public', 'data', 'returns', targetId);
+    const sRef = doc(db, 'artifacts', appId, 'public', 'data', 'returns', sourceId);
+    const trashId = trashDocId('returns', sourceId);
+    const done = await runTransaction(db, async (transaction) => {
+      const tSnap = await transaction.get(tRef);
+      const sSnap = await transaction.get(sRef);
+      if (!tSnap.exists() || !sSnap.exists()) { const err = new Error('אחת התעודות כבר לא קיימת — ייתכן שמוזגה או נמחקה ממכשיר אחר.'); err.code = 'merge-abort'; throw err; }
+      const tFresh = { id: tSnap.id, ...tSnap.data() };
+      const sFresh = { id: sSnap.id, ...sSnap.data() };
+      if (tFresh.credited || sFresh.credited) { const err = new Error('אחת התעודות אומתה בינתיים ממכשיר אחר — מיזוג אפשרי רק בין תעודות פתוחות.'); err.code = 'merge-abort'; throw err; }
+      const updateData = mergedReturnUpdateData(tFresh, sFresh);
+      const targetBackup = cloneSafe({ ...tFresh });
+      const sourceBackup = cloneSafe({ ...sFresh });
+      transaction.update(tRef, updateData);
+      transaction.set(doc(db, 'artifacts', appId, 'public', 'data', 'trash', trashId), {
+        collectionName: 'returns', originalId: sourceId, reason: 'merge-return', deletedAt: Date.now(),
+        data: sourceBackup, mergeTargetId: targetId, mergeTargetBackup: targetBackup
+      });
+      transaction.delete(sRef);
+      return { targetBackup, sourceBackup };
     });
-    batch.delete(doc(db, 'artifacts', appId, 'public', 'data', 'returns', sourceId));
-    await batch.commit();
-    logAction('update', 'מיזוג תעודות חזרה', 'התעודה מ־' + dDisp(sourceBackup.docDate || sourceBackup.date) + ' מוזגה לתוך התעודה מ־' + dDisp(targetBackup.docDate || targetBackup.date), { targetId, sourceId });
-    showToast('התעודות מוזגו — נשמר גיבוי', 'בטל', () => undoReturnMerge(targetBackup, sourceBackup));
+    logAction('update', 'מיזוג תעודות חזרה', 'התעודה מ־' + dDisp(done.sourceBackup.docDate || done.sourceBackup.date) + ' מוזגה לתוך התעודה מ־' + dDisp(done.targetBackup.docDate || done.targetBackup.date), { targetId, sourceId });
+    showToast('התעודות מוזגו — נשמר גיבוי', 'בטל', () => undoReturnMerge(done.targetBackup, done.sourceBackup, trashId));
   } catch (e) {
-    console.error('merge returns failed', e);
-    showToast('המיזוג נכשל — לא שיניתי כלום.', null, null, 4000);
+    if (e && e.code === 'merge-abort') { showToast(e.message, null, null, 4200); }
+    else { console.error('merge returns failed', e); showToast('המיזוג נכשל — לא שיניתי כלום.', null, null, 4000); }
   } finally { hideCloudBusy(); }
 }
-async function undoReturnMerge(targetBackup, sourceBackup) {
+async function undoReturnMerge(targetBackup, sourceBackup, trashId) {
   if (!db || !targetBackup || !targetBackup.id || !sourceBackup || !sourceBackup.id) return;
   showCloudBusy();
   try {
     const batch = writeBatch(db);
     batch.set(doc(db, 'artifacts', appId, 'public', 'data', 'returns', targetBackup.id), cloneSafe(targetBackup));
     batch.set(doc(db, 'artifacts', appId, 'public', 'data', 'returns', sourceBackup.id), cloneSafe(sourceBackup));
+    if (trashId) batch.delete(doc(db, 'artifacts', appId, 'public', 'data', 'trash', trashId)); // v54: הביטול מנקה גם את גיבוי המיזוג מהסל
     await batch.commit();
     logAction('update', 'ביטול מיזוג תעודות חזרה', 'שתי התעודות שוחזרו כפי שהיו', { targetId: targetBackup.id, sourceId: sourceBackup.id });
     showToast('המיזוג בוטל — שתי התעודות שוחזרו ✓', null, null, 2600);
@@ -15126,7 +15163,7 @@ app.addEventListener('click', (e) => {
   });
   else if (role === 'health-go-prices') setView('prices');
   else if (role === 'health-go-receipts') setView('receiptsHistory');
-  else if (role === 'trash-restore') showConfirm('שחזור מסל המחזור', 'לשחזר את הרשומה למקום המקורי?', 'שחזר', () => restoreTrashItem(id));
+  else if (role === 'trash-restore') { const ti = trash.find(x => x.trashId === id); const tiMerge = !!(ti && ti.reason === 'merge-return' && ti.mergeTargetBackup); showConfirm('שחזור מסל המחזור', tiMerge ? 'זו רשומת מיזוג — השחזור יבטל את כל המיזוג: הפריטים יחזרו לתעודת המקור, ותעודת היעד תחזור למצבה שלפני המיזוג.' : 'לשחזר את הרשומה למקום המקורי?', 'שחזר', () => restoreTrashItem(id)); }
   else if (role === 'trash-delete') showConfirm('מחיקה לצמיתות', 'למחוק את הרשומה הזאת לצמיתות מסל המחזור?', 'מחק לצמיתות', () => deleteTrashItem(id));
   else if (role === 'trash-clear') showConfirm('ריקון סל מחזור', 'למחוק לצמיתות את כל מה שנמצא בסל המחזור?', 'רוקן', clearTrash);
   else if (role === 'del-receipt') { const rc = receipts.find(x => x.id === id); showConfirm('מחיקת תעודה', 'למחוק את התעודה' + (rc ? ' מ-' + new Date(rc.timestamp).toLocaleDateString('he-IL') : '') + '?', 'מחק', () => delReceipt(id)); }
