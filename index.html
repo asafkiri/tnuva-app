@@ -615,7 +615,7 @@ let receiptDupConfirmed = false; // אישור שמירה למרות חשד לכ
 const RECEIPT_DRAFT_KEY = 'tn_receipt_draft';
 let receivingDigitsMissTimer = null;
 let receivingDigitsMissNotified = '';
-const APP_VERSION = '54';
+const APP_VERSION = '55';
 // v40: תג גרסה קבוע בפינת המסך — לדעת בשנייה איזו גרסה באמת רצה על המכשיר
 // (עוזר במיוחד מול מטמון ה-PWA). pointer-events:none — לעולם לא חוסם מגע.
 document.body.insertAdjacentHTML('beforeend', '<div id="appVerBadge" style="position:fixed;bottom:4px;left:6px;z-index:9999;pointer-events:none;font-size:10px;font-weight:800;color:#64748b;opacity:.55;direction:rtl">גרסה ' + APP_VERSION + '</div>');        // מוצג בהגדרות; תואם למטמון sw.js
@@ -11718,8 +11718,19 @@ function receiptDiscrepancyInfo(rc, opts) {
   // את תיקון v190 לנצח. הסמנטיקה הנכונה: כשעוגן היחידות שלם, הנגזרת
   // (המתוקנת) היא האמת; השדה השמור הוא גיבוי רק לתעודות בלי עוגן.
   const unresolvedUnitsGap = paperUnits == null ? storedUnitsGap : derivedUnitsGap;
+  // v55: עוגן השורות — העד של תנובה. בנייר בלי סך יחידות (תנובה לא מדפיסה כזה),
+  // שורת "פריטים" שהוקלדה עם כל תעודה היא העד המאמת: כשהיא שלמה ותואמת בדיוק את
+  // שורות התעודה (כולל ארגזים, בלי שורות פיקדון נגזרות — כלל הספירה של הסגירה),
+  // פער אגורות עד אותה סובלנות עיגול לא משאיר תעודה אדומה לנצח. שני עדים, דוקטרינה
+  // אחת: הסגירה בירכה את האגורה של עיגול-שורות, וההיסטוריה מכבדת את אותה ברכה.
+  const lineParts = notePartsForUnits.filter(x => x.lines != null && x.lines !== '');
+  const paperLines = notePartsForUnits.length > 0 && lineParts.length === notePartsForUnits.length
+    ? lineParts.reduce((a, x) => a + (Number(x.lines) || 0), 0)
+    : null;
+  const docLineCount = (rc.items || []).reduce((a, l) => a + (l.isDeposit || String(l.productId || '').indexOf('deposit-') === 0 ? 0 : 1), 0);
+  const linesVerified = paperLines != null && paperLines === docLineCount;
   const amountGapCents = Math.abs(Math.round(unresolvedAmountGap * 100));
-  const amountToleranceCents = paperUnits != null && unresolvedUnitsGap === 0 ? RECEIPT_ROUNDING_TOLERANCE_CENTS : 0;
+  const amountToleranceCents = ((paperUnits != null && unresolvedUnitsGap === 0) || (paperUnits == null && linesVerified)) ? RECEIPT_ROUNDING_TOLERANCE_CENTS : 0;
   const amountGapOpen = amountGapCents > amountToleranceCents;
   if (amountGapOpen && Math.round(unresolvedAmountGap * 100) > 0) shortVal += unresolvedAmountGap;
   else if (amountGapOpen && Math.round(unresolvedAmountGap * 100) < 0) overVal += -unresolvedAmountGap;
