@@ -166,6 +166,19 @@
       </div>
     </div>
 
+    <!-- v52: בוחר מיזוג תעודות חזרה פתוחות -->
+    <div id="retMergeModal" role="dialog" aria-modal="true" class="hidden fixed inset-0 bg-slate-900/60 backdrop-blur-sm items-center justify-center p-4 z-50">
+      <div class="bg-white rounded-3xl shadow-2xl w-full max-w-sm overflow-hidden flex flex-col max-h-[80vh]">
+        <div class="p-5 pb-3 text-center">
+          <div class="mx-auto mb-3 w-14 h-14 rounded-full bg-purple-50 flex items-center justify-center"><i class="fa-solid fa-layer-group text-purple-600 text-2xl"></i></div>
+          <h3 class="font-black text-lg text-slate-800 mb-1">מיזוג תעודות חזרה</h3>
+          <p id="retMergeSub" class="text-slate-500 text-sm"></p>
+        </div>
+        <div id="retMergeList" class="px-4 pb-2 overflow-y-auto space-y-2"></div>
+        <div class="p-4 pt-2"><button data-role="ret-merge-cancel" class="btn-tap w-full py-3 rounded-xl font-black bg-slate-100 text-slate-600">ביטול</button></div>
+      </div>
+    </div>
+
     <div id="promptModal" class="hidden fixed inset-0 bg-slate-900/60 backdrop-blur-sm items-center justify-center p-4 z-50">
       <div class="bg-white rounded-3xl shadow-2xl w-full max-w-sm overflow-hidden">
         <div class="p-5">
@@ -602,7 +615,7 @@ let receiptDupConfirmed = false; // אישור שמירה למרות חשד לכ
 const RECEIPT_DRAFT_KEY = 'tn_receipt_draft';
 let receivingDigitsMissTimer = null;
 let receivingDigitsMissNotified = '';
-const APP_VERSION = '51';
+const APP_VERSION = '52';
 // v40: תג גרסה קבוע בפינת המסך — לדעת בשנייה איזו גרסה באמת רצה על המכשיר
 // (עוזר במיוחד מול מטמון ה-PWA). pointer-events:none — לעולם לא חוסם מגע.
 document.body.insertAdjacentHTML('beforeend', '<div id="appVerBadge" style="position:fixed;bottom:4px;left:6px;z-index:9999;pointer-events:none;font-size:10px;font-weight:800;color:#64748b;opacity:.55;direction:rtl">גרסה ' + APP_VERSION + '</div>');        // מוצג בהגדרות; תואם למטמון sw.js
@@ -2764,7 +2777,7 @@ function renderReturnsHistory() {
           '<div class="flex gap-2 items-stretch mb-2">' +
             '<div class="flex-1 flex items-center gap-1 border-2 border-slate-200 rounded-xl px-2 focus-within:border-blue-500"><span class="text-slate-400 font-black">₪</span><input id="rvNote_' + r.id + '" type="text" inputmode="decimal" placeholder="סכום זיכוי ללא מע״מ" class="w-full h-11 text-center text-base font-black outline-none bg-transparent"></div>' +
             '<button data-role="rv-verify-inline" data-id="' + r.id + '" class="btn-tap px-4 rounded-xl font-black bg-green-600 text-white flex items-center gap-1"><i class="fa-solid fa-check-double"></i> בדוק</button>' +
-          '</div>' + '<button data-role="ret-edit-items" data-id="' + r.id + '" class="btn-tap w-full mt-2 bg-white border border-indigo-200 text-indigo-700 rounded-xl py-2 font-black text-[11px]"><i class="fa-solid fa-pen-to-square"></i> ערוך פריטים בתעודה</button>' + '<button data-role="ret-edit-date" data-id="' + r.id + '" class="btn-tap w-full mt-2 bg-white border border-blue-200 text-blue-700 rounded-xl py-2 font-black text-[11px]"><i class="fa-solid fa-calendar-days"></i> ערוך תאריך תעודה</button>' + '<button data-role="ret-delete" data-id="' + r.id + '" class="btn-tap w-full mt-2 bg-white border border-red-200 text-red-600 rounded-xl py-2 font-black text-[11px]"><i class="fa-solid fa-trash-can"></i> מחק תעודה</button>'
+          '</div>' + '<button data-role="ret-edit-items" data-id="' + r.id + '" class="btn-tap w-full mt-2 bg-white border border-indigo-200 text-indigo-700 rounded-xl py-2 font-black text-[11px]"><i class="fa-solid fa-pen-to-square"></i> ערוך פריטים בתעודה</button>' + '<button data-role="ret-edit-date" data-id="' + r.id + '" class="btn-tap w-full mt-2 bg-white border border-blue-200 text-blue-700 rounded-xl py-2 font-black text-[11px]"><i class="fa-solid fa-calendar-days"></i> ערוך תאריך תעודה</button>' + (pending >= 2 ? retMergeBtnHtml(r.id) : '') + '<button data-role="ret-delete" data-id="' + r.id + '" class="btn-tap w-full mt-2 bg-white border border-red-200 text-red-600 rounded-xl py-2 font-black text-[11px]"><i class="fa-solid fa-trash-can"></i> מחק תעודה</button>'
         : breakdown +
           creditPartsInfoHtml(r) +
           (openGap ? creditAddNoteHtml(r) : '') +
@@ -2786,7 +2799,7 @@ function renderReturnsHistory() {
           '<div class="text-sm text-slate-500">נשלח אל: <b>' + (r.sentTo || '') + '</b></div></div>' +
           '<div class="text-left shrink-0"><span class="bg-blue-100 text-blue-800 font-black px-3 py-1 rounded-full text-xs inline-block">' + ((r.items || []).length) + ' פריטים</span><div class="text-xs font-black text-emerald-700 mt-1">זיכוי ₪' + fmtMoney(rt.ex) + '</div></div>' +
         '</div>' +
-        '<div class="p-4"><ul class="space-y-2">' + items + '</ul></div>' +
+        retMergeNoteWrap(r) + '<div class="p-4"><ul class="space-y-2">' + items + '</ul></div>' +
         '<div class="p-3 border-t border-slate-100">' + actionArea + '</div>' +
       '</div>';
     }).join('');
@@ -11375,6 +11388,122 @@ async function delReceipt(id) {
   if (ok && backup) showToast('התעודה נמחקה ונשמר גיבוי', 'בטל', () => restoreDoc('receipts', backup));
 }
 
+// ===== v52: מיזוג תעודות חזרה פתוחות =====
+// הנהג מזכה לרוב חזרה שבועית ויומית ביחד — מיזוג מאפשר לאמת זיכוי אחד מול תעודה אחת.
+// מותר רק בין תעודות פתוחות (טרם אומת זיכוי). התעודה שנבחרת נבלעת בתעודה הנוכחית,
+// ונמחקת עם גיבוי לסל המחזור + "בטל" מיידי — בדיוק כמו "מחק תעודה". פעולה אטומית בענן.
+let retMergeTargetId = null;
+function retMergeBtnHtml(id) {
+  return '<button data-role="ret-merge" data-id="' + id + '" class="btn-tap w-full mt-2 bg-white border border-purple-200 text-purple-700 rounded-xl py-2 font-black text-[11px]"><i class="fa-solid fa-layer-group"></i> מזג עם תעודה פתוחה אחרת</button>';
+}
+function retMergedNoteHtml(r) {
+  const arr = (r && Array.isArray(r.mergedFrom)) ? r.mergedFrom : [];
+  if (!arr.length) return '';
+  return arr.map(m => '<div class="text-[11px] text-purple-700 bg-purple-50 border border-purple-100 rounded-lg px-2 py-1 mt-1 font-bold"><i class="fa-solid fa-layer-group"></i> מוזגה לכאן תעודת חזרה מ־' + dDisp(m.docDate || '') + (m.returnKind === 'daily' ? ' (יומית)' : ' (שבועית)') + ' · ' + (Number(m.itemsCount) || 0) + ' פריטים · ₪' + fmtMoney(m.totalExVat || 0) + '</div>').join('');
+}
+function retMergeNoteWrap(r) { const h = retMergedNoteHtml(r); return h ? '<div class="px-4 pt-2">' + h + '</div>' : ''; }
+// מוצר זהה (ברקוד, או שם כשאין ברקוד לשניהם) באותו מחיר — הכמויות מתאחדות לשורה אחת;
+// מחיר שונה בין התעודות — נשארות שתי שורות נפרדות כדי שהכסף יישאר מדויק לאגורה.
+function mergeReturnItemLines(targetItems, sourceItems) {
+  const out = (targetItems || []).map(l => ({ ...l }));
+  const priceOf = l => r2(Number(l.unitPrice) || 0);
+  (sourceItems || []).forEach(src => {
+    const sLine = { ...src };
+    const hit = out.find(t => {
+      const sameId = (t.barcode && sLine.barcode) ? String(t.barcode) === String(sLine.barcode) : (!t.barcode && !sLine.barcode && t.name === sLine.name);
+      return sameId && Math.abs(priceOf(t) - priceOf(sLine)) < 0.005;
+    });
+    if (hit) {
+      hit.qty = (Number(hit.qty) || 0) + (Number(sLine.qty) || 0);
+      if (priceOf(hit) > 0) hit.lineTotal = r2(priceOf(hit) * hit.qty);
+      delete hit.noteQty; // תעודה פתוחה — אין משמעות לכמות-זיכוי ישנה אחרי איחוד
+    } else out.push(sLine);
+  });
+  return out;
+}
+function mergedReturnUpdateData(target, source) {
+  const items = mergeReturnItemLines(target.items, source.items);
+  const srcTot = returnTotals(source);
+  const ex = r2(returnTotals(target).ex + srcTot.ex);
+  const mergedFrom = (Array.isArray(target.mergedFrom) ? target.mergedFrom.slice() : []);
+  mergedFrom.push({ docDate: source.docDate || source.date || '', returnKind: source.returnKind || 'weekly', sentTo: source.sentTo || '', itemsCount: (source.items || []).length, totalExVat: srcTot.ex, mergedAt: Date.now() });
+  return { items, totalExVat: ex, totalIncVat: amountIncForDoc(target, ex), mergedFrom };
+}
+function openReturnMergePicker(id) {
+  const target = returns.find(x => x.id === id);
+  if (!target || target.credited) { showToast('אפשר למזג רק תעודת חזרה פתוחה', null, null, 2600); return; }
+  const others = returns.filter(x => x.id !== id && !x.credited);
+  if (!others.length) { showToast('אין תעודת חזרה פתוחה נוספת למיזוג', null, null, 2600); return; }
+  retMergeTargetId = id;
+  const sub = $('retMergeSub');
+  if (sub) sub.textContent = 'בחר איזו תעודה פתוחה למזג לתוך התעודה מ־' + dDisp(target.docDate || target.date) + '. הפריטים יעברו אליה, והתעודה שתיבחר תימחק עם גיבוי.';
+  const list = $('retMergeList');
+  if (list) list.innerHTML = others.map(o => {
+    const t = returnTotals(o);
+    return '<button data-role="ret-merge-pick" data-id="' + o.id + '" class="btn-tap w-full p-3 rounded-2xl border-2 border-slate-100 hover:border-purple-400 text-right">' +
+      '<div class="flex items-center justify-between gap-2">' +
+        '<div class="min-w-0"><div class="font-black text-slate-800 text-sm">' + dDisp(o.docDate || o.date) +
+          (o.returnKind === 'daily' ? ' <span class="text-[10px] bg-emerald-50 text-emerald-700 border border-emerald-200 rounded px-1">יומית</span>' : ' <span class="text-[10px] bg-sky-50 text-sky-700 border border-sky-200 rounded px-1">שבועית</span>') + '</div>' +
+          '<div class="text-[11px] text-slate-400 mt-0.5">' + ((o.items || []).length) + ' פריטים · נשלח אל ' + htmlEscape(o.sentTo || '') + '</div></div>' +
+        '<div class="font-black text-emerald-700 shrink-0">₪' + fmtMoney(t.ex) + '</div>' +
+      '</div></button>';
+  }).join('');
+  const m = $('retMergeModal'); if (m) { m.classList.remove('hidden'); m.classList.add('flex'); }
+}
+function hideRetMergeModal() {
+  const m = $('retMergeModal'); if (m) { m.classList.add('hidden'); m.classList.remove('flex'); }
+  retMergeTargetId = null;
+}
+function confirmReturnMergePick(sourceId) {
+  const targetId = retMergeTargetId;
+  hideRetMergeModal();
+  const target = returns.find(x => x.id === targetId);
+  const source = returns.find(x => x.id === sourceId);
+  if (!target || !source || target.credited || source.credited || targetId === sourceId) { showToast('המיזוג בוטל — אחת התעודות כבר לא פתוחה', null, null, 3000); return; }
+  showConfirm('מיזוג תעודות חזרה',
+    'להעביר את הפריטים מהתעודה מ־' + dDisp(source.docDate || source.date) + ' לתוך התעודה מ־' + dDisp(target.docDate || target.date) + '? התעודה שנבחרה תימחק — יישמר גיבוי ותוכל לבטל מיד אחרי.',
+    'מזג', () => mergeReturnDocs(targetId, sourceId));
+}
+async function mergeReturnDocs(targetId, sourceId) {
+  const target = returns.find(x => x.id === targetId);
+  const source = returns.find(x => x.id === sourceId);
+  if (!target || !source || target.credited || source.credited || targetId === sourceId) { showToast('המיזוג בוטל — אחת התעודות כבר לא פתוחה', null, null, 3000); return; }
+  if (!db) { showToast('אין חיבור לענן — מיזוג דורש חיבור.', null, null, 3500); return; }
+  const targetBackup = cloneSafe({ ...target });
+  const sourceBackup = cloneSafe({ ...source });
+  const updateData = mergedReturnUpdateData(target, source);
+  showCloudBusy();
+  try {
+    const batch = writeBatch(db);
+    batch.update(doc(db, 'artifacts', appId, 'public', 'data', 'returns', targetId), updateData);
+    batch.set(doc(db, 'artifacts', appId, 'public', 'data', 'trash', trashDocId('returns', sourceId)), {
+      collectionName: 'returns', originalId: sourceId, reason: 'merge-return', deletedAt: Date.now(), data: sourceBackup
+    });
+    batch.delete(doc(db, 'artifacts', appId, 'public', 'data', 'returns', sourceId));
+    await batch.commit();
+    logAction('update', 'מיזוג תעודות חזרה', 'התעודה מ־' + dDisp(sourceBackup.docDate || sourceBackup.date) + ' מוזגה לתוך התעודה מ־' + dDisp(targetBackup.docDate || targetBackup.date), { targetId, sourceId });
+    showToast('התעודות מוזגו — נשמר גיבוי', 'בטל', () => undoReturnMerge(targetBackup, sourceBackup));
+  } catch (e) {
+    console.error('merge returns failed', e);
+    showToast('המיזוג נכשל — לא שיניתי כלום.', null, null, 4000);
+  } finally { hideCloudBusy(); }
+}
+async function undoReturnMerge(targetBackup, sourceBackup) {
+  if (!db || !targetBackup || !targetBackup.id || !sourceBackup || !sourceBackup.id) return;
+  showCloudBusy();
+  try {
+    const batch = writeBatch(db);
+    batch.set(doc(db, 'artifacts', appId, 'public', 'data', 'returns', targetBackup.id), cloneSafe(targetBackup));
+    batch.set(doc(db, 'artifacts', appId, 'public', 'data', 'returns', sourceBackup.id), cloneSafe(sourceBackup));
+    await batch.commit();
+    logAction('update', 'ביטול מיזוג תעודות חזרה', 'שתי התעודות שוחזרו כפי שהיו', { targetId: targetBackup.id, sourceId: sourceBackup.id });
+    showToast('המיזוג בוטל — שתי התעודות שוחזרו ✓', null, null, 2600);
+  } catch (e) {
+    console.error('undo merge failed', e);
+    showToast('הביטול נכשל — אפשר לשחזר מסל המחזור בהגדרות.', null, null, 4500);
+  } finally { hideCloudBusy(); }
+}
+
 // --- היסטוריית תעודות + דוח טווח ---
 // כרטיס תעודת חזרות בתוך מסך תעודות הקליטה
 function returnCardInReceipts(r) {
@@ -11405,7 +11534,7 @@ function returnCardInReceipts(r) {
       '<div class="flex gap-2 items-stretch">' +
         '<div class="flex-1 flex items-center gap-1 border-2 border-slate-200 rounded-xl px-2 focus-within:border-blue-500"><span class="text-slate-400 font-black">₪</span><input id="rvNote_' + r.id + '" type="text" inputmode="decimal" placeholder="סכום זיכוי ללא מע״מ" class="w-full h-11 text-center text-base font-black outline-none bg-transparent"></div>' +
         '<button data-role="rv-verify-inline" data-id="' + r.id + '" class="btn-tap px-4 rounded-xl font-black bg-green-600 text-white flex items-center gap-1"><i class="fa-solid fa-check-double"></i> בדוק</button>' +
-      '</div>' + '<button data-role="ret-edit-items" data-id="' + r.id + '" class="btn-tap w-full mt-2 bg-white border border-indigo-200 text-indigo-700 rounded-xl py-2 font-black text-[11px]"><i class="fa-solid fa-pen-to-square"></i> ערוך פריטים בתעודה</button>' + '<button data-role="ret-edit-date" data-id="' + r.id + '" class="btn-tap w-full mt-2 bg-white border border-blue-200 text-blue-700 rounded-xl py-2 font-black text-[11px]"><i class="fa-solid fa-calendar-days"></i> ערוך תאריך תעודה</button>' + '<button data-role="ret-delete" data-id="' + r.id + '" class="btn-tap w-full mt-2 bg-white border border-red-200 text-red-600 rounded-xl py-2 font-black text-[11px]"><i class="fa-solid fa-trash-can"></i> מחק תעודה</button>'
+      '</div>' + '<button data-role="ret-edit-items" data-id="' + r.id + '" class="btn-tap w-full mt-2 bg-white border border-indigo-200 text-indigo-700 rounded-xl py-2 font-black text-[11px]"><i class="fa-solid fa-pen-to-square"></i> ערוך פריטים בתעודה</button>' + '<button data-role="ret-edit-date" data-id="' + r.id + '" class="btn-tap w-full mt-2 bg-white border border-blue-200 text-blue-700 rounded-xl py-2 font-black text-[11px]"><i class="fa-solid fa-calendar-days"></i> ערוך תאריך תעודה</button>' + (returns.filter(x => !x.credited).length >= 2 ? retMergeBtnHtml(r.id) : '') + '<button data-role="ret-delete" data-id="' + r.id + '" class="btn-tap w-full mt-2 bg-white border border-red-200 text-red-600 rounded-xl py-2 font-black text-[11px]"><i class="fa-solid fa-trash-can"></i> מחק תעודה</button>'
     : '<div class="mt-2">' + creditPartsInfoHtml(r) + (openGap ? creditAddNoteHtml(r) : '') +
       '<button data-role="uncredit" data-id="' + r.id + '" class="btn-tap w-full bg-white border border-slate-300 text-slate-500 rounded-xl py-2 font-black text-[11px] mt-2"><i class="fa-solid fa-rotate-left"></i> בטל אימות — פתח מחדש לתיקון</button></div>' +
       '<div class="flex gap-2">' +
@@ -11422,7 +11551,7 @@ function returnCardInReceipts(r) {
         '<div class="flex items-center gap-2 shrink-0"><div class="text-left"><div class="text-[11px] text-slate-400">זיכוי ללא מע"מ</div><div class="font-black text-emerald-700">₪' + fmtMoney(rt.ex) + '</div></div><i class="fa-solid fa-chevron-down hist-chevron text-slate-400 transition-transform"></i></div>' +
       '</div>' +
     '</summary>' +
-    '<div class="px-4 pb-4"><div class="bg-slate-50 rounded-xl p-3 border border-slate-100">' + rows + '</div>' + actionArea + '</div>' +
+    '<div class="px-4 pb-4"><div class="bg-slate-50 rounded-xl p-3 border border-slate-100">' + rows + '</div>' + retMergedNoteHtml(r) + actionArea + '</div>' +
   '</details>';
 }
 function receiptsRangeHtml() {
@@ -14645,6 +14774,9 @@ app.addEventListener('click', (e) => {
   else if (role === 'ret-resend') { const r = returns.find(x => x.id === id); if (r) openReturnsResend(r); }
   else if (role === 'ret-edit-date') { const r = returns.find(x => x.id === id); if (r) openReturnDateEdit(r); }
   else if (role === 'ret-delete') { showConfirm('מחיקת תעודת חזרה', 'למחוק את תעודת החזרה הזו? יישמר גיבוי ותוכל לבטל מיד אחרי.', 'מחק', () => delReturn(id)); }
+  else if (role === 'ret-merge') { openReturnMergePicker(id); }
+  else if (role === 'ret-merge-pick') { confirmReturnMergePick(id); }
+  else if (role === 'ret-merge-cancel') { hideRetMergeModal(); }
   else if (role === 'add-note') addNote();
   else if (role === 'done-note') doneNote(id);
   else if (role === 'ret-add') addReturn(id);
