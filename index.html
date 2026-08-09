@@ -615,7 +615,7 @@ let receiptDupConfirmed = false; // אישור שמירה למרות חשד לכ
 const RECEIPT_DRAFT_KEY = 'tn_receipt_draft';
 let receivingDigitsMissTimer = null;
 let receivingDigitsMissNotified = '';
-const APP_VERSION = '52';
+const APP_VERSION = '53';
 // v40: תג גרסה קבוע בפינת המסך — לדעת בשנייה איזו גרסה באמת רצה על המכשיר
 // (עוזר במיוחד מול מטמון ה-PWA). pointer-events:none — לעולם לא חוסם מגע.
 document.body.insertAdjacentHTML('beforeend', '<div id="appVerBadge" style="position:fixed;bottom:4px;left:6px;z-index:9999;pointer-events:none;font-size:10px;font-weight:800;color:#64748b;opacity:.55;direction:rtl">גרסה ' + APP_VERSION + '</div>');        // מוצג בהגדרות; תואם למטמון sw.js
@@ -14074,6 +14074,15 @@ $('shortCreditOk').addEventListener('click', confirmShortCredit);
 $('shortCreditAmount').addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); confirmShortCredit(); } });
 $('shortCreditModal').addEventListener('click', (e) => { if (e.target === $('shortCreditModal')) hideShortCreditPrompt(); });
 $('confirmOk').addEventListener('click', () => { const cb = confirmCb; hideConfirm(); if (cb) cb(); });
+// v53: retMergeModal יושב מחוץ ל-#app — האצלת ה-data-role (הקשורה ל-#app בלבד)
+// מעולם לא ראתה את הלחיצות בתוכו. מאזין ישיר, כמו shortCreditModal השכן; רקע = ביטול.
+$('retMergeModal').addEventListener('click', (e) => {
+  if (e.target === $('retMergeModal')) { hideRetMergeModal(); return; }
+  const b = e.target.closest('[data-role]');
+  if (!b) return;
+  if (b.dataset.role === 'ret-merge-cancel') hideRetMergeModal();
+  else if (b.dataset.role === 'ret-merge-pick') confirmReturnMergePick(b.dataset.id);
+});
 $('brandHome').addEventListener('click', () => setView('receiving'));
 $('btnHistory').addEventListener('click', () => setView(mainMode === 'returns' ? 'returnsHistory' : (mainMode === 'receiving' ? 'receiptsHistory' : 'history')));
 $('segOrder').addEventListener('click', () => setView('order'));
@@ -14775,8 +14784,6 @@ app.addEventListener('click', (e) => {
   else if (role === 'ret-edit-date') { const r = returns.find(x => x.id === id); if (r) openReturnDateEdit(r); }
   else if (role === 'ret-delete') { showConfirm('מחיקת תעודת חזרה', 'למחוק את תעודת החזרה הזו? יישמר גיבוי ותוכל לבטל מיד אחרי.', 'מחק', () => delReturn(id)); }
   else if (role === 'ret-merge') { openReturnMergePicker(id); }
-  else if (role === 'ret-merge-pick') { confirmReturnMergePick(id); }
-  else if (role === 'ret-merge-cancel') { hideRetMergeModal(); }
   else if (role === 'add-note') addNote();
   else if (role === 'done-note') doneNote(id);
   else if (role === 'ret-add') addReturn(id);
