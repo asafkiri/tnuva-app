@@ -615,7 +615,7 @@ let receiptDupConfirmed = false; // אישור שמירה למרות חשד לכ
 const RECEIPT_DRAFT_KEY = 'tn_receipt_draft';
 let receivingDigitsMissTimer = null;
 let receivingDigitsMissNotified = '';
-const APP_VERSION = '58';
+const APP_VERSION = '59';
 // v40: תג גרסה קבוע בפינת המסך — לדעת בשנייה איזו גרסה באמת רצה על המכשיר
 // (עוזר במיוחד מול מטמון ה-PWA). pointer-events:none — לעולם לא חוסם מגע.
 document.body.insertAdjacentHTML('beforeend', '<div id="appVerBadge" style="position:fixed;bottom:4px;left:6px;z-index:9999;pointer-events:none;font-size:10px;font-weight:800;color:#64748b;opacity:.55;direction:rtl">גרסה ' + APP_VERSION + '</div>');        // מוצג בהגדרות; תואם למטמון sw.js
@@ -3268,12 +3268,15 @@ function renderReturnItemsEdit() {
       '<div class="flex justify-between text-lg font-black text-amber-900 mt-1.5 pt-1.5 border-t border-amber-200"><span>סכום מעודכן (ללא מע״מ)</span><span id="reEx">₪' + fmtMoney(ex) + '</span></div>' +
       (gap != null ? '<div class="flex justify-between text-sm mt-1 font-bold text-amber-900"><span>מול תעודת הזיכוי</span><span id="reGap" class="font-black ' + (Math.abs(gap) <= 1 ? 'text-emerald-700' : 'text-rose-700') + '">' + (Math.abs(gap) <= 1 ? 'סוגר ✓' : (gap > 0 ? 'הספק זיכה פחות ₪' + fmtMoney(gap) : 'הספק זיכה יותר ₪' + fmtMoney(-gap))) + '</span></div>' : '') +
     '</div>' +
+    // v210: הכפתור מופיע רק כשיש באמת פער — מבצע פעיל לתאריך התעודה ושורות שעדיין
+    // במחיר מלא. ברגע שהכל מתומחר נכון (או שאין מבצע) הוא נעלם, כדי לא להזמין
+    // לחיצות מיותרות על תעודות תקינות.
     (promoPending
       ? '<div class="bg-rose-50 border-2 border-rose-200 rounded-2xl p-3 mb-3">' +
           '<div class="text-[11px] font-black text-rose-800 mb-2"><i class="fa-solid fa-triangle-exclamation"></i> ' + promoPending + ' שורות במחיר מלא למרות מבצע שפעיל בתאריך התעודה — תנובה מזכה במחיר המבצע</div>' +
           '<button data-role="re-apply-promos" class="btn-tap w-full py-2.5 rounded-xl font-black bg-rose-600 text-white text-sm"><i class="fa-solid fa-tag"></i> תמחר מחדש לפי מבצעי החודש</button>' +
         '</div>'
-      : '<button data-role="re-apply-promos" class="btn-tap w-full mb-3 py-2.5 rounded-xl font-black bg-white border-2 border-rose-200 text-rose-700 text-sm"><i class="fa-solid fa-tag"></i> תמחר מחדש לפי מבצעי החודש (' + dDisp(returnEdit.docDate) + ')</button>') +
+      : '') +
     (hasDeposit ? '<div class="bg-indigo-50 border border-indigo-200 rounded-xl p-2.5 mb-3 text-[11px] font-bold text-indigo-800"><i class="fa-solid fa-circle-info"></i> יש בתעודה שורות פיקדון — אם שינית כמות של מוצר עם פיקדון, עדכן גם את שורת הפיקדון שלו.</div>' : '') +
     '<div class="space-y-2 mb-3">' + items.map(retEditRowHtml).join('') + '</div>' +
     '<div class="bg-white rounded-2xl border border-slate-200 p-3 shadow-sm mb-28">' +
