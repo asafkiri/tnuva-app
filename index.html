@@ -615,7 +615,7 @@ let receiptDupConfirmed = false; // אישור שמירה למרות חשד לכ
 const RECEIPT_DRAFT_KEY = 'tn_receipt_draft';
 let receivingDigitsMissTimer = null;
 let receivingDigitsMissNotified = '';
-const APP_VERSION = '56';
+const APP_VERSION = '57';
 // v40: תג גרסה קבוע בפינת המסך — לדעת בשנייה איזו גרסה באמת רצה על המכשיר
 // (עוזר במיוחד מול מטמון ה-PWA). pointer-events:none — לעולם לא חוסם מגע.
 document.body.insertAdjacentHTML('beforeend', '<div id="appVerBadge" style="position:fixed;bottom:4px;left:6px;z-index:9999;pointer-events:none;font-size:10px;font-weight:800;color:#64748b;opacity:.55;direction:rtl">גרסה ' + APP_VERSION + '</div>');        // מוצג בהגדרות; תואם למטמון sw.js
@@ -2564,9 +2564,16 @@ function emptyReturnsHtml() {
   return '<div class="text-center py-8 text-slate-400"><i class="fa-solid fa-rotate-left text-3xl mb-2"></i><div class="font-bold">הרשימה ריקה</div><div class="text-xs mt-1">חפש מוצר למעלה והוסף לרשימת החזרות</div></div>';
 }
 function buildReturnRow(it) {
+  // v208: מוצר שנמצא במבצע החודש — הזיכוי יחושב במחיר המבצע, ומראים את זה כבר כאן
+  let promoInfo = '';
+  if (!it.manual) {
+    const p = products.find(x => x.id === it.productId);
+    const ci = returnCreditInfo(p, returnsDocDate || todayStr());
+    if (ci.promoOn) promoInfo = '<div class="text-[10px] text-rose-600 font-bold mt-0.5"><i class="fa-solid fa-tag"></i> זיכוי במחיר מבצע ' + ci.promoPct + '% · ₪' + fmtUnitPrice(ci.price, true) + ' ליח׳</div>';
+  }
   const idInfo = it.manual
     ? '<div class="text-[11px] text-amber-600 font-bold mt-0.5"><i class="fa-solid fa-pen"></i> ידני · ₪' + fmtMoney(Number(it.unitPrice) || 0) + ' ליח׳ (ללא מע״מ)</div>'
-    : '<button data-role="edit-barcode" data-id="' + htmlEscape(it.productId) + '" class="text-[11px] text-slate-400 mt-0.5 flex items-center gap-1"><i class="fa-solid fa-barcode"></i> ' + htmlEscape(it.barcode || 'ללא ברקוד') + ' <i class="fa-solid fa-pen text-[9px] opacity-60"></i></button>';
+    : '<button data-role="edit-barcode" data-id="' + htmlEscape(it.productId) + '" class="text-[11px] text-slate-400 mt-0.5 flex items-center gap-1"><i class="fa-solid fa-barcode"></i> ' + htmlEscape(it.barcode || 'ללא ברקוד') + ' <i class="fa-solid fa-pen text-[9px] opacity-60"></i></button>' + promoInfo;
   return '<div class="flex items-center gap-2 p-2.5 bg-white border border-slate-100 rounded-2xl shadow-sm" data-rid="' + it.productId + '">' +
     '<div class="flex-1 min-w-0">' +
       '<div class="font-bold text-slate-800 text-sm leading-tight">' + htmlEscape(it.name) + '</div>' +
@@ -2722,7 +2729,18 @@ function addManualReturn() {
 }
 function openReturnsSend() {
   if (!returnsList.length) return;
-  const items = returnsList.map(it => { const p = products.find(x => x.id === it.productId); const unit = r2(it.manual ? (Number(it.unitPrice) || 0) : (Number(p && (Number(p.creditPrice) > 0 ? p.creditPrice : p.price)) || 0)); return { name: it.name, barcode: it.barcode || '', qty: it.qty, unitPrice: unit, lineTotal: r2(unit * it.qty) }; }); // מחיר זיכוי גובר על מחיר קנייה בחזרות
+  const deIn = $('retDocDate'); if (deIn && deIn.value) returnsDocDate = deIn.value;
+  const day = returnsDocDate || todayStr();
+  // v208: תנובה מזכה חזרות לפי מחיר המבצע של החודש, לא לפי מחיר מלא —
+  // מבצע שפעיל בתאריך התעודה מוזיל את מחיר הזיכוי (גם כשהוגדר creditPrice).
+  const items = returnsList.map(it => {
+    if (it.manual) { const unit = r2(Number(it.unitPrice) || 0); return { name: it.name, barcode: it.barcode || '', qty: it.qty, unitPrice: unit, lineTotal: lineTotalFromUnit(unit, it.qty) }; }
+    const p = products.find(x => x.id === it.productId);
+    const ci = returnCreditInfo(p, day);
+    const line = { name: it.name, barcode: it.barcode || '', qty: it.qty, unitPrice: ci.price, lineTotal: lineTotalFromUnit(ci.price, it.qty) };
+    if (ci.promoPct > 0) line.promoPct = ci.promoPct;
+    return line;
+  }); // מחיר זיכוי גובר על מחיר קנייה בחזרות
   // v167: מוצר עם פיקדון מוגדר — הבקבוקים חוזרים לספק, והפיקדון חוזר
   // אלינו: שורת פיקדון נפרדת בזיכוי, כמו שהיא מופיעה בתעודות הספק.
   returnsList.forEach(it => {
@@ -2775,7 +2793,7 @@ function renderReturnsHistory() {
     returns.map(r => {
       const d = new Date(r.timestamp);
       const rt = returnTotals(r);
-      const items = (r.items || []).map(it => '<li class="flex justify-between items-center text-sm border-b border-slate-100 pb-2 last:border-0"><div class="min-w-0"><span class="font-medium text-slate-700">' + htmlEscape(it.name) + '</span><span class="block text-[11px] text-slate-400"><i class="fa-solid fa-barcode"></i> ' + htmlEscape(it.barcode || '—') + '</span></div><span class="text-left shrink-0"><span class="font-black bg-slate-100 px-2 rounded">' + (it.qty != null ? Number(it.qty) + ' יח׳' : '') + '</span>' + (it.unitPrice != null ? '<span class="block text-[11px] text-slate-400 mt-0.5">₪' + fmtMoney(it.lineTotal != null ? it.lineTotal : it.unitPrice * (it.qty || 0)) + '</span>' : '') + '</span></li>').join('');
+      const items = (r.items || []).map(it => '<li class="flex justify-between items-center text-sm border-b border-slate-100 pb-2 last:border-0"><div class="min-w-0"><span class="font-medium text-slate-700">' + htmlEscape(it.name) + '</span><span class="block text-[11px] text-slate-400"><i class="fa-solid fa-barcode"></i> ' + htmlEscape(it.barcode || '—') + (it.promoPct ? ' <span class="text-rose-600 font-black">· מבצע ' + it.promoPct + '%</span>' : '') + '</span></div><span class="text-left shrink-0"><span class="font-black bg-slate-100 px-2 rounded">' + (it.qty != null ? Number(it.qty) + ' יח׳' : '') + '</span>' + (it.unitPrice != null ? '<span class="block text-[11px] text-slate-400 mt-0.5">₪' + fmtMoney(it.lineTotal != null ? it.lineTotal : it.unitPrice * (it.qty || 0)) + '</span>' : '') + '</span></li>').join('');
       const credited = !!r.credited;
       const di = returnsDiscrepancyInfo(r);
       const openGap = credited && r.creditStatus === 'open';
@@ -2835,7 +2853,8 @@ async function markCredited(id, val) {
   const data = { credited: val, creditedAt: val ? Date.now() : null };
   await runCloudTask('mark return credited', { op: 'update', path: dataPath('returns', id), data, operationId: makeOperationId('ret_credited') });
 }
-// ===== אימות תעודת זיכוי (חזרות) — מנגנון מקביל לקליטה (ללא מבצעים) =====
+// ===== אימות תעודת זיכוי (חזרות) — מנגנון מקביל לקליטה. v208: הזיכוי הצפוי
+// מחושב במחיר המבצע שפעיל בתאריך התעודה (כמו שתנובה מזכה בפועל) =====
 function returnsDiscrepancyInfo(r) {
   const shortItems = [], overItems = [];
   let shortVal = 0, overVal = 0;
@@ -2904,7 +2923,8 @@ function openReturnVerify(id, presetNoteTotal) {
   returnVerify = {
     id: r.id,
     noteTotal: (presetNoteTotal != null ? presetNoteTotal : (r.creditNoteTotal != null ? r.creditNoteTotal : null)),
-    items: (r.items || []).map(l => ({ name: l.name, barcode: l.barcode || '', qty: Number(l.qty) || 0, noteQty: (l.noteQty != null ? Number(l.noteQty) : (Number(l.qty) || 0)), unitPrice: r2(Number(l.unitPrice) || 0), checked: false }))
+    // v208: לא מעגלים את מחיר היחידה — מחיר מבצע נושא שברי אגורה והעיגול רק בסוף השורה
+    items: (r.items || []).map(l => ({ name: l.name, barcode: l.barcode || '', qty: Number(l.qty) || 0, noteQty: (l.noteQty != null ? Number(l.noteQty) : (Number(l.qty) || 0)), unitPrice: Number(l.unitPrice) || 0, promoPct: Number(l.promoPct) || 0, checked: false }))
   };
   rvOrigin = (currentView === 'receiptsHistory') ? 'receiptsHistory' : 'returnsHistory';
   setView('returnReconcile');
@@ -3011,8 +3031,9 @@ async function saveReturnVerify(opts) {
     if (Math.abs(g) > 1) { showConfirm('הפרש לא מוסבר', 'עדיין נשאר הפרש של ₪' + fmtMoney(Math.abs(g)) + ' בין תעודת הזיכוי למה ששוחזר מהשורות. לשמור בכל זאת?', 'שמור בכל זאת', function () { saveReturnVerify({ skipChecked: true, skipGap: true }); }); return; }
   }
   const outItems = items.map(l => {
-    const line = { name: l.name, barcode: l.barcode || '', qty: Number(l.qty) || 0, unitPrice: r2(Number(l.unitPrice) || 0), lineTotal: r2((Number(l.unitPrice) || 0) * (Number(l.qty) || 0)) };
+    const line = { name: l.name, barcode: l.barcode || '', qty: Number(l.qty) || 0, unitPrice: Number(l.unitPrice) || 0, lineTotal: lineTotalFromUnit(l.unitPrice, l.qty) };
     if (Number(l.noteQty) !== Number(l.qty)) line.noteQty = Number(l.noteQty) || 0;
+    if (Number(l.promoPct) > 0) line.promoPct = Number(l.promoPct);
     return line;
   });
   // הזיכוי שמגיע לך = מה שהחזרת בפועל (לפי הכמות שסרקת), לא מה שהספק רשם בתעודה
@@ -3042,12 +3063,24 @@ function retEditProductFor(l) {
   if (l.barcode) { const p = findProductByBarcode(l.barcode, null); if (p) return p; }
   return products.find(x => x.name === l.name) || null;
 }
-function retCreditUnit(p) { return r2(Number(p && (Number(p.creditPrice) > 0 ? p.creditPrice : p.price)) || 0); }
+// v208: תנובה מזכה חזרות לפי מחיר המבצע של החודש. מבצע פעיל לתאריך התעודה
+// קובע — בלי תנאי סף סל, כי הספק מזכה במחיר המבצע גם יחידה בודדת. כמו
+// בקליטה (v206) המחיר נשאר מדויק (שברי אגורה) והעיגול נעשה רק בסוף השורה.
+function returnCreditInfo(p, dateStr) {
+  if (!p) return { price: 0, promoOn: false, promoPct: 0 };
+  const base = Number(Number(p.creditPrice) > 0 ? p.creditPrice : p.price) || 0;
+  const pr = promoForProduct(p.id, dateStr);
+  const on = !!(pr && promoActive(pr, dateStr));
+  const pct = on ? (Number(pr.pct) || 0) : 0;
+  return { price: on ? discountedUnitPrice(base, pct) : r2(base), promoOn: on, promoPct: pct };
+}
+function retCreditUnit(p, dateStr) { return returnCreditInfo(p, dateStr).price; }
 function openReturnItemsEdit(id) {
   const r = returns.find(x => x.id === id); if (!r) return;
   returnEdit = {
     id: r.id,
     origin: (currentView === 'receiptsHistory') ? 'receiptsHistory' : 'returnsHistory',
+    docDate: String(r.docDate || r.date || '') || todayStr(), // v208: מחירי זיכוי לפי המבצע שפעיל בתאריך התעודה
     baseEx: returnTotals(r).ex,
     noteTotal: (r.creditNoteTotal != null ? Number(r.creditNoteTotal) : null),
     wasCredited: !!r.credited,
@@ -3059,7 +3092,8 @@ function openReturnItemsEdit(id) {
       name: l.name || '',
       barcode: l.barcode || '',
       qty: Number(l.qty) || 0,
-      unitPrice: r2(Number(l.unitPrice) || 0),
+      unitPrice: Number(l.unitPrice) || 0,
+      promoPct: Number(l.promoPct) || 0,
       isDeposit: !!l.isDeposit,
       noteQty: (l.noteQty != null ? Number(l.noteQty) : null),
       origQty: Number(l.qty) || 0
@@ -3096,8 +3130,9 @@ function retEditPackInfo(idx) {
 function retEditConvertPack(idx) {
   const info = retEditPackInfo(idx); if (!info || !returnEdit) return;
   const l = returnEdit.items[idx]; if (!l) return;
-  const out = [{ key: 'p' + Date.now(), productId: info.pack.id, name: info.pack.name, barcode: info.pack.barcode || '', qty: info.n, unitPrice: (retCreditUnit(info.pack) || r2((Number(l.unitPrice) || 0) * info.size)), isDeposit: false, noteQty: null, origQty: 0 }];
-  if (info.remainder > 0) out.push({ key: 's' + Date.now(), productId: info.single.id, name: info.single.name, barcode: info.single.barcode || '', qty: info.remainder, unitPrice: (retCreditUnit(info.single) || r2(Number(l.unitPrice) || 0)), isDeposit: false, noteQty: null, origQty: 0 });
+  const packCi = returnCreditInfo(info.pack, returnEdit.docDate), singleCi = returnCreditInfo(info.single, returnEdit.docDate);
+  const out = [{ key: 'p' + Date.now(), productId: info.pack.id, name: info.pack.name, barcode: info.pack.barcode || '', qty: info.n, unitPrice: (packCi.price || r2((Number(l.unitPrice) || 0) * info.size)), promoPct: packCi.promoPct, isDeposit: false, noteQty: null, origQty: 0 }];
+  if (info.remainder > 0) out.push({ key: 's' + Date.now(), productId: info.single.id, name: info.single.name, barcode: info.single.barcode || '', qty: info.remainder, unitPrice: (singleCi.price || r2(Number(l.unitPrice) || 0)), promoPct: singleCi.promoPct, isDeposit: false, noteQty: null, origQty: 0 });
   returnEdit.items.splice(idx, 1);
   out.forEach((x, k) => returnEdit.items.splice(idx + k, 0, x));
   buzz(30);
@@ -3115,7 +3150,8 @@ function retEditReplacePick(pid) {
   const l = returnEdit.items[returnEdit.replaceIdx]; const p = products.find(x => x.id === pid);
   if (!l || !p) return;
   l.productId = p.id; l.name = p.name; l.barcode = p.barcode || '';
-  const u = retCreditUnit(p); if (u > 0) l.unitPrice = u;
+  const ci = returnCreditInfo(p, returnEdit.docDate); if (ci.price > 0) l.unitPrice = ci.price;
+  l.promoPct = ci.promoPct;
   l.noteQty = null; l.isDeposit = false;
   returnEdit.replaceIdx = -1; returnEdit.addQuery = '';
   buzz(18);
@@ -3125,7 +3161,8 @@ function retEditReplacePick(pid) {
 function retEditAddItem(pid) {
   if (!returnEdit) return;
   const p = products.find(x => x.id === pid); if (!p) return;
-  returnEdit.items.push({ key: 'n' + Date.now(), productId: p.id, name: p.name, barcode: p.barcode || '', qty: 1, unitPrice: retCreditUnit(p), isDeposit: false, noteQty: null, origQty: 0 });
+  const ci = returnCreditInfo(p, returnEdit.docDate);
+  returnEdit.items.push({ key: 'n' + Date.now(), productId: p.id, name: p.name, barcode: p.barcode || '', qty: 1, unitPrice: ci.price, promoPct: ci.promoPct, isDeposit: false, noteQty: null, origQty: 0 });
   returnEdit.addQuery = '';
   buzz(18);
   renderReturnItemsEdit();
@@ -3174,7 +3211,7 @@ function retEditRowHtml(l, idx) {
       '<div class="flex items-center gap-1 text-[11px] text-slate-500 font-bold">₪<input data-role="re-price" data-id="' + idx + '" type="text" inputmode="decimal" value="' + priceFieldVal(l.unitPrice) + '" class="w-16 h-8 text-center font-black border-2 border-slate-200 rounded-lg outline-none focus:border-blue-500"> ליח׳</div>' +
     '</div>' +
     (pack ? '<div class="bg-indigo-50 border border-indigo-200 rounded-xl p-2 mt-2 text-center">' +
-      '<div class="text-[11px] font-black text-indigo-800">💡 ' + pack.total + ' יח׳ = ' + pack.n + ' × ' + (pack.pack.name || 'מארז') + (pack.remainder > 0 ? ' + ' + pack.remainder + ' בודדים' : '') + (retCreditUnit(pack.pack) > 0 ? ' · ₪' + fmtMoney(retCreditUnit(pack.pack)) + ' למארז' : '') + '</div>' +
+      '<div class="text-[11px] font-black text-indigo-800">💡 ' + pack.total + ' יח׳ = ' + pack.n + ' × ' + (pack.pack.name || 'מארז') + (pack.remainder > 0 ? ' + ' + pack.remainder + ' בודדים' : '') + (retCreditUnit(pack.pack, returnEdit.docDate) > 0 ? ' · ₪' + fmtMoney(retCreditUnit(pack.pack, returnEdit.docDate)) + ' למארז' : '') + '</div>' +
       '<button data-role="re-pack" data-id="' + idx + '" class="btn-tap mt-1.5 w-full py-2 rounded-xl font-black bg-indigo-600 text-white text-xs">פצל ל-' + pack.n + ' מארזים' + (pack.remainder > 0 ? ' + ' + pack.remainder + ' בודדים' : '') + '</button>' +
     '</div>' : '') +
     '<div class="flex gap-2 mt-2">' +
@@ -3228,10 +3265,11 @@ async function saveReturnItemsEdit(opts) {
     return;
   }
   const outItems = items.map(l => {
-    const qty = Number(l.qty) || 0, unit = r2(Number(l.unitPrice) || 0);
-    const line = { name: (l.name || '').trim(), barcode: l.barcode || '', qty: qty, unitPrice: unit, lineTotal: r2(unit * qty) };
+    const qty = Number(l.qty) || 0, unit = Number(l.unitPrice) || 0;
+    const line = { name: (l.name || '').trim(), barcode: l.barcode || '', qty: qty, unitPrice: unit, lineTotal: lineTotalFromUnit(unit, qty) };
     if (l.productId) line.productId = l.productId;
     if (l.isDeposit) line.isDeposit = true;
+    if (Number(l.promoPct) > 0) line.promoPct = Number(l.promoPct);
     // noteQty (מה שהספק זיכה בשורה) נשמר רק אם השורה עצמה לא נגעה — אחרת הוא כבר לא מתאר את אותה שורה
     if (l.noteQty != null && qty === l.origQty && l.noteQty !== qty) line.noteQty = l.noteQty;
     return line;
@@ -3432,7 +3470,7 @@ function renderContactPicker() {
 function renderSendModal(items, titleNote, type) {
   const list = items.map(i => {
     if (type === 'returns') {
-      return '<div class="flex justify-between items-center text-sm py-1.5 border-b border-slate-100 last:border-0"><div class="min-w-0 pl-2"><span class="font-bold text-slate-700">' + htmlEscape(i.name) + '</span><span class="block text-[11px] text-slate-400"><i class="fa-solid fa-barcode"></i> ' + htmlEscape(i.barcode || '—') + '</span></div><span class="font-black text-blue-700 whitespace-nowrap">' + (Number(i.qty) || 0) + ' יח׳</span></div>';
+      return '<div class="flex justify-between items-center text-sm py-1.5 border-b border-slate-100 last:border-0"><div class="min-w-0 pl-2"><span class="font-bold text-slate-700">' + htmlEscape(i.name) + '</span><span class="block text-[11px] text-slate-400"><i class="fa-solid fa-barcode"></i> ' + htmlEscape(i.barcode || '—') + (i.promoPct ? ' <span class="text-rose-600 font-black">· מבצע ' + i.promoPct + '%</span>' : '') + '</span></div><span class="font-black text-blue-700 whitespace-nowrap">' + (Number(i.qty) || 0) + ' יח׳</span></div>';
     }
     return '<div class="flex justify-between items-center text-sm py-1.5 border-b border-slate-100 last:border-0"><span class="font-bold text-slate-700">' + i.name + '</span><span class="font-black text-blue-700 whitespace-nowrap">' + i.amount + ' ' + i.unit + '</span></div>';
   }).join('');
@@ -4331,9 +4369,10 @@ function returnTotals(r) {
     return { ex, inc: amountIncForDoc(r, ex) };
   }
   let ex = 0;
+  const retDay = String((r && (r.docDate || r.date)) || '') || todayStr();
   ((r && r.items) || []).forEach(it => {
     let unit = Number(it.unitPrice);
-    if (!(unit > 0)) { const p = products.find(x => (it.barcode && x.barcode === it.barcode) || x.name === it.name); unit = Number(p && (Number(p.creditPrice) > 0 ? p.creditPrice : p.price)) || 0; }
+    if (!(unit > 0)) { const p = products.find(x => (it.barcode && x.barcode === it.barcode) || x.name === it.name); unit = p ? returnCreditInfo(p, retDay).price : 0; } // v208: גם הפולבאק במחיר מבצע
     ex += unit * (Number(it.qty) || 0);
   });
   ex = r2(ex);
@@ -11429,7 +11468,7 @@ function retMergeNoteWrap(r) { const h = retMergedNoteHtml(r); return h ? '<div 
 // מחיר שונה בין התעודות — נשארות שתי שורות נפרדות כדי שהכסף יישאר מדויק לאגורה.
 function mergeReturnItemLines(targetItems, sourceItems) {
   const out = (targetItems || []).map(l => ({ ...l }));
-  const priceOf = l => r2(Number(l.unitPrice) || 0);
+  const priceOf = l => Number(l.unitPrice) || 0; // v208: מחיר מבצע מדויק — בלי עיגול בהשוואה ובחישוב
   (sourceItems || []).forEach(src => {
     const sLine = { ...src };
     const hit = out.find(t => {
@@ -14773,7 +14812,7 @@ app.addEventListener('input', (e) => {
     return;
   }
   if (t.id === 'returnsSearch') { renderReturnsResults(t.value); return; }
-  if (t.id === 'retDocDate') { returnsDocDate = t.value || ''; saveReturnsDraft(); return; }
+  if (t.id === 'retDocDate') { returnsDocDate = t.value || ''; saveReturnsDraft(); refreshReturnsList(); return; } // v208: תג המבצע ברשימה תלוי בתאריך התעודה
   if (t.id === 'rcDocDate') { receiptDocDate = t.value || null; saveReceiptDraft(); return; }
   if (t.id === 'retDigits') { refreshReturnsDigits(t.value); return; }
   if (t.id === 'priceSearch') { priceQuery = t.value; refreshPricesList(priceQuery); return; }
