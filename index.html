@@ -619,7 +619,7 @@ let receiptDupConfirmed = false; // אישור שמירה למרות חשד לכ
 const RECEIPT_DRAFT_KEY = 'tn_receipt_draft';
 let receivingDigitsMissTimer = null;
 let receivingDigitsMissNotified = '';
-const APP_VERSION = '60';
+const APP_VERSION = '61';
 // v40: תג גרסה קבוע בפינת המסך — לדעת בשנייה איזו גרסה באמת רצה על המכשיר
 // (עוזר במיוחד מול מטמון ה-PWA). pointer-events:none — לעולם לא חוסם מגע.
 document.body.insertAdjacentHTML('beforeend', '<div id="appVerBadge" style="position:fixed;bottom:4px;left:6px;z-index:9999;pointer-events:none;font-size:10px;font-weight:800;color:#64748b;opacity:.55;direction:rtl">גרסה ' + APP_VERSION + '</div>');        // מוצג בהגדרות; תואם למטמון sw.js
@@ -12793,9 +12793,12 @@ function parsePriceChangeReport(pages) {
         .sort((a, b) => colDist(a, header) - colDist(b, header))[0] || null;
       const newIt = pickPrice(hNew);
       const oldIt = pickPrice(hOld);
-      // ברקוד: רצפי ספרות בעמודת הברקוד, מלמעלה למטה, מחוברים לרצף אחד
+      // ברקוד: רצפי ספרות בעמודת הברקוד, מלמעלה למטה, מחוברים לרצף אחד.
+      // בברקודי EAN-8 (גיל/שמנת 7296...) הספרה האחרונה נשברת לבד לשורה שנייה,
+      // מעט ימינה מהעמודה — לכן מקבלים גם ספרה בודדת, עם סבלנות רק לצד ימין
+      // (צד שמאל נשאר קשיח כדי לא לבלוע משקלים כמו "200" משם המוצר).
       const barcode = rowItems
-        .filter(it => /^\d{2,}$/.test(it.s.trim()) && colDist(it, hBarcode) < 15)
+        .filter(it => /^\d+$/.test(it.s.trim()) && (it.x - hBarcode.x) > -15 && (it.x - hBarcode.x) < 25)
         .sort((a, b) => b.y - a.y)
         .map(it => it.s.trim())
         .join('');
