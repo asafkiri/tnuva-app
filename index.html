@@ -619,7 +619,7 @@ let receiptDupConfirmed = false; // אישור שמירה למרות חשד לכ
 const RECEIPT_DRAFT_KEY = 'tn_receipt_draft';
 let receivingDigitsMissTimer = null;
 let receivingDigitsMissNotified = '';
-const APP_VERSION = '62';
+const APP_VERSION = '63';
 // v40: תג גרסה קבוע בפינת המסך — לדעת בשנייה איזו גרסה באמת רצה על המכשיר
 // (עוזר במיוחד מול מטמון ה-PWA). pointer-events:none — לעולם לא חוסם מגע.
 document.body.insertAdjacentHTML('beforeend', '<div id="appVerBadge" style="position:fixed;bottom:4px;left:6px;z-index:9999;pointer-events:none;font-size:10px;font-weight:800;color:#64748b;opacity:.55;direction:rtl">גרסה ' + APP_VERSION + '</div>');        // מוצג בהגדרות; תואם למטמון sw.js
@@ -11537,6 +11537,7 @@ function openRetReturnPicker(docId) {
     '<div class="flex items-center justify-between gap-2 bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 mb-1.5">' +
       '<div class="min-w-0 flex-1"><div class="font-black text-slate-800 text-sm truncate">' + htmlEscape(l.name) + '</div><div class="text-[11px] text-slate-400 font-bold">בתעודה: ' + (Number(l.qty) || 0) + ' יח׳</div></div>' +
       '<div class="shrink-0 flex items-center gap-1">' +
+        '<button data-rr-max="' + i + '" class="btn-tap h-9 px-2 rounded-lg bg-emerald-50 border border-emerald-200 text-emerald-700 font-black text-[11px]">הכל</button>' +
         '<button data-rr-minus="' + i + '" class="btn-tap w-9 h-9 rounded-lg bg-white border border-slate-200 text-slate-600 flex items-center justify-center"><i class="fa-solid fa-minus text-xs"></i></button>' +
         '<input data-rr-qty="' + i + '" type="text" inputmode="numeric" value="0" class="w-12 h-9 text-center font-black border-2 border-slate-200 rounded-lg outline-none focus:border-emerald-500">' +
         '<button data-rr-plus="' + i + '" class="btn-tap w-9 h-9 rounded-lg bg-white border border-slate-200 text-slate-600 flex items-center justify-center"><i class="fa-solid fa-plus text-xs"></i></button>' +
@@ -11562,9 +11563,11 @@ function openRetReturnPicker(docId) {
   };
   const clamp = (i, v) => Math.max(0, Math.min(Number(lines[i].qty) || 0, v));
   ov.addEventListener('click', (e) => {
-    const minus = e.target.closest('[data-rr-minus]'), plus = e.target.closest('[data-rr-plus]');
+    const minus = e.target.closest('[data-rr-minus]'), plus = e.target.closest('[data-rr-plus]'), max = e.target.closest('[data-rr-max]');
     if (minus) { const i = +minus.getAttribute('data-rr-minus'); takes[i] = clamp(i, takes[i] - 1); refresh(); return; }
     if (plus) { const i = +plus.getAttribute('data-rr-plus'); takes[i] = clamp(i, takes[i] + 1); refresh(); return; }
+    // "הכל" על שורה בודדת — כל הכמות של הפריט; לחיצה נוספת מאפסת (ביטול)
+    if (max) { const i = +max.getAttribute('data-rr-max'); const full = Number(lines[i].qty) || 0; takes[i] = takes[i] === full ? 0 : full; refresh(); return; }
     if (e.target.closest('[data-rr-all]')) { lines.forEach((l, i) => { takes[i] = Number(l.qty) || 0; }); refresh(); return; }
     if (e.target.closest('[data-rr-apply]')) { retReturnApply(docId, lines, takes, ov); return; }
     if (e.target.closest('[data-rr-close]') || e.target === ov) ov.remove();
