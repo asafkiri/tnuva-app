@@ -619,7 +619,7 @@ let receiptDupConfirmed = false; // אישור שמירה למרות חשד לכ
 const RECEIPT_DRAFT_KEY = 'tn_receipt_draft';
 let receivingDigitsMissTimer = null;
 let receivingDigitsMissNotified = '';
-const APP_VERSION = '61';
+const APP_VERSION = '62';
 // v40: תג גרסה קבוע בפינת המסך — לדעת בשנייה איזו גרסה באמת רצה על המכשיר
 // (עוזר במיוחד מול מטמון ה-PWA). pointer-events:none — לעולם לא חוסם מגע.
 document.body.insertAdjacentHTML('beforeend', '<div id="appVerBadge" style="position:fixed;bottom:4px;left:6px;z-index:9999;pointer-events:none;font-size:10px;font-weight:800;color:#64748b;opacity:.55;direction:rtl">גרסה ' + APP_VERSION + '</div>');        // מוצג בהגדרות; תואם למטמון sw.js
@@ -2827,7 +2827,7 @@ function renderReturnsHistory() {
           '<div class="flex gap-2 items-stretch mb-2">' +
             '<div class="flex-1 flex items-center gap-1 border-2 border-slate-200 rounded-xl px-2 focus-within:border-blue-500"><span class="text-slate-400 font-black">₪</span><input id="rvNote_' + r.id + '" type="text" inputmode="decimal" placeholder="סכום זיכוי ללא מע״מ" class="w-full h-11 text-center text-base font-black outline-none bg-transparent"></div>' +
             '<button data-role="rv-verify-inline" data-id="' + r.id + '" class="btn-tap px-4 rounded-xl font-black bg-green-600 text-white flex items-center gap-1"><i class="fa-solid fa-check-double"></i> בדוק</button>' +
-          '</div>' + '<button data-role="ret-edit-items" data-id="' + r.id + '" class="btn-tap w-full mt-2 bg-white border border-indigo-200 text-indigo-700 rounded-xl py-2 font-black text-[11px]"><i class="fa-solid fa-pen-to-square"></i> ערוך פריטים בתעודה</button>' + '<button data-role="ret-edit-date" data-id="' + r.id + '" class="btn-tap w-full mt-2 bg-white border border-blue-200 text-blue-700 rounded-xl py-2 font-black text-[11px]"><i class="fa-solid fa-calendar-days"></i> ערוך תאריך תעודה</button>' + (pending >= 2 ? retMergeBtnHtml(r.id) : '') + '<button data-role="ret-delete" data-id="' + r.id + '" class="btn-tap w-full mt-2 bg-white border border-red-200 text-red-600 rounded-xl py-2 font-black text-[11px]"><i class="fa-solid fa-trash-can"></i> מחק תעודה</button>'
+          '</div>' + '<button data-role="ret-return-open" data-id="' + r.id + '" class="btn-tap w-full mt-2 bg-white border border-emerald-200 text-emerald-700 rounded-xl py-2 font-black text-[11px]"><i class="fa-solid fa-rotate-left"></i> החזר פריטים לרשימה הפתוחה</button>' + '<button data-role="ret-edit-items" data-id="' + r.id + '" class="btn-tap w-full mt-2 bg-white border border-indigo-200 text-indigo-700 rounded-xl py-2 font-black text-[11px]"><i class="fa-solid fa-pen-to-square"></i> ערוך פריטים בתעודה</button>' + '<button data-role="ret-edit-date" data-id="' + r.id + '" class="btn-tap w-full mt-2 bg-white border border-blue-200 text-blue-700 rounded-xl py-2 font-black text-[11px]"><i class="fa-solid fa-calendar-days"></i> ערוך תאריך תעודה</button>' + (pending >= 2 ? retMergeBtnHtml(r.id) : '') + '<button data-role="ret-delete" data-id="' + r.id + '" class="btn-tap w-full mt-2 bg-white border border-red-200 text-red-600 rounded-xl py-2 font-black text-[11px]"><i class="fa-solid fa-trash-can"></i> מחק תעודה</button>'
         : breakdown +
           creditPartsInfoHtml(r) +
           (openGap ? creditAddNoteHtml(r) : '') +
@@ -11518,6 +11518,136 @@ async function delReceipt(id) {
   if (ok && backup) showToast('התעודה נמחקה ונשמר גיבוי', 'בטל', () => restoreDoc('receipts', backup));
 }
 
+// ===== v62: החזרת פריטים מתעודה שנשלחה אל הרשימה הפתוחה =====
+// הספק קלט רק חלק מהחזרות (מכסת 3% וכו') — במקום לערוך תעודה ולסרוק מחדש
+// בנפרד, פעולה אחת: בוחרים כמה יחידות מכל פריט חוזרות, התעודה מתעדכנת
+// (כולל שורות פיקדון צמודות והסכומים), והפריטים מתמזגים לרשימה השבועית.
+// זמין רק בתעודות שטרם אומת בהן זיכוי — אחרי אימות התעודה סגורה כספית.
+function openRetReturnPicker(docId) {
+  const r = returns.find(x => x.id === docId);
+  if (!r || r.credited) return;
+  const lines = (r.items || []).filter(l => !l.isDeposit && (Number(l.qty) || 0) > 0);
+  if (!lines.length) { showToast('אין פריטים להחזרה בתעודה הזו', null, null, 2600); return; }
+  const old = document.getElementById('retReturnOverlay');
+  if (old) old.remove();
+  const ov = document.createElement('div');
+  ov.id = 'retReturnOverlay';
+  ov.className = 'fixed inset-0 bg-black/50 z-[70] flex items-end justify-center p-3';
+  const rowsHtml = lines.map((l, i) =>
+    '<div class="flex items-center justify-between gap-2 bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 mb-1.5">' +
+      '<div class="min-w-0 flex-1"><div class="font-black text-slate-800 text-sm truncate">' + htmlEscape(l.name) + '</div><div class="text-[11px] text-slate-400 font-bold">בתעודה: ' + (Number(l.qty) || 0) + ' יח׳</div></div>' +
+      '<div class="shrink-0 flex items-center gap-1">' +
+        '<button data-rr-minus="' + i + '" class="btn-tap w-9 h-9 rounded-lg bg-white border border-slate-200 text-slate-600 flex items-center justify-center"><i class="fa-solid fa-minus text-xs"></i></button>' +
+        '<input data-rr-qty="' + i + '" type="text" inputmode="numeric" value="0" class="w-12 h-9 text-center font-black border-2 border-slate-200 rounded-lg outline-none focus:border-emerald-500">' +
+        '<button data-rr-plus="' + i + '" class="btn-tap w-9 h-9 rounded-lg bg-white border border-slate-200 text-slate-600 flex items-center justify-center"><i class="fa-solid fa-plus text-xs"></i></button>' +
+      '</div>' +
+    '</div>'
+  ).join('');
+  ov.innerHTML = '<div class="bg-white w-full max-w-md rounded-3xl p-4 shadow-2xl max-h-[85vh] flex flex-col">' +
+    '<div class="flex items-center justify-between mb-1"><div class="font-black text-slate-800 text-lg"><i class="fa-solid fa-rotate-left text-emerald-600"></i> החזרה לרשימה הפתוחה</div><button data-rr-close class="btn-tap w-9 h-9 rounded-lg bg-slate-100 text-slate-500"><i class="fa-solid fa-xmark"></i></button></div>' +
+    '<div class="text-[11px] text-slate-400 font-bold mb-2">בחר כמה יחידות מכל פריט חוזרות לרשימת החזרות השבועית. אפשר גם חלק מהכמות — למשל 3 מתוך 6. התעודה תתעדכן בהתאם, כולל הפיקדונות.</div>' +
+    '<button data-rr-all class="btn-tap w-full bg-emerald-50 text-emerald-700 border border-emerald-200 rounded-xl py-2 font-black text-xs mb-2"><i class="fa-solid fa-check-double"></i> בחר הכל — החזר את כל התעודה</button>' +
+    '<div class="overflow-y-auto flex-1 min-h-0">' + rowsHtml + '</div>' +
+    '<button data-rr-apply class="btn-tap w-full bg-emerald-600 text-white rounded-xl py-3 font-black mt-2" disabled>בחר כמות להחזרה</button>' +
+  '</div>';
+  const takes = lines.map(() => 0);
+  const refresh = () => {
+    takes.forEach((t, i) => { const inp = ov.querySelector('[data-rr-qty="' + i + '"]'); if (inp && document.activeElement !== inp) inp.value = t; });
+    const total = takes.reduce((a, b) => a + b, 0);
+    const btn = ov.querySelector('[data-rr-apply]');
+    if (btn) {
+      btn.disabled = !total;
+      btn.innerHTML = total ? '<i class="fa-solid fa-rotate-left"></i> החזר ' + total + ' יח׳ לרשימה הפתוחה' : 'בחר כמות להחזרה';
+    }
+  };
+  const clamp = (i, v) => Math.max(0, Math.min(Number(lines[i].qty) || 0, v));
+  ov.addEventListener('click', (e) => {
+    const minus = e.target.closest('[data-rr-minus]'), plus = e.target.closest('[data-rr-plus]');
+    if (minus) { const i = +minus.getAttribute('data-rr-minus'); takes[i] = clamp(i, takes[i] - 1); refresh(); return; }
+    if (plus) { const i = +plus.getAttribute('data-rr-plus'); takes[i] = clamp(i, takes[i] + 1); refresh(); return; }
+    if (e.target.closest('[data-rr-all]')) { lines.forEach((l, i) => { takes[i] = Number(l.qty) || 0; }); refresh(); return; }
+    if (e.target.closest('[data-rr-apply]')) { retReturnApply(docId, lines, takes, ov); return; }
+    if (e.target.closest('[data-rr-close]') || e.target === ov) ov.remove();
+  });
+  ov.addEventListener('input', (e) => {
+    const inp = e.target.closest('[data-rr-qty]'); if (!inp) return;
+    const i = +inp.getAttribute('data-rr-qty');
+    takes[i] = clamp(i, parseInt((inp.value || '').replace(/[^0-9]/g, ''), 10) || 0);
+    refresh();
+  });
+  ov.addEventListener('focusout', (e) => { if (e.target.closest('[data-rr-qty]')) refresh(); });
+  document.body.appendChild(ov);
+}
+async function retReturnApply(docId, lines, takes, ov) {
+  const r = returns.find(x => x.id === docId);
+  if (!r || r.credited) { if (ov) ov.remove(); return; }
+  const btn = ov && ov.querySelector('[data-rr-apply]');
+  if (btn && btn.dataset.busy) return;
+  if (btn) { btn.dataset.busy = '1'; btn.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> מחזיר…'; }
+  // מפתוח לפי זהות השורה, לא לפי שם — אחרי מיזוג תעודות ייתכנו שתי שורות
+  // לאותו מוצר במחירים שונים, ומפתוח לפי שם היה מוריד את הכמות פעמיים.
+  // takeByName משמש רק לשורות הפיקדון (פיקדון אחד לשם) ולמיזוג אל הרשימה הפתוחה.
+  const takeByLine = new Map(), takeByName = new Map();
+  lines.forEach((l, i) => {
+    const t = Math.max(0, Math.min(Number(l.qty) || 0, takes[i] || 0));
+    if (t > 0) { takeByLine.set(l, t); takeByName.set(l.name, (takeByName.get(l.name) || 0) + t); }
+  });
+  // בניית פריטי התעודה החדשים: הכמות שחוזרת יורדת, ושורת הפיקדון הצמודה יורדת יחד איתה
+  const outItems = [];
+  (r.items || []).forEach(l => {
+    let take = 0;
+    if (l.isDeposit) { const parent = (l.name || '').replace(/^פיקדון · /, ''); take = takeByName.get(parent) || 0; }
+    else take = takeByLine.get(l) || 0;
+    const qty = Math.max(0, (Number(l.qty) || 0) - take);
+    if (qty <= 0) return;
+    const unit = Number(l.unitPrice) || 0;
+    const line = { name: l.name, barcode: l.barcode || '', qty: qty, unitPrice: unit, lineTotal: lineTotalFromUnit(unit, qty) };
+    if (l.productId) line.productId = l.productId;
+    if (l.isDeposit) line.isDeposit = true;
+    if (Number(l.promoPct) > 0) line.promoPct = Number(l.promoPct);
+    if (l.noteQty != null && qty === Number(l.qty)) line.noteQty = l.noteQty;
+    outItems.push(line);
+  });
+  const totalUnits = Array.from(takeByName.values()).reduce((a, b) => a + b, 0);
+  if (!totalUnits) { if (ov) ov.remove(); return; }
+  // קודם הענן — אם העדכון נכשל, שום דבר לא זז ואין כפילות בין התעודה לרשימה
+  if (outItems.length) {
+    const ex = r2(outItems.reduce((a, l) => a + (Number(l.lineTotal) || 0), 0));
+    const returnVatRate = vatRateForDoc(r);
+    const updateData = { items: outItems, vatPct: r2(returnVatRate * 100), totalExVat: ex, totalIncVat: r2(ex * (1 + returnVatRate)) };
+    const saved = await runCloudTask('return items to open list', { op: 'update', path: dataPath('returns', docId), data: updateData, operationId: makeOperationId('ret_to_open') });
+    if (!saved) { if (btn) { delete btn.dataset.busy; btn.innerHTML = '<i class="fa-solid fa-rotate-left"></i> החזר ' + totalUnits + ' יח׳ לרשימה הפתוחה'; } return; }
+    Object.assign(r, updateData);
+  } else {
+    // הכל חזר — התעודה נמחקת עם גיבוי לסל המחזור; אם המחיקה נכשלה, שום דבר לא זז
+    const backup = { ...r };
+    const ok = await hardDeleteDocWithBackup('returns', docId, backup, 'delete-return');
+    if (!ok) { if (btn) { delete btn.dataset.busy; btn.innerHTML = '<i class="fa-solid fa-rotate-left"></i> החזר ' + totalUnits + ' יח׳ לרשימה הפתוחה'; } return; }
+  }
+  // מיזוג לרשימה השבועית הפתוחה — פריט קיים מקבל תוספת כמות
+  const target = returnsSlots.weekly;
+  let added = 0;
+  takeByName.forEach((take, name) => {
+    const src = lines.find(l => l.name === name);
+    const p = src && src.barcode ? findProductByBarcode(src.barcode) : null;
+    if (p) {
+      const ex0 = target.find(it => it.productId === p.id);
+      if (ex0) ex0.qty = (Number(ex0.qty) || 0) + take;
+      else target.push({ productId: p.id, name: p.name, barcode: p.barcode || '', qty: take });
+    } else {
+      target.push({ productId: 'manual_' + Date.now() + '_' + Math.floor(Math.random() * 1000), name: name, qty: take, unitPrice: Number(src && src.unitPrice) || 0, manual: true });
+    }
+    added++;
+  });
+  saveReturnsDraft();
+  logAction('returns', 'החזרת פריטים לרשימה הפתוחה', added + ' פריטים · ' + totalUnits + ' יח׳ חזרו מתעודת ' + dDisp(r.docDate || r.date || '') + ' לרשימת החזרות השבועית' + (outItems.length ? '' : ' · התעודה נמחקה (הוחזר הכל)'), { docId: docId, types: added, units: totalUnits, docDeleted: !outItems.length });
+  if (ov) ov.remove();
+  buzz(18);
+  if (currentView === 'returnsHistory') renderReturnsHistory();
+  else if (currentView === 'returns') { refreshReturnsList(); updateCart(); }
+  showToast(totalUnits + ' יח׳ חזרו לרשימה הפתוחה ✓', null, null, 3200);
+}
+
 // ===== v52: מיזוג תעודות חזרה פתוחות =====
 // הנהג מזכה לרוב חזרה שבועית ויומית ביחד — מיזוג מאפשר לאמת זיכוי אחד מול תעודה אחת.
 // מותר רק בין תעודות פתוחות (טרם אומת זיכוי). התעודה שנבחרת נבלעת בתעודה הנוכחית,
@@ -15394,6 +15524,7 @@ app.addEventListener('click', (e) => {
   else if (role === 'rv-save') saveReturnVerify();
   else if (role === 'rc-short-credit') openShortCreditPrompt(id);
   else if (role === 'ret-edit-items') openReturnItemsEdit(id);
+  else if (role === 'ret-return-open') openRetReturnPicker(id);
   else if (role === 're-qty-minus') retEditStepQty(parseInt(id, 10), -1);
   else if (role === 're-qty-plus') retEditStepQty(parseInt(id, 10), 1);
   else if (role === 're-pack') retEditConvertPack(parseInt(id, 10));
