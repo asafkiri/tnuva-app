@@ -619,7 +619,7 @@ let receiptDupConfirmed = false; // אישור שמירה למרות חשד לכ
 const RECEIPT_DRAFT_KEY = 'tn_receipt_draft';
 let receivingDigitsMissTimer = null;
 let receivingDigitsMissNotified = '';
-const APP_VERSION = '63';
+const APP_VERSION = '64';
 // v40: תג גרסה קבוע בפינת המסך — לדעת בשנייה איזו גרסה באמת רצה על המכשיר
 // (עוזר במיוחד מול מטמון ה-PWA). pointer-events:none — לעולם לא חוסם מגע.
 document.body.insertAdjacentHTML('beforeend', '<div id="appVerBadge" style="position:fixed;bottom:4px;left:6px;z-index:9999;pointer-events:none;font-size:10px;font-weight:800;color:#64748b;opacity:.55;direction:rtl">גרסה ' + APP_VERSION + '</div>');        // מוצג בהגדרות; תואם למטמון sw.js
@@ -4426,6 +4426,30 @@ function returnTotals(r) {
   });
   ex = r2(ex);
   return { ex, inc: amountIncForDoc(r, ex) };
+}
+// v64: שורת "אחוז חזרות" — כמה סחורה ממש חזרה לתנובה, בלי ארגזים ופיקדונות.
+// ארגז מזוהה כמו בבורר המהיר: דגל quickCrate על המוצר או קודי הארגזים ההיסטוריים.
+function isCrateReturnLine(it) {
+  if (!it) return false;
+  if (it.isDeposit) return true; // פיקדון = כסף של אריזה שעובר דרכנו, לא סחורה שחזרה
+  if (it.barcode && CRATE_BARCODES.indexOf(String(it.barcode)) !== -1) return true;
+  const p = products.find(x => (it.barcode && x.barcode === it.barcode) || x.name === it.name);
+  return !!(p && isQuickCrate(p));
+}
+function returnRealTotals(r) {
+  const total = returnTotals(r).ex;
+  const retDay = String((r && (r.docDate || r.date)) || '') || todayStr();
+  let realRaw = 0, crateRaw = 0;
+  ((r && r.items) || []).forEach(it => {
+    let unit = Number(it.unitPrice);
+    if (!(unit > 0)) { const p = products.find(x => (it.barcode && x.barcode === it.barcode) || x.name === it.name); unit = p ? returnCreditInfo(p, retDay).price : 0; }
+    const line = unit * (Number(it.qty) || 0);
+    if (isCrateReturnLine(it)) crateRaw += line; else realRaw += line;
+  });
+  const sumRaw = realRaw + crateRaw;
+  // מנרמלים לסך התעודה השמור — כך סחורה + ארגזים מסתכמים בדיוק לשורת החזרות בסיכום
+  if (sumRaw > 0.005) { const f = total / sumRaw; return { realEx: r2(realRaw * f), crateEx: r2(crateRaw * f) }; }
+  return { realEx: total, crateEx: 0 }; // תעודה בלי פירוט שורות — נספרת כולה כסחורה
 }
 
 // --- סורק קליטה ---
@@ -12529,9 +12553,12 @@ function receiptRangeData(from, to) {
   const recEx = r2(recs.reduce((a, r) => a + receiptPayableBaseEx(r), 0));
   // חודש מעבר מע"מ: כל תעודה נושאת את השיעור שלה; ללא שדה — השיעור הנוכחי
   const recInc = r2(recs.reduce((a, r) => a + amountIncForDoc(r, receiptPayableBaseEx(r)), 0));
-  let retEx = 0, retInc = 0;
-  rets.forEach(r => { const t = returnTotals(r); retEx += t.ex; retInc += t.inc; });
-  retEx = r2(retEx); retInc = r2(retInc);
+  let retEx = 0, retInc = 0, retRealEx = 0, retCrateEx = 0;
+  rets.forEach(r => { const t = returnTotals(r); retEx += t.ex; retInc += t.inc; const s = returnRealTotals(r); retRealEx += s.realEx; retCrateEx += s.crateEx; });
+  retEx = r2(retEx); retInc = r2(retInc); retRealEx = r2(retRealEx); retCrateEx = r2(retCrateEx);
+  // v64: אחוז חזרות = חזרות סחורה בפועל (בלי ארגזים) חלקי סך תעודות הספק, ללא מע"מ.
+  // זיכויי ספק על חוסרים/מבצעים לא נכנסים כאן — הם לא חזרה של סחורה.
+  const retRealPct = recEx > 0 ? r2(retRealEx / recEx * 100) : 0;
   const meMap = {}; let meEx = 0, meInc = 0;
   recs.forEach(r => {
     const frozen = Array.isArray(r.monthEndRebates) && r.monthEndRebates.length
@@ -12581,7 +12608,7 @@ function receiptRangeData(from, to) {
   const netSafeInc = r2(netBeforeSupplierCreditsInc - verifiedSupplierCreditInc);
   const netSafeVat = r2(netSafeInc - netSafeEx);
   const vatRates = [...new Set(recs.concat(rets).map(r => r2(vatRateForDoc(r) * 100)))].sort((a, b) => a - b);
-  return { from, to, fromT, toT, recs, rets, recEx, recInc, retEx, retInc, meMap, meList: Object.values(meMap), meEx, meInc, openCnt, shortOffsetByOverEx, openShortNetEx, openOverNetEx, openShortEx, openOverEx, openSupplierCredits, openSupplierCreditEx, openSupplierCreditInc, deferredDueCredits, deferredSupplierCreditEx, deferredSupplierCreditInc, pendingSupplierCreditEx, pendingSupplierCreditInc, verifiedSupplierCredits, verifiedSupplierCreditEx, verifiedSupplierCreditInc, netBeforeSupplierCredits, netBeforeSupplierCreditsInc, netSafeEx, netSafeVat, netSafeInc, netEx, vatAmount, netInc, vatRates };
+  return { from, to, fromT, toT, recs, rets, recEx, recInc, retEx, retInc, retRealEx, retCrateEx, retRealPct, meMap, meList: Object.values(meMap), meEx, meInc, openCnt, shortOffsetByOverEx, openShortNetEx, openOverNetEx, openShortEx, openOverEx, openSupplierCredits, openSupplierCreditEx, openSupplierCreditInc, deferredDueCredits, deferredSupplierCreditEx, deferredSupplierCreditInc, pendingSupplierCreditEx, pendingSupplierCreditInc, verifiedSupplierCredits, verifiedSupplierCreditEx, verifiedSupplierCreditInc, netBeforeSupplierCredits, netBeforeSupplierCreditsInc, netSafeEx, netSafeVat, netSafeInc, netEx, vatAmount, netInc, vatRates };
 }
 function moneyRow(label, amount, cls, prefix) {
   prefix = prefix || '';
@@ -12624,6 +12651,11 @@ function supplierCalculationStepsHtml(d) {
     '<div class="text-[11px] text-slate-500 font-bold mb-2">הפירוט הפנימי כאן ללא מע״מ. הסכום לתשלום הסופי מוצג גם כולל מע״מ.</div>' +
     moneyRow('תעודות ספק — אחרי הפחתת חוסרים', d.recEx, 'text-slate-800', '') +
     moneyRow('פחות חזרות / זיכויים רגילים', d.retEx, 'text-emerald-700', '− ') +
+    '<div class="bg-emerald-50 border border-emerald-200 rounded-xl px-2.5 py-2 my-1">' +
+      '<div class="flex items-center justify-between gap-3 text-sm font-black text-emerald-800"><span><i class="fa-solid fa-rotate-left"></i> מזה חזרות סחורה לתנובה — בלי ארגזים</span><span class="shrink-0">₪' + fmtMoney(d.retRealEx) + '</span></div>' +
+      '<div class="flex items-center justify-between gap-3 text-xs font-bold text-emerald-700 mt-0.5"><span>אחוז חזרות מתעודות הספק</span><span class="shrink-0">' + (Math.round((Number(d.retRealPct) || 0) * 10) / 10) + '%</span></div>' +
+      '<div class="text-[10px] font-bold text-emerald-600/80 mt-0.5">רק תעודות חזרה שממש יצאו לתנובה. ' + (d.retCrateEx > 0.005 ? 'ארגזים ופיקדונות (₪' + fmtMoney(d.retCrateEx) + ') וזיכויי ספק על חוסרים לא נספרים כאן.' : 'זיכויי ספק על חוסרים/מבצעים לא נספרים כאן.') + '</div>' +
+    '</div>' +
     (d.openShortEx > 0 ? '<div class="text-[11px] text-rose-700 font-bold bg-rose-50 rounded-lg px-2 py-1.5 my-1"><i class="fa-solid fa-circle-minus"></i> חוסרים בסך ₪' + fmtMoney(d.openShortEx) + ' כבר הופחתו בתוך סכום התעודות — לא מופחתים שוב.</div>' : '') +
     (d.openOverEx > 0 ? '<div class="text-[11px] text-amber-700 font-bold bg-amber-50 rounded-lg px-2 py-1.5 my-1"><i class="fa-solid fa-circle-plus"></i> עודפים בסך ₪' + fmtMoney(d.openOverEx) + ' מוצגים בלבד ואינם מתווספים לתשלום.</div>' : '') +
 
