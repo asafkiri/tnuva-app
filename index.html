@@ -15232,10 +15232,16 @@ function drawSignCanvas() {
   newPage();
   let hasStrips = false;
   signMaker.signs.forEach(s => {
-    if (st.y + slotH > H - pad + 1 && st.y > pad) newPage();
+    // שלט ורצועת הברקודים שלו יוצאים יחד על אותו עמוד — אם אין מקום
+    // לשניהם, שניהם עוברים לעמוד חדש (אלא אם הם גדולים יחד מעמוד שלם,
+    // ואז הרצועה ממשיכה עם "(המשך)").
+    const m = signStripMetrics(s, W, pad);
+    const needed = slotH + (m ? gap + m.total : 0);
+    const fullPage = H - pad * 2;
+    if (st.y > pad && ((needed <= fullPage && st.y + needed > H - pad + 1) || st.y + slotH > H - pad + 1)) newPage();
     drawSignSlot(st.ctx, s, st.y, slotH, W);
     st.y += slotH + gap;
-    if (s.withBarcodes && s.promoId) { if (drawSignBarcodeStrip(st, newPage, s, W, H, pad)) hasStrips = true; }
+    if (m) { if (drawSignBarcodeStrip(st, newPage, s, W, H, pad)) hasStrips = true; }
   });
   // משבצות גזירה ריקות (מסגרת מקווקוות) — רק במצב הקלאסי: עמוד יחיד בלי רצועות
   if (pages.length === 1 && !hasStrips) {
@@ -15261,13 +15267,20 @@ function drawSignCanvas() {
 }
 // רצועת ברקודים לקופה — ממשיכה את הדף מיד אחרי השלט שסומן ונשברת לעמוד
 // הבא עם "(המשך)" כשאין מקום. קו מקווקו + מספריים = כאן גוזרים, זה לצוות.
-function drawSignBarcodeStrip(st, newPage, s, W, H, pad) {
-  const pr = promos.find(p => p.id === s.promoId); if (!pr) return false;
+// גאומטריית הרצועה — משמשת גם את הציור וגם את חישוב "נכנס בעמוד" מראש
+function signStripMetrics(s, W, pad) {
+  if (!(s && s.withBarcodes && s.promoId)) return null;
+  const pr = promos.find(p => p.id === s.promoId); if (!pr) return null;
   const prods = (pr.productIds || []).map(pid => products.find(p => p.id === pid)).filter(Boolean);
-  if (!prods.length) return false;
+  if (!prods.length) return null;
   const cols = W > 1500 ? 4 : 3;
-  const cellW = Math.floor((W - pad * 2) / cols), cellH = 168, headH = 48;
+  const cellH = 168, headH = 48;
   const rows = Math.ceil(prods.length / cols);
+  return { pr: pr, prods: prods, cols: cols, cellW: Math.floor((W - pad * 2) / cols), cellH: cellH, headH: headH, rows: rows, total: headH + rows * cellH + 20 };
+}
+function drawSignBarcodeStrip(st, newPage, s, W, H, pad) {
+  const m = signStripMetrics(s, W, pad); if (!m) return false;
+  const pr = m.pr, prods = m.prods, cols = m.cols, cellW = m.cellW, cellH = m.cellH, headH = m.headH, rows = m.rows;
   const head = cont => {
     const ctx = st.ctx;
     ctx.strokeStyle = '#94a3b8'; ctx.lineWidth = 2; ctx.setLineDash([10, 8]);
