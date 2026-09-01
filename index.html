@@ -601,6 +601,7 @@ let aiScanBusy = false;
 let aiScanProgressText = '';
 let aiScanResponse = null;
 let aiScanEvaluation = null;
+let aiScanReused = false;        // v14: התוצאה שמוצגת נשענת על צילום קודם, בלי סריקה חדשה
 let aiScanError = '';
 let aiScanErrorAnchor = false;   // v245: השגיאה היא הסבר-שרת על עוגן שגוי (למשל הוקלד הסכום שלפני "סד הנחה") — מוצגת כאזהרה בולטת
 let anchorFixHint = '';          // v245: ההסבר נודד עם המשתמש לעורך הסכומים, כדי שהסכום הנכון יהיה מול העיניים בזמן התיקון
@@ -6632,12 +6633,45 @@ function reconcileRowHtml(l) {
 }
 
 // ===== סריקת AI — מופעלת רק לאחר שההתאמה והבלש הפשוט לא פתרו =====
-function resetAiInvoiceScan() {
+// v14: הצילומים וקריאת הנייר שורדים חזרה למסך הכמויות.
+// הסיבה פשוטה: תיקון כמות משנה את מה שנספר בפועל — לא את מה שכתוב בנייר.
+// קריאת הנייר עדיין תקפה, וכל מה שנדרש הוא לחשב מחדש את ההשוואה בין השניים,
+// חישוב מקומי ומיידי בלי רשת ובלי עלות. עד כאן כל חזרה למסך הכמויות מחקה את
+// התמונות ואת הקריאה, ולכן בדיוק הרגע שבו הסריקה הוכיחה את עצמה — היא הראתה
+// למנהל את החוסרים והוא חזר לתקן — חייב אותו לצלם הכול מחדש ולשלם על סריקה
+// שנייה של אותו נייר.
+// מה שכן מחייב איפוס: שינוי במספר התעודות. תעודה חדשה היא נייר שלא צולם.
+function resetAiInvoiceScan(force) {
   aiCloseOrientationReview();
   const source = receiptNotes.length ? receiptNotes.map(normNote) : [{ amount: receiptNoteTotal, units: receiptNoteUnits }];
+  const reusable = !force && !!aiScanResponse && !aiScanBusy
+    && aiScanDocuments.length === source.length && aiTotalPages() > 0;
+  if (reusable) {
+    // העוגנים המוקלדים מתרעננים על הצילומים הקיימים: הנייר לא השתנה, אבל מה
+    // שהוקלד כן יכול היה להשתנות. ההשוואה מול העוגן נעשית שוב בהערכה עצמה,
+    // ואם הוא כבר אינו מתאים — זה ייאמר שם, בלי לאבד את מה שכבר נקרא.
+    aiScanDocuments = aiScanDocuments.map((doc, i) => Object.assign({}, doc, {
+      noteIndex: i, amount: source[i].amount, units: source[i].units, lines: source[i].lines
+    }));
+    // ממצאים ישנים חושבו מול כמויות ישנות. הם נבנים מחדש מאפס — כולל אישור
+    // המשתמש, שניתן על תמונת מצב אחרת — ולעולם לא נגררים כפי שהיו.
+    reconcileAiAudit = null; aiUnknownProductCreateContext = null;
+    aiAnalyzeBusy = false; aiAnalyzeError = ''; aiAnalyzeResult = null;
+    aiScanError = ''; aiScanErrorAnchor = false;
+    try {
+      aiScanEvaluation = aiEvaluateInvoiceScan(aiScanResponse);
+      aiScanReused = true;
+      return true;
+    } catch (error) {
+      // שימוש חוזר שנכשל חוזר לאיפוס מלא. עדיף לבקש צילום מחדש מאשר להציג
+      // ממצאים שנבנו חלקית על נתונים ישנים.
+      aiScanReused = false;
+    }
+  }
   aiScanDocuments = source.map((note, i) => ({ noteIndex: i, amount: note.amount, units: note.units, lines: note.lines, pages: [] })); // v34: מונה השורות = העד השני של תנובה
-  aiScanBusy = false; aiScanProgressText = ''; aiScanResponse = null; aiScanEvaluation = null; aiScanError = ''; aiScanErrorAnchor = false; aiScanAutoRotationNote = ''; aiScanAttemptCount = 0; reconcileAiAudit = null; aiUnknownProductCreateContext = null;
+  aiScanBusy = false; aiScanProgressText = ''; aiScanResponse = null; aiScanEvaluation = null; aiScanReused = false; aiScanError = ''; aiScanErrorAnchor = false; aiScanAutoRotationNote = ''; aiScanAttemptCount = 0; reconcileAiAudit = null; aiUnknownProductCreateContext = null;
   aiAnalyzeBusy = false; aiAnalyzeError = ''; aiAnalyzeResult = null; // v187
+  return false;
 }
 function aiTotalPages() { return aiScanDocuments.reduce((sum, d) => sum + d.pages.length, 0); }
 function aiDataUrlBytes(dataUrl) {
@@ -9512,7 +9546,7 @@ async function aiRunInvoiceScan() {
   if (!aiScanDocuments.length || aiScanDocuments.some(d => !d.pages.length)) { showToast('צלם לפחות עמוד אחד מכל תעודה', null, null, 3000); return; }
   if (!aiAllPagesOrientationConfirmed()) { showToast('אשר שכל התמונות ישרות לפני הפענוח', null, null, 3200); aiOpenNextUnconfirmedOrientation(); return; }
   if (!auth || !auth.currentUser) { showToast('עדיין אין חיבור מאובטח — המתן רגע ונסה שוב', null, null, 3000); return; }
-  aiScanBusy = true; aiScanProgressText = aiScanDocuments.length > 1 ? 'ה-AI קורא ' + aiScanDocuments.length + ' תעודות, אחת אחרי השנייה…' : 'ה-AI קורא את דפי התעודה…'; aiScanError = ''; aiScanErrorAnchor = false; aiScanResponse = null; aiScanEvaluation = null; aiScanAutoRotationNote = ''; aiScanAttemptCount = 0; renderReconcile();
+  aiScanBusy = true; aiScanProgressText = aiScanDocuments.length > 1 ? 'ה-AI קורא ' + aiScanDocuments.length + ' תעודות, אחת אחרי השנייה…' : 'ה-AI קורא את דפי התעודה…'; aiScanError = ''; aiScanErrorAnchor = false; aiScanResponse = null; aiScanEvaluation = null; aiScanReused = false; aiScanAutoRotationNote = ''; aiScanAttemptCount = 0; renderReconcile();
   try {
     const token = await auth.currentUser.getIdToken();
     // v132: כל תעודה נסרקת בבקשה משלה, במקביל. כשל בתעודה אחת אינו מפיל
@@ -10304,6 +10338,11 @@ function aiInvoiceCaptureHtml() {
     const autoNote = Array.isArray(ev.autoResolutions) && ev.autoResolutions.length
       ? '<div class="text-[10px] font-bold text-slate-500 text-center">' + ev.autoResolutions.length + ' שורות הותאמו אוטומטית לפי קוד/שם/מחיר/מבצע/כמות — מתועד ביומן.</div>'
       : '';
+    // v14: כשהתוצאה נשענת על הצילום הקודם — אומרים את זה. המנהל צריך לדעת
+    // שמה שמולו חושב מחדש מול הכמויות שתיקן, ושהנייר עצמו לא נקרא שוב.
+    const reusedNote = aiScanReused
+      ? '<div class="rounded-xl bg-slate-50 border border-slate-200 p-2 mb-2 text-[11px] font-bold text-slate-600"><i class="fa-solid fa-rotate ml-1"></i>קריאת הנייר מהצילום הקודם — חושבה מחדש מול הכמויות המעודכנות, בלי צילום ובלי סריקה נוספת. השתנה משהו בנייר עצמו? <b>תיקון תעודה — חזרה לצילומים</b>.</div>'
+      : '';
     // v133: זרימת אישור וסגירה. המשתמש מאשר שאלה אכן הבעיות, ורק אז נפתחות
     // "סגור תעודה עם החוסרים" (כשהחשבון נסגר) או "תיקון תעודה".
     let actionsHtml = '';
@@ -10326,6 +10365,7 @@ function aiInvoiceCaptureHtml() {
     return '<div class="bg-white rounded-2xl border-2 ' + (ev.valid ? 'border-violet-300' : 'border-amber-300') + ' p-4 shadow-sm mb-24">' +
       '<div class="font-black text-xl text-slate-800 mb-1"><i class="fa-solid fa-wand-magic-sparkles text-violet-600"></i> תוצאות הסריקה החכמה</div>' +
       '<div class="text-xs text-slate-500 font-bold mb-3">מוצגות רק הבעיות שנמצאו. ההתאמות הוכרעו מאחורי הקלעים.</div>' +
+      reusedNote +
       '<div class="space-y-2">' + statusHtml + findingsHtml + autoNote + '</div>' + actionsHtml + '</div>';
   }
   const docCards = aiScanDocuments.map((doc, i) => {
@@ -10557,6 +10597,10 @@ function renderReconcile() {
   // קביעת השלב אוטומטית לפי המצב (פעם ראשונה)
   if (rcStep === null) {
     if (balanced) rcStep = 'balanced';
+    // v14: קריאת נייר ששרדה חזרה למסך הכמויות — חוזרים ישר לתוצאות שלה,
+    // מחושבות מחדש מול הכמויות המתוקנות. לשאול "לסרוק את התעודות?" על תעודה
+    // שכבר צולמה ונקראה זה לבקש מהמנהל לשלם פעמיים על אותו נייר.
+    else if (aiScanEvaluation) rcStep = 'ai';
     else {
       const ds = detectiveSolutions();
       rcStep = detectiveStepForResult(ds);
@@ -11793,7 +11837,7 @@ async function confirmReceipt() {
   if (!saved) return;
   hideReceiptSummary();
   aiCloseOrientationReview();
-  receiptList = []; pendingReceipt = null; receiptNotes = []; receiptDocDate = null; receiptDraftId = null; recomputeNoteTotal(); receiptOpened = false; editingNotes = false; reconcileData = null; reconcileSupplierDiscount = 0; reconcileSupplierPromoItems = []; reconcilePromoMismatchItems = []; reconcileSupplierCreditClaim = null; reconcileAiAudit = null; aiScanDocuments = []; aiScanBusy = false; aiScanProgressText = ''; aiScanResponse = null; aiScanEvaluation = null; aiScanError = ''; aiScanAutoRotationNote = ''; aiScanAttemptCount = 0; receiptDupConfirmed = false; receiptLinesConfirmed = false; saveReceiptDraft();
+  receiptList = []; pendingReceipt = null; receiptNotes = []; receiptDocDate = null; receiptDraftId = null; recomputeNoteTotal(); receiptOpened = false; editingNotes = false; reconcileData = null; reconcileSupplierDiscount = 0; reconcileSupplierPromoItems = []; reconcilePromoMismatchItems = []; reconcileSupplierCreditClaim = null; reconcileAiAudit = null; aiScanDocuments = []; aiScanBusy = false; aiScanProgressText = ''; aiScanResponse = null; aiScanEvaluation = null; aiScanReused = false; aiScanError = ''; aiScanAutoRotationNote = ''; aiScanAttemptCount = 0; receiptDupConfirmed = false; receiptLinesConfirmed = false; saveReceiptDraft();
   setView('receiptsHistory');
   const autoApplied = await autoApplyExactOffsets(); // v244: זוג מדויק מתקזז לבד
   const newOpen = receipts.filter(r => receiptDiscrepancyInfo(r).open).find(r => findOffsetMatch(r));
@@ -16430,7 +16474,7 @@ app.addEventListener('click', (e) => {
   if (role === 'promo-import-create') { promoImportCreateAll(); return; }
   if (role === 'promo-import-close') { promoImport = null; renderPromos(); return; }
   if (role === 'ai-analyze-copy') { const text = aiAnalyzeClaimsPlainText(); if (!text) return; if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(text).then(() => showToast('הטענות הועתקו', null, null, 2200)).catch(() => showToast('ההעתקה נכשלה', null, null, 2200)); else showToast('ההעתקה אינה נתמכת בדפדפן הזה', null, null, 2600); return; }
-  if (role === 'ai-rescan') { resetAiInvoiceScan(); rcStep = 'ai'; renderReconcile(); return; }
+  if (role === 'ai-rescan') { resetAiInvoiceScan(true); rcStep = 'ai'; renderReconcile(); return; } // force: בקשה מפורשת לסרוק מחדש
   if (role === 'ai-open-suggestion-page') { aiOpenBarcodeSuggestionPage(parseInt(t.dataset.doc, 10), parseInt(t.dataset.page, 10)); return; }
   if (role === 'ai-confirm-barcode-suggestion') { aiConfirmBarcodeSuggestion(parseInt(t.dataset.doc, 10), parseInt(t.dataset.row, 10)); return; }
   if (role === 'ai-confirm-name-candidate') { aiConfirmNameCandidate(parseInt(t.dataset.doc, 10), parseInt(t.dataset.row, 10), t.dataset.candidateId); return; }
@@ -16520,7 +16564,10 @@ app.addEventListener('click', (e) => {
   else if (role === 'ret-slot') { const de = $('retDocDate'); if (de) returnsDocDate = de.value || ''; switchReturnsSlot(t.dataset.slot); }
   else if (role === 'rc-open') { const en = readNoteEntry(receiptNotes.length === 0); if (en === false) return; if (en) receiptNotes.push(en); receiptDocDate = (($('rcDocDate') || {}).value || '').trim() || null; recomputeNoteTotal(); receiptOpened = true; receiptDupConfirmed = false; receiptLinesConfirmed = false; saveReceiptDraft(); refreshReceipt(); openReceivingScanner(); }
   else if (role === 'rc-open-crates') { const en = readNoteEntry(receiptNotes.length === 0); if (en === false) return; if (en) receiptNotes.push(en); receiptDocDate = (($('rcDocDate') || {}).value || '').trim() || null; recomputeNoteTotal(); receiptOpened = true; receiptDupConfirmed = false; receiptLinesConfirmed = false; saveReceiptDraft(); refreshReceipt(); openCratePicker('receipt'); }
-  else if (role === 'rc-cancel') { showConfirm('ביטול תעודה', 'לבטל את התעודה הנוכחית? כל הפריטים שנסרקו יימחקו.', 'בטל תעודה', () => { receiptList = []; receiptNotes = []; receiptDocDate = null; receiptDraftId = null; recomputeNoteTotal(); receiptOpened = false; editingNotes = false; anchorFixHint = ''; reconcileData = null; receiptDupConfirmed = false; receiptLinesConfirmed = false; saveReceiptDraft(); setView('receiving'); }); }
+  // v14: ביטול תעודה חייב למחוק גם את הצילומים ואת קריאת הנייר. כל עוד כל
+  // כניסה למסך ההשוואה איפסה אותם ממילא, הדילוג כאן לא הזיק; מרגע שהם שורדים
+  // בין המסכים, תעודה שבוטלה הייתה יכולה להוריש את הנייר שלה לתעודה הבאה.
+  else if (role === 'rc-cancel') { showConfirm('ביטול תעודה', 'לבטל את התעודה הנוכחית? כל הפריטים שנסרקו יימחקו.', 'בטל תעודה', () => { receiptList = []; receiptNotes = []; receiptDocDate = null; receiptDraftId = null; recomputeNoteTotal(); receiptOpened = false; editingNotes = false; anchorFixHint = ''; reconcileData = null; receiptDupConfirmed = false; receiptLinesConfirmed = false; resetAiInvoiceScan(true); aiScanDocuments = []; saveReceiptDraft(); setView('receiving'); }); }
   else if (role === 'rc-note-add') { const en = readNoteEntry(true); if (en === false) return; if (en) { receiptNotes.push(en); recomputeNoteTotal(); saveReceiptDraft(); } refreshReceipt(); const inp = $('rcNoteInput'); if (inp) inp.focus(); }
   else if (role === 'rc-note-remove') { const i = parseInt(t.dataset.idx, 10); if (i >= 0) { receiptNotes.splice(i, 1); recomputeNoteTotal(); saveReceiptDraft(); refreshReceipt(); } }
   else if (role === 'rc-notes-edit') { editingNotes = true; refreshReceipt(); }
@@ -16745,12 +16792,16 @@ app.addEventListener('click', (e) => {
   }
   else if (role === 'rf-add-item') receiptFixAddItem(id);
   else if (role === 'rc-digits-pick') receivingDigitsPick(id);
-  else if (role === 'rc-recon-cancel') { resetAiInvoiceScan(); reconcileData = null; setView('receiving'); }
+  // v14: יציאה למסך הכמויות אינה מוחקת את הצילומים ואת קריאת הנייר. ההכרעה
+  // אם הם עדיין שמישים נעשית בכניסה חזרה (resetAiInvoiceScan), במקום אחד.
+  else if (role === 'rc-recon-cancel') { aiCloseOrientationReview(); reconcileData = null; setView('receiving'); }
   // v245: מהאזהרה הבולטת ישר לתיקון — חזרה למסך הקליטה עם עורך הסכומים פתוח,
   // וההסבר של השרת (עם הסכום הנכון) נשאר מול העיניים בזמן ההקלדה מחדש.
   else if (role === 'ai-fix-note-amount') {
     anchorFixHint = aiScanError;
-    resetAiInvoiceScan(); reconcileData = null; editingNotes = true; setView('receiving');
+    // הצילומים נשמרים גם כאן: הסכום שהוקלד משתנה, הנייר לא. אחרי התיקון
+    // ההשוואה תיבדק מחדש מול העוגן החדש, בלי צילום נוסף ובלי סריקה נוספת.
+    aiCloseOrientationReview(); reconcileData = null; editingNotes = true; setView('receiving');
     setTimeout(() => { const inp = $('rcNoteInput'); if (inp) { inp.scrollIntoView({ behavior: 'smooth', block: 'center' }); inp.focus(); } }, 150);
   }
   else if (role === 'rc-recon-save') saveReconciledReceipt();
