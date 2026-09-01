@@ -2666,7 +2666,9 @@ function renderReturns() {
   app.innerHTML = histBar +
     '<div class="flex bg-slate-100 rounded-xl p-1 mb-3 gap-1">' + slotBtn('weekly', 'חזרה שבועית', wCnt) + slotBtn('daily', 'ארגזים יומיים', dCnt) + '</div>' +
     '<button data-role="ret-scan" class="btn-tap w-full bg-blue-600 text-white rounded-2xl py-4 text-lg font-black flex items-center justify-center gap-2 mb-2 shadow-lg"><i class="fa-solid fa-barcode text-xl"></i> סרוק פריט</button>' +
-    '<button data-role="ret-crates" class="btn-tap w-full bg-emerald-50 border-2 border-emerald-300 text-emerald-800 rounded-xl py-3 font-black flex items-center justify-center gap-2 mb-2"><i class="fa-solid fa-boxes-stacked"></i> החזרת ארגזים</button>' +
+    // v16: אותו מראה בדיוק ככפתור הארגזים בקליטה — אותה פעולה בשני המסכים,
+    // ולכן אותו כפתור. הבדל ויזואלי בין השניים רק מבלבל את מי שעובד בשניהם.
+    '<button data-role="ret-crates" class="btn-tap w-full bg-emerald-600 text-white rounded-2xl py-3.5 font-black text-base flex items-center justify-center gap-3 shadow-lg mb-2"><i class="fa-solid fa-boxes-stacked text-xl"></i> החזרת ארגזים</button>' +
     '<details class="bg-white rounded-xl border border-slate-200 shadow-sm mb-3"><summary class="cursor-pointer p-3 font-black text-sm text-slate-600"><i class="fa-solid fa-circle-question text-slate-400"></i> לא מצליח לסרוק?</summary><div class="px-3 pb-3">' +
       '<div class="relative mb-2"><i class="fa-solid fa-magnifying-glass absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 text-sm"></i><input id="returnsSearch" type="text" inputmode="search" autocomplete="off" placeholder="חפש מוצר לפי שם..." class="w-full bg-white border border-slate-200 rounded-xl py-3 pr-9 pl-3 text-sm font-bold outline-none focus:border-blue-500"></div>' +
       '<div id="returnsResults" class="bg-white border border-slate-200 rounded-xl overflow-hidden mb-3 hidden"></div>' +
@@ -5094,8 +5096,12 @@ function renderReceiving() {
   const progress = receivingProgressHtml(t);
   app.innerHTML = banner + topButtons + noteBar + progress +
     '<button data-role="rc-scan" class="btn-tap w-full bg-blue-600 text-white rounded-2xl py-4 font-black text-lg flex items-center justify-center gap-3 shadow-lg mb-2"><i class="fa-solid fa-barcode text-2xl"></i> סרוק פריט לתעודה</button>' +
+    // v16: הוספת ארגזים היא פעולה יומיומית ולא פתרון-חירום, ולכן היא יושבת
+    // על המסך כמו סריקת פריט. עד כאן היא הייתה קבורה בתוך "לא מצליח לסרוק?"
+    // — אקורדיון סגור שצריך לדעת מראש שהוא נפתח — ומי שלא ידע פשוט לא מצא
+    // אותה. "לא מצליח לסרוק?" נשאר למה שהוא באמת: הקלדת ברקוד ידנית.
+    '<button data-role="rc-crates" class="btn-tap w-full bg-emerald-600 text-white rounded-2xl py-3.5 font-black text-base flex items-center justify-center gap-3 shadow-lg mb-3"><i class="fa-solid fa-boxes-stacked text-xl"></i> הוסף ארגזים</button>' +
     '<details class="bg-white rounded-2xl border border-slate-200 shadow-sm mb-4"><summary class="cursor-pointer p-3 font-black text-sm text-slate-600"><i class="fa-solid fa-circle-question text-slate-400"></i> לא מצליח לסרוק?</summary><div class="px-3 pb-3">' +
-      '<button data-role="rc-crates" class="btn-tap w-full bg-emerald-50 border-2 border-emerald-300 text-emerald-800 rounded-xl py-3 font-black text-sm flex items-center justify-center gap-2 mb-3"><i class="fa-solid fa-boxes-stacked"></i> הוסף ארגזים</button>' +
       '<div class="text-[11px] font-bold text-slate-400 mb-1.5"><i class="fa-solid fa-keyboard"></i> הסורק לא קורא? הקלד את הספרות האחרונות של הברקוד (6 מומלץ)</div>' +
       '<input id="rcDigits" type="text" inputmode="numeric" placeholder="למשל: 693134" class="w-full bg-slate-50 border border-slate-200 rounded-xl py-2.5 px-3 text-base font-black text-center outline-none focus:border-blue-500" dir="ltr">' +
       '<div id="rcDigitsList" class="mt-2 space-y-1"></div>' +
