@@ -13856,8 +13856,14 @@ function promoImportPriceMismatches(sheet) {
   });
   return out;
 }
+function promoImportGroupDates(group, sheet) {
+  // v13: לקבוצה יכולים להיות תאריכים משלה — הערה בדף ("מתאריך 11.9") הפרידה
+  // אותה מהקבוצה שנפתחת בתחילת החודש. תאריכי הדף הם ברירת מחדל בלבד.
+  return { from: group.validFrom || sheet.validFrom || '', to: group.validTo || sheet.validTo || '' };
+}
 function promoImportExistingPromo(group, sheet) {
-  return promos.find(pr => (pr.name || '') === (group.name || '') && (pr.start || '') === (sheet.validFrom || '') && (pr.end || '') === (sheet.validTo || ''));
+  const d = promoImportGroupDates(group, sheet);
+  return promos.find(pr => (pr.name || '') === (group.name || '') && (pr.start || '') === d.from && (pr.end || '') === d.to);
 }
 
 // ===== v2: טעינת pdf.js מקומית (CDN, פעם אחת) =====
@@ -13944,22 +13950,134 @@ async function tnvExtractFillRects(pdfjsLib, page){
   return rects.filter(r=> (r.x1-r.x0)>30);
 }
 
-function tnvParsePromoRow(text){
-  const mb = text.match(/(\d{13})/); if(!mb) return null;
-  const mp = text.match(/(\d{1,2}\.\d{2})%/); if(!mp) return null;
-  let work = text.replace(mb[0],' ').replace(mp[0],' ');
-  const prices = (work.match(/\d{1,3}\.\d{2}/g)||[]).map(Number);
-  if (prices.length!==2) return { bad:true, text };
-  work = work.replace(/\d{1,3}\.\d{2}/g,' ').replace(/₪/g,' ').replace(/!!/g,' ');
-  return { bc: mb[1], pct: parseFloat(mp[1]), list: Math.max(prices[0],prices[1]),
-           promo: Math.min(prices[0],prices[1]), name: tnvFixName(work.split(/\s+/).filter(Boolean)) };
+// ===== v13: פענוח שורה בהוכחה, לא בתבנית =====
+// הדף מדפיס אחוז לפעמים עם שתי ספרות ("18.00%") ולפעמים בלעדיהן ("7%"), ולא
+// תמיד עם רווח בין העמודות. התבנית הישנה דרשה שתי ספרות, ולכן הפילה בשקט את
+// עמק סמי 7% — מוצר שלם נעלם מהייבוא בלי מילה, וכל תעודה שכללה אותו נתקעה
+// אחר כך על "פער לא מוסבר" (סד ההנחה שוחזר 37.69 במקום 50.04).
+// הרפיית התבנית לבדה מסוכנת יותר: בטקסט דבוק "19.607%" רג'קס רחב קורא אחוז
+// 19.607. לכן במקום לנחש איפה נגמר מספר אחד ומתחיל הבא, כל פיצול אפשרי נבחן
+// מול הזהות שהדף עצמו מקיים: מחירון × (1 − אחוז/100) = מחיר מבצע. פיצול יחיד
+// שמקיים אותה הוא התשובה; אפס או יותר מאחד — השורה מוחזרת כלא-מובנת, בקול.
+function tnvRowText(parts){
+  // בונים את הטקסט יחד עם מפת בעלות: לאיזו פיסה שייך כל תו. בלי המפה אי אפשר
+  // לדעת באיזו עמודה ישב המספר שנבחר, ולכן אי אפשר לזהות מה נשאר בשוליים.
+  let text = ''; const owner = [];
+  parts.forEach((p, pi) => {
+    const s = String(p.s == null ? '' : p.s);
+    if (text.length) { text += ' '; owner.push(-1); }
+    for (let i = 0; i < s.length; i++) owner.push(pi);
+    text += s;
+  });
+  return { text: text, owner: owner };
+}
+function tnvSpanOwner(joined, index){
+  for (let i = index; i < joined.owner.length; i++) if (joined.owner[i] >= 0) return joined.owner[i];
+  return -1;
+}
+function tnvOverlap(a, b){ return a.a < b.b && b.a < a.b; }
+function tnvPctSpans(text, loose){
+  // כל מספר חוקי שנגמר בדיוק לפני סימן האחוז. במצב הקפדני נלקח רק הארוך
+  // ביותר שגבולו נקי (לא נצמד לספרה או לנקודה); במצב הרחב — כל האפשרויות.
+  const out = [];
+  for (let i = 0; i < text.length; i++){
+    if (text[i] !== '%') continue;
+    for (let a = Math.max(0, i - 7); a < i; a++){
+      const t = text.slice(a, i);
+      if (!/^\d{1,3}(?:\.\d{1,2})?$/.test(t)) continue;
+      if (!loose && a > 0 && /[\d.]/.test(text[a - 1])) continue;
+      out.push({ a: a, b: i + 1, v: parseFloat(t) });
+      if (!loose) break;
+    }
+  }
+  return out;
+}
+function tnvPriceSpans(text, loose){
+  const out = [];
+  for (let i = 0; i < text.length; i++){
+    const m = /^(\d{1,3}\.\d{2})/.exec(text.slice(i));
+    if (!m) continue;
+    const b = i + m[1].length;
+    if (!loose){
+      if (i > 0 && /[\d.]/.test(text[i - 1])) continue;
+      if (b < text.length && /[\d.]/.test(text[b])) continue;
+    }
+    out.push({ a: i, b: b, v: parseFloat(m[1]) });
+  }
+  return out;
+}
+function tnvSolveRow(text, loose){
+  const pcts = tnvPctSpans(text, loose), prices = tnvPriceSpans(text, loose);
+  const out = [], seen = new Set();
+  for (const pc of pcts){
+    if (!(pc.v > 0 && pc.v < 100)) continue;
+    for (const li of prices){
+      if (tnvOverlap(li, pc)) continue;
+      for (const pr of prices){
+        if (pr === li || tnvOverlap(pr, pc) || tnvOverlap(pr, li)) continue;
+        if (!(pr.v < li.v)) continue;
+        if (tnvR2(li.v * (1 - pc.v / 100)) !== tnvR2(pr.v)) continue;
+        const sig = pc.v + '|' + li.v + '|' + pr.v;
+        if (seen.has(sig)) continue;
+        seen.add(sig); out.push({ pct: pc, list: li, promo: pr });
+      }
+    }
+  }
+  return out;
+}
+function tnvIgnorablePart(s){ return !String(s == null ? '' : s).replace(/[\s₪!*·.,:;()\-–—]/g, '').length; }
+function tnvParsePromoRow(parts){
+  const joined = tnvRowText(parts);
+  const mb = joined.text.match(/(\d{13})/);
+  if (!mb) return null; // אינה שורת מוצר (כותרת, כותרות עמודה, הערה כללית)
+  // הברקוד מוחלף ברווחים באותו אורך: האינדקסים נשארים תקפים, והספרות שלו
+  // אינן יכולות להיבלע לתוך מועמד מחיר.
+  const bcAt = joined.text.indexOf(mb[1]);
+  const text = joined.text.slice(0, bcAt) + ' '.repeat(mb[1].length) + joined.text.slice(bcAt + mb[1].length);
+  let sol = null, reason = '';
+  const strict = tnvSolveRow(text, false);
+  if (strict.length === 1) sol = strict[0];
+  else {
+    const loose = tnvSolveRow(text, true);
+    if (loose.length === 1) sol = loose[0];
+    else if (strict.length > 1 || loose.length > 1) reason = 'יותר מפיצול אחד מקיים את החשבון מחירון × (1 − אחוז) = מבצע';
+    else reason = 'לא נמצא פיצול שמקיים את החשבון מחירון × (1 − אחוז) = מבצע';
+  }
+  if (!sol) return { bad: true, bc: mb[1], text: joined.text, reason: reason };
+  // ההערה: כל פיסת טקסט שיושבת משמאל לעמודת מחיר המבצע — כלומר מחוץ לטבלה.
+  // זו העמודה שהפרסר מעולם לא קרא, ובה ישבו "מתאריך 11.9" ו"המלצת מהות 2
+  // יחידות ב". השארית הזאת היא מה שהופך ייבוא שקט לייבוא שמודה שלא הבין.
+  const promoPart = tnvSpanOwner(joined, sol.promo.a);
+  const promoX = promoPart >= 0 && parts[promoPart] ? parts[promoPart].x : null;
+  const noteParts = promoX == null ? [] : parts.filter((p, i) => i !== promoPart && p.x < promoX - 1 && !tnvIgnorablePart(p.s));
+  // הדף מודפס מימין לשמאל: סדר הקריאה של ההערה הוא x יורד.
+  const note = noteParts.slice().sort((a, b) => b.x - a.x).map(p => String(p.s).trim()).join(' ').replace(/\s+/g, ' ').trim();
+  const noteSet = new Set(noteParts.map(p => parts.indexOf(p)));
+  // השם נבנה מהפיסות שלא נצרכו: לא ההערה, לא עמודות המספרים, לא הברקוד.
+  // הפיצול למילים נשמר כפי שהיה — tnvFixName מהפך סדר טוקנים, ולכן פיסה
+  // רב-מילתית שנשלחת כטוקן אחד הייתה יוצאת הפוכה.
+  const listPart = tnvSpanOwner(joined, sol.list.a), pctPart = tnvSpanOwner(joined, sol.pct.a);
+  const nameToks = [];
+  parts.forEach((p, i) => {
+    if (noteSet.has(i) || tnvIgnorablePart(p.s)) return;
+    if (i === listPart || i === pctPart || i === promoPart) return;
+    const s = String(p.s);
+    if (s.indexOf(mb[1]) !== -1) return;
+    s.split(/\s+/).filter(Boolean).forEach(word => nameToks.push(word));
+  });
+  return { bc: mb[1], pct: sol.pct.v, list: sol.list.v, promo: sol.promo.v,
+           name: tnvFixName(nameToks), note: note || '' };
 }
 
 function tnvGroupRows(rows){
   const count={};
-  rows.forEach(r=>r.colors.forEach(c=>{ count[c]=(count[c]||0)+1; }));
+  rows.forEach(r=>{ r.colors = Array.isArray(r.colors) ? r.colors : []; r.colors.forEach(c=>{ count[c]=(count[c]||0)+1; }); });
   const common=new Set(Object.keys(count).filter(c=>count[c]>rows.length*0.8));
-  rows.forEach(r=>{ r.key = r.colors.filter(c=>!common.has(c)).sort().join('|'); });
+  // v13: התוקף ותנאי הכמות נכנסים למפתח הקיבוץ. שורה שההערה שלה קובעת תאריך
+  // אחר ("מתאריך 11.9") היא מבצע אחר לכל דבר, ואסור שתתמזג לקבוצה שנפתחת
+  // ב-1 בחודש — אחרת התאריך שהמנהל אישר נבלע בשקט בתאריך של השכנה.
+  rows.forEach(r=>{ r.key = [r.colors.filter(c=>!common.has(c)).sort().join('|'),
+    r.effStart||'', r.effEnd||'', (Number(r.minUnits)>1 ? Math.round(Number(r.minUnits)) : 1)].join('#'); });
   const bands=[];
   for (const r of rows){
     if (bands.length && bands[bands.length-1].key===r.key) bands[bands.length-1].items.push(r);
@@ -14023,9 +14141,13 @@ function tnvSheetDates(titleText){
   return { validFrom: y+'-'+p2(mo)+'-01', validTo: y+'-'+p2(mo)+'-'+p2(last) };
 }
 
+// v13: הקריאה המקומית אינה זורקת יותר על כל בעיה — היא מדווחת מה הבינה, מה
+// לא הבינה ומה נשאר בשוליים, וההחלטה מה לעשות עם זה נעשית מעל. ההבדל אינו
+// קוסמטי: ייבוא שנפל בשקט על שורה אחת הוא בדיוק מה שהוציא מוצר שלם מהמאגר.
 async function tnvParsePromoSheet(pdfjsLib, data, priceOf){
   const doc = await pdfjsLib.getDocument({ data }).promise;
-  const rows=[]; const problems=[]; let title='';
+  const rows=[]; const problems=[]; const unread=[]; const notes=[]; const aiLines=[];
+  const colorsByBarcode = {}; let title='';
   for (let pn=1; pn<=doc.numPages; pn++){
     const page = await doc.getPage(pn);
     const tc = await page.getTextContent();
@@ -14033,46 +14155,134 @@ async function tnvParsePromoSheet(pdfjsLib, data, priceOf){
     if (pn===1) title = lines.slice(0,6).map(l=>l.text).join(' ');
     const rects = await tnvExtractFillRects(pdfjsLib, page);
     for (const ln of lines){
-      const row = tnvParsePromoRow(ln.text);
+      const parts = (ln.parts||[]).map(p=>({ x: p.x, s: p.s }));
+      if (aiLines.length < 400) aiLines.push({ page: pn, parts: parts.map(p=>[Math.round(p.x), String(p.s)]) });
+      const row = tnvParsePromoRow(parts);
       if (!row) continue;
-      if (row.bad){ problems.push('שורה לא מפוענחת: '+ln.text.slice(0,60)); continue; }
-      row.colors = rects.filter(r=> ln.y>=r.y0-1 && ln.y<=r.y1+1).map(r=>r.c);
+      const colors = rects.filter(r=> ln.y>=r.y0-1 && ln.y<=r.y1+1).map(r=>r.c);
+      if (row.bc) colorsByBarcode[row.bc] = colors;
+      if (row.bad){
+        // שורה עם ברקוד שלא נפענחה היא מוצר שלא ייכנס למאגר. היא נרשמת
+        // במפורש — לעולם לא מדולגת בשקט, כפי שקרה לעמק סמי 7%.
+        unread.push({ bc: row.bc, text: row.text.slice(0,90), reason: row.reason });
+        problems.push('שורה לא מפוענחת (' + row.bc + '): ' + row.reason);
+        continue;
+      }
+      row.colors = colors;
       // v12: הקיבוץ נעשה לפי מחיר המאגר (האמת שבחרנו) — מחיר הדף נשאר לאימות
       // האחוזים ולאזהרות המחיר; טעות בדף (8.28 מול 8.82) לא תגרור מוצר לקבוצה זרה.
       row.gp = (function(){ try { const v = priceOf ? Number(priceOf(row.bc)) : 0; return v > 0 ? v : row.list; } catch(e){ return row.list; } })();
+      if (row.note){
+        notes.push({ bc: row.bc, name: row.name, note: row.note });
+        problems.push('הערה בשולי השורה שלא פוענחה (' + row.bc + '): "' + row.note + '"');
+      }
       rows.push(row);
     }
   }
-  if (!rows.length) throw new Error('לא נמצאו שורות מבצע בקובץ — ודא שזה ה-PDF של דף הפעילות');
+  if (!rows.length && !unread.length) throw new Error('לא נמצאו שורות מבצע בקובץ — ודא שזה ה-PDF של דף הפעילות');
   const seen=new Set();
   for (const r of rows){
     if (!tnvEan13Ok(r.bc)) problems.push('ברקוד עם ספרת ביקורת שגויה: '+r.bc);
     if (seen.has(r.bc)) problems.push('ברקוד כפול בדף: '+r.bc);
     seen.add(r.bc);
-    const exp = tnvR2(r.list*(1-r.pct/100));
-    if (Math.abs(exp-r.promo)>0.011) problems.push('חשבון אחוז לא מסתדר ב-'+r.bc+': '+r.list+'−'+r.pct+'% אמור לתת '+exp+' אך בדף '+r.promo);
   }
-  if (problems.length) throw new Error('הדף נקרא אך נמצאו בעיות:\n• '+problems.slice(0,6).join('\n• '));
-  const groups = tnvGroupRows(rows).map(g=>{
+  const dates = tnvSheetDates(title);
+  return { title: title, validFrom: dates.validFrom, validTo: dates.validTo,
+           rows: rows, unread: unread, notes: notes, problems: problems,
+           lines: aiLines, colorsByBarcode: colorsByBarcode };
+}
+// בניית קבוצות המבצע. משותפת לקריאה המקומית ולקריאה החוזרת ב-AI, כדי ששני
+// המסלולים ייצרו בדיוק את אותו סוג מבצע ולא ייווצרו שתי אמיתות.
+function tnvBuildGroups(rows){
+  return tnvGroupRows(rows).map(g=>{
     // מחיר הקבוצה = היקר ביותר בצבר (הכרעת 4.8) — זה בסיס השלט; ההתחשבנות
     // ממילא פר-מוצר לפי המחיר שלו-עצמו, כך שהמיזוג לא נוגע בכסף.
     const maxList = Math.max.apply(null, g.items.map(it=>it.gp));
+    const minUnits = Math.max.apply(null, g.items.map(it=> Number(it.minUnits)>1 ? Math.round(Number(it.minUnits)) : 1));
     return {
       name: tnvGroupName(g.items, g.pct) + ' · ₪' + maxList,
       discountPct: g.pct,
-      packUnits: 1,
+      packUnits: minUnits,
       unitPriceExVat: maxList,
-      products: g.items.map(it=>({ barcode: it.bc, name: it.name, listPrice: it.list, promoPrice: it.promo }))
+      validFrom: g.items[0].effStart || null,
+      validTo: g.items[0].effEnd || null,
+      dated: !!g.items[0].datedNote,
+      products: g.items.map(it=>({ barcode: it.bc, name: it.name, listPrice: it.list, promoPrice: it.promo, note: it.note || '' }))
     };
   });
-  const dates = tnvSheetDates(title);
-  return { validFrom: dates.validFrom, validTo: dates.validTo, groups };
 }
 
+// ===== v13: הסלמה ל-AI ושער ההוכחה =====
+// ההחלטה (המנהל, 1.9): "ברגע שיש הערה או משהו שהסריקה לא מבינה — שולחים ל-AI
+// ונותנים לו לפתוח את כל המבצעים". כך זה עובד, עם תוספת אחת שאינה נתונה
+// למשא ומתן: ה-AI אינו מקור המספרים אלא קורא שני. כל שורה שחוזרת ממנו נבחנת
+// מול אותה זהות שהדף מקיים — מחירון × (1 − אחוז/100) = מחיר מבצע — ושורה
+// שאינה מוכחת אינה נפתחת כמבצע. קריאה שגויה אינה יכולה להגיע למאגר.
+function tnvIsoDate(value){
+  return typeof value === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(value) && !isNaN(new Date(value + 'T12:00:00').getTime());
+}
+async function promoImportAiRead(parsed){
+  const token = await auth.currentUser.getIdToken();
+  const response = await aiFetchWithRetry(AI_SCAN_WORKER_URL, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + token },
+    body: JSON.stringify({ mode: 'promoSheet', sheet: { title: parsed.title, lines: parsed.lines } })
+  });
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok || !payload.ok) {
+    const code = payload.error || '';
+    if (code === 'mode_not_supported' || code === 'invalid_document_count') throw new Error('שירות הסריקה עדיין בגרסה ישנה שאינה כוללת את קורא דף המבצעים — יש להעלות קודם את server.js (גרסה 8).');
+    if (code === 'rate_limited') throw new Error('בוצעו יותר מדי ניסיונות לשרת. המתן 10 דקות ונסה שוב.');
+    if (code === 'invalid_auth' || code === 'auth_required') throw new Error('האימות המאובטח נכשל. רענן את האפליקציה ונסה שוב.');
+    if (code === 'invalid_promo_sheet_input') throw new Error('הדף נשלח בלי טקסט קריא — ודא שזה קובץ ה-PDF המקורי ולא צילום.');
+    throw new Error('הקריאה החוזרת של הדף לא הסתיימה. הקריאה המקומית נשארה כפי שהיא.');
+  }
+  return payload.sheet || {};
+}
+function tnvVerifyAiSheet(ai, parsed){
+  const rows = [], rejected = [], conflicts = [], notes = [];
+  const localByBc = new Map((parsed.rows || []).map(r => [r.bc, r]));
+  const from = tnvIsoDate(ai.validFrom) ? ai.validFrom : parsed.validFrom;
+  const to = tnvIsoDate(ai.validTo) ? ai.validTo : parsed.validTo;
+  if (!tnvIsoDate(from) || !tnvIsoDate(to) || from > to) return { ok: false, error: 'הקריאה החוזרת לא החזירה תוקף ברור לדף — המבצעים לא נפתחו אוטומטית' };
+  (Array.isArray(ai.rows) ? ai.rows : []).forEach(raw => {
+    const bc = String(raw.barcode == null ? '' : raw.barcode).replace(/\D/g, '');
+    const list = Number(raw.listPrice), pct = Number(raw.discountPct), promo = Number(raw.promoPrice);
+    const label = String(raw.name || '') || bc || 'שורה ללא זיהוי';
+    if (!/^\d{13}$/.test(bc) || !tnvEan13Ok(bc)) { rejected.push({ label: label, why: 'ברקוד לא תקין' }); return; }
+    if (!(isFinite(list) && list > 0 && isFinite(promo) && promo > 0 && isFinite(pct) && pct > 0 && pct < 100)) {
+      rejected.push({ label: label, why: 'מספר חסר או לא חוקי' }); return;
+    }
+    // שער ההוכחה. זהה בדיוק לזה של הקריאה המקומית — אין דלת אחורית ל-AI.
+    if (tnvR2(list * (1 - pct / 100)) !== tnvR2(promo)) {
+      rejected.push({ label: label, why: 'החשבון לא נסגר: ' + list + ' פחות ' + pct + '% אינו ' + promo }); return;
+    }
+    const loc = localByBc.get(bc);
+    if (loc && (tnvR2(loc.list) !== tnvR2(list) || tnvR2(loc.pct) !== tnvR2(pct) || tnvR2(loc.promo) !== tnvR2(promo))) {
+      // שתי קריאות, שתיהן מקיימות את החשבון, ואינן מסכימות — זו עמימות אמיתית
+      // שאסור להכריע לבד. השורה אינה נפתחת, והמנהל רואה את שתי הגרסאות.
+      conflicts.push({ label: label, local: loc.list + ' פחות ' + loc.pct + '% = ' + loc.promo, ai: list + ' פחות ' + pct + '% = ' + promo });
+      return;
+    }
+    const row = { bc: bc, pct: pct, list: list, promo: promo, name: String(raw.name || ''),
+                  colors: (parsed.colorsByBarcode || {})[bc] || [], note: String(raw.noteText || ''),
+                  effStart: from, effEnd: to, minUnits: 1, datedNote: false };
+    if (raw.noteKind === 'startDate' && tnvIsoDate(raw.noteStartDate) && raw.noteStartDate >= from && raw.noteStartDate <= to) { row.effStart = raw.noteStartDate; row.datedNote = true; }
+    if (raw.noteKind === 'endDate' && tnvIsoDate(raw.noteEndDate) && raw.noteEndDate >= row.effStart && raw.noteEndDate <= to) { row.effEnd = raw.noteEndDate; row.datedNote = true; }
+    if (raw.noteKind === 'minUnits' && Number(raw.noteMinUnits) >= 2) row.minUnits = Math.round(Number(raw.noteMinUnits));
+    if (row.note) notes.push({ bc: bc, name: row.name, note: row.note, kind: raw.noteKind,
+      effect: row.datedNote ? ('תוקף ' + row.effStart + ' עד ' + row.effEnd)
+        : (row.minUnits > 1 ? ('מינימום ' + row.minUnits + ' יח׳ מהסל') : 'להצגה בלבד — לא שינתה את תנאי המבצע') });
+    rows.push(row);
+  });
+  if (!rows.length) return { ok: false, error: 'אף שורה מהקריאה החוזרת לא עברה את הוכחת החשבון — המבצעים לא נפתחו אוטומטית' };
+  return { ok: true, validFrom: from, validTo: to, rows: rows, rejected: rejected, conflicts: conflicts,
+           notes: notes, warnings: (Array.isArray(ai.warnings) ? ai.warnings : []).slice(0, 8) };
+}
 async function promoImportStart(files) {
   if (!files || !files.length) return;
   if (!auth || !auth.currentUser) { showToast('עדיין אין חיבור מאובטח — המתן רגע ונסה שוב', null, null, 3000); return; }
-  promoImport = { stage: 'reading', sheet: null, missing: [], error: '' };
+  promoImport = { stage: 'reading', step: 'local', sheet: null, missing: [], error: '' };
   renderPromos();
   try {
     // v2 תנובה: הדף של שקל ראשון הוא PDF דיגיטלי — נקרא מקומית בטלפון,
@@ -14083,7 +14293,48 @@ async function promoImportStart(files) {
     if (pdfFile.size > 15 * 1024 * 1024) throw new Error('קובץ ה-PDF גדול מדי (מעל 15MB) — ודא שזה קובץ דף הפעילות המקורי');
     const pdfjs = await tnvLoadPdfjs();
     const bytes = await promoImportFileArrayBuffer(pdfFile);
-    const sheet = await tnvParsePromoSheet(pdfjs, bytes, function(bc){ const m = findProductByBarcode(bc, null); const v = m ? Number(m.price) : 0; return v > 0 ? v : null; });
+    const priceOf = function(bc){ const m = findProductByBarcode(bc, null); const v = m ? Number(m.price) : 0; return v > 0 ? v : null; };
+    const parsed = await tnvParsePromoSheet(pdfjs, bytes, priceOf);
+    let source = 'local', audit = null;
+    let validFrom = parsed.validFrom, validTo = parsed.validTo;
+    let rows = (parsed.rows || []).map(r => Object.assign({}, r, { effStart: parsed.validFrom, effEnd: parsed.validTo, minUnits: 1, datedNote: false }));
+    // v13: ההסלמה. כל דבר שהקריאה המקומית לא הבינה — שורה שלא נפענחה, הערה
+    // בשולי שורה, ברקוד פגום — מעביר את הדף כולו לקריאה חוזרת ב-AI.
+    if (parsed.problems.length) {
+      promoImport.step = 'ai';
+      if (currentView === 'promos') renderPromos();
+      try {
+        const verified = tnvVerifyAiSheet(await promoImportAiRead(parsed), parsed);
+        if (verified.ok) {
+          // שורה שהקריאה המקומית פענחה והקריאה החוזרת לא החזירה נשמרת כפי
+          // שנקראה מקומית — היא עברה את אותה הוכחה. אף שורה לא נופלת בין הכיסאות.
+          const returned = new Set(verified.rows.map(r => r.bc));
+          const kept = rows.filter(r => !returned.has(r.bc)).map(r => Object.assign({}, r, { effStart: verified.validFrom, effEnd: verified.validTo }));
+          rows = verified.rows.concat(kept);
+          validFrom = verified.validFrom; validTo = verified.validTo; source = 'ai';
+          audit = { rejected: verified.rejected, conflicts: verified.conflicts, notes: verified.notes,
+                    warnings: verified.warnings, keptLocal: kept.map(r => r.bc) };
+        } else audit = { error: verified.error, rejected: [], conflicts: [], notes: [], warnings: [], keptLocal: [] };
+      } catch (aiError) {
+        audit = { error: (aiError && aiError.message) || 'הקריאה החוזרת נכשלה', rejected: [], conflicts: [], notes: [], warnings: [], keptLocal: [] };
+      }
+    }
+    rows.forEach(r => { if (!(Number(r.gp) > 0)) { const v = priceOf(r.bc); r.gp = Number(v) > 0 ? Number(v) : r.list; } });
+    if (!rows.length) throw new Error('הדף נקרא אך אף שורה לא עברה את הוכחת החשבון (מחירון × (1 − אחוז) = מבצע). ודא שזה קובץ דף הפעילות המקורי.');
+    // מה שנשאר פתוח אחרי הכול. זה לעולם לא נבלע: מוצג באדום במסך האישור,
+    // כי ייבוא שמדלג בשקט על שורה הוא בדיוק מה שהוציא את עמק סמי מהמאגר.
+    const unresolved = [];
+    const covered = new Set(rows.map(r => r.bc));
+    (parsed.unread || []).forEach(u => { if (!covered.has(u.bc)) unresolved.push('שורה לא נקראה (' + u.bc + '): ' + u.reason); });
+    if (source !== 'ai') (parsed.notes || []).forEach(n => unresolved.push('הערה בדף שלא פוענחה ליד ' + (n.name || n.bc) + ': "' + n.note + '"'));
+    else {
+      // הערה שהקריאה המקומית ראתה בשוליים והקריאה החוזרת לא החזירה עליה דבר
+      // אינה נעלמת — היא עולה למסך כפי שנקראה. זו אותה משמעת: מה שלא הובן, נאמר.
+      const aiNoted = new Set((audit && Array.isArray(audit.notes) ? audit.notes : []).map(n => n.bc));
+      (parsed.notes || []).forEach(n => { if (!aiNoted.has(n.bc)) unresolved.push('הערה בדף שהקריאה החוזרת לא התייחסה אליה (' + n.bc + '): "' + n.note + '"'); });
+    }
+    if (audit && audit.error) unresolved.push(audit.error);
+    const sheet = { validFrom: validFrom, validTo: validTo, groups: tnvBuildGroups(rows) };
     // v3: שמות מהמאגר — pdf.js מחזיר עברית בסדר לוגי (בשונה מכלי הבדיקה),
     // ותיקון-הכיוון הגורף הפך שמות נכונים לג'יבריש. הפתרון המבני: הטקסט מהדף
     // משמש למספרים בלבד; שמות המוצרים והקבוצות נלקחים מהקטלוג לפי ברקוד,
@@ -14100,12 +14351,17 @@ async function promoImportStart(files) {
         const top = Object.keys(cnt).sort((a, b) => cnt[b] - cnt[a])[0];
         if (top) {
           const p = group.discountPct === Math.round(group.discountPct) ? String(Math.round(group.discountPct)) : String(group.discountPct);
-          group.name = top + ' ' + p + '%' + (Number(group.unitPriceExVat) > 0 ? ' · ₪' + group.unitPriceExVat : '');
+          // v13: קבוצה שהערה נתנה לה תוקף חריג נושאת אותו בשם. בלי זה שתי
+          // קבוצות שנבדלות רק בתאריך מקבלות שם זהה — והמנהל רואה שתי שורות
+          // תאומות ברשימת המבצעים בלי לדעת מה מבדיל ביניהן.
+          group.name = top + ' ' + p + '%' + (Number(group.unitPriceExVat) > 0 ? ' · ₪' + group.unitPriceExVat : '')
+            + (group.dated && group.validFrom ? ' · מ-' + group.validFrom.slice(8) + '.' + group.validFrom.slice(5, 7) : '');
         }
       }
     });
     const missing = promoImportMatch(sheet);
-    promoImport = { stage: missing.length ? 'wizard' : 'summary', sheet: sheet, missing: missing, error: '' };
+    promoImport = { stage: missing.length ? 'wizard' : 'summary', sheet: sheet, missing: missing, error: '',
+                    source: source, audit: audit, unresolved: unresolved };
     if (missing.length) promoImportOpenNextMissing();
   } catch (error) {
     promoImport = { stage: 'error', sheet: null, missing: [], error: (error && error.message) || 'הייבוא נכשל' };
@@ -14173,19 +14429,22 @@ function promoImportProductSaved(savedProduct) {
 async function promoImportCreateAll() {
   if (!promoImport || promoImport.stage !== 'summary' || promoImport.busy) return;
   const sheet = promoImport.sheet;
-  if (!sheet.validFrom || !sheet.validTo) { showToast('הדף לא כלל תאריכים ברורים — פתח את המבצעים ידנית או צלם שוב', null, null, 3600); return; }
+  if (sheet.groups.some(group => { const d = promoImportGroupDates(group, sheet); return !d.from || !d.to; })) {
+    showToast('הדף לא כלל תאריכים ברורים — פתח את המבצעים ידנית או שלח את הקובץ המקורי', null, null, 3600); return;
+  }
   promoImport.busy = true;
   renderPromos();
   let created = 0, skipped = 0, failed = 0;
   for (const group of sheet.groups) {
     if (!group.productIds.length) { skipped++; continue; }
     if (promoImportExistingPromo(group, sheet)) { skipped++; continue; }
+    const dates = promoImportGroupDates(group, sheet);
     const newId = makeOperationId('promo');
     const data = {
       name: group.name || ('מבצע ' + group.discountPct + '%'),
       pct: r2(group.discountPct),
-      start: sheet.validFrom,
-      end: sheet.validTo,
+      start: dates.from,
+      end: dates.to,
       minQty: group.packUnits >= 2 ? group.packUnits : 1,
       minUnit: 'unit',
       cartonSize: null,
@@ -14206,7 +14465,10 @@ function promoImportHtml() {
   if (!promoImport) return '';
   const st = promoImport;
   if (st.stage === 'reading') {
-    return '<div class="rounded-2xl border-2 border-violet-200 bg-violet-50 p-3 text-center mb-3"><i class="fa-solid fa-spinner fa-spin text-violet-600"></i> <span class="font-black text-violet-800 text-sm">קורא את דף המבצעים… אל תסגור את המסך</span></div>';
+    const what = st.step === 'ai'
+      ? 'משהו בדף לא היה ברור — שולח את הדף לקריאה חוזרת ב-AI…'
+      : 'קורא את דף המבצעים…';
+    return '<div class="rounded-2xl border-2 border-violet-200 bg-violet-50 p-3 text-center mb-3"><i class="fa-solid fa-spinner fa-spin text-violet-600"></i> <span class="font-black text-violet-800 text-sm">' + what + ' אל תסגור את המסך</span></div>';
   }
   if (st.stage === 'error') {
     return '<div class="rounded-2xl border-2 border-rose-200 bg-rose-50 p-3 mb-3"><div class="font-black text-rose-700 text-sm">' + htmlEscape(st.error) + '</div>' +
@@ -14220,18 +14482,45 @@ function promoImportHtml() {
   }
   const sheet = st.sheet;
   const mismatches = promoImportPriceMismatches(sheet);
+  const audit = st.audit || {};
   const rows = sheet.groups.map(group => {
     const existing = promoImportExistingPromo(group, sheet);
+    const dates = promoImportGroupDates(group, sheet);
     const badge = group.created ? '<span class="text-emerald-600 font-black text-[10px]">נפתח ✓</span>'
       : (existing ? '<span class="text-slate-400 font-black text-[10px]">כבר קיים</span>'
         : (!group.productIds.length ? '<span class="text-rose-500 font-black text-[10px]">אין מוצרים משויכים</span>' : ''));
+    // תוקף חריג מוצג על הקבוצה עצמה — מבצע שמתחיל באמצע החודש אסור שייראה
+    // כמו כל השאר, אחרת ההערה שאושרה נעלמת מהעין ברגע שהמסך נסגר.
+    const dateNote = group.dated ? '<span class="text-[10px] font-black text-violet-700 bg-violet-50 border border-violet-200 rounded px-1.5 py-0.5 mr-1">' + htmlEscape(dates.from) + ' → ' + htmlEscape(dates.to) + '</span>' : '';
     return '<div class="flex items-center justify-between gap-2 border-b border-slate-100 py-1.5">' +
-      '<div class="min-w-0"><div class="text-sm font-black text-slate-800">' + htmlEscape(group.name) + ' · ' + group.discountPct + '%</div>' +
+      '<div class="min-w-0"><div class="text-sm font-black text-slate-800">' + htmlEscape(group.name) + ' · ' + group.discountPct + '%' + dateNote + '</div>' +
       '<div class="text-[10px] font-bold text-slate-500">' + group.productIds.length + ' מוצרים' + (group.packUnits >= 2 ? ' · מינימום ' + group.packUnits + ' יח׳' : '') + (group.unitPriceExVat ? ' · ₪' + fmtMoney(group.unitPriceExVat) : '') + '</div></div>' + badge + '</div>';
   }).join('');
+  // מחלקות מלאות ולא מורכבות ממחרוזות: כך נעשה בכל הקובץ, וכך הן שורדות גם
+  // אם Tailwind יפסיק להיבנות בזמן ריצה מה-CDN.
+  const TONES = {
+    rose: 'rounded-xl bg-rose-50 border border-rose-300 p-2 mt-2 text-[11px] font-bold text-rose-900',
+    amber: 'rounded-xl bg-amber-50 border border-amber-300 p-2 mt-2 text-[11px] font-bold text-amber-900',
+    violet: 'rounded-xl bg-violet-50 border border-violet-300 p-2 mt-2 text-[11px] font-bold text-violet-900',
+    slate: 'rounded-xl bg-slate-50 border border-slate-300 p-2 mt-2 text-[11px] font-bold text-slate-700'
+  };
+  const block = (tone, icon, title, items) => items.length
+    ? '<div class="' + TONES[tone] + '">' +
+      '<div class="font-black mb-0.5"><i class="fa-solid ' + icon + '"></i> ' + title + '</div>' +
+      items.map(t => '<div>• ' + htmlEscape(t) + '</div>').join('') + '</div>'
+    : '';
+  const sourceBadge = st.source === 'ai'
+    ? '<div class="text-[11px] font-black text-violet-700 bg-violet-50 border border-violet-200 rounded-lg px-2 py-1 mt-1.5"><i class="fa-solid fa-robot"></i> משהו בדף לא היה ברור לקריאה המקומית, ולכן הדף נקרא שוב ב-AI. כל שורה שנפתחת עברה את הבדיקה: מחירון × (1 − אחוז) = מחיר מבצע.</div>'
+    : '<div class="text-[11px] font-black text-slate-500 mt-1"><i class="fa-solid fa-microchip"></i> נקרא מקומית במכשיר, בלי AI — כל השורות התפענחו.</div>';
   return '<div class="rounded-2xl border-2 border-violet-300 bg-white p-3 mb-3">' +
     '<div class="font-black text-violet-900"><i class="fa-solid fa-file-import ml-1"></i>סיכום הדף — לאישור לפני פתיחה</div>' +
     '<div class="text-[11px] font-bold text-slate-500 mt-0.5">בתוקף ' + (sheet.validFrom ? htmlEscape(sheet.validFrom) : '?') + ' עד ' + (sheet.validTo ? htmlEscape(sheet.validTo) : '?') + '</div>' +
+    sourceBadge +
+    block('rose', 'fa-circle-exclamation', 'לא נפתר — בדוק ידנית', st.unresolved || []) +
+    block('rose', 'fa-scale-unbalanced', 'שורות שלא עברו את הוכחת החשבון ולכן לא נפתחו', (audit.rejected || []).map(x => x.label + ' — ' + x.why)) +
+    block('amber', 'fa-code-compare', 'שתי קריאות שאינן מסכימות — לא נפתחו, הכרע ידנית', (audit.conflicts || []).map(x => x.label + ': מקומי ' + x.local + ' / AI ' + x.ai)) +
+    block('violet', 'fa-note-sticky', 'הערות שנקראו מהדף', (audit.notes || []).map(n => (n.name || n.bc) + ': "' + n.note + '" → ' + n.effect)) +
+    block('slate', 'fa-circle-info', 'הערות הקריאה החוזרת', audit.warnings || []) +
     (mismatches.length ? '<div class="rounded-xl bg-amber-50 border border-amber-300 p-2 mt-2 text-[11px] font-bold text-amber-900"><i class="fa-solid fa-triangle-exclamation"></i> מחירים שונים מהמאגר: ' + mismatches.map(m => htmlEscape(m.name) + ' (מאגר ₪' + fmtMoney(m.catalog) + ' / דף ₪' + fmtMoney(m.sheet) + ')').join(' · ') + '</div>' : '') +
     '<div class="mt-1">' + rows + '</div>' +
     '<button data-role="promo-import-create" class="btn-tap w-full bg-violet-600 text-white rounded-xl py-3 font-black mt-2"' + (st.busy ? ' disabled' : '') + '>' + (st.busy ? '<i class="fa-solid fa-spinner fa-spin"></i> פותח…' : '<i class="fa-solid fa-check-double"></i> פתח את כל המבצעים') + '</button>' +
