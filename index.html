@@ -8833,6 +8833,42 @@ function aiFindingsClosure(evaluation, findings) {
     : 'הממצאים אינם סוגרים את פער הסכום: צפוי ₪' + fmtMoney(expectedAmountDelta) + ', נמצא ₪' + fmtMoney(actualAmountDelta));
   return { ok, unitsOk, amountOk, expectedUnitsDelta, actualUnitsDelta, expectedAmountDelta, actualAmountDelta, reason };
 }
+// ===== v17: איתור מבצע שקיים בנייר ואינו קיים במאגר =====
+// הקלט הוא השארית: ההנחה המודפסת פחות ההנחה שהמערכת יודעת לשחזר. אם השארית
+// כולה שייכת למוצר אחד שאין לו מבצע, אפשר להצביע עליו בשמו.
+// הסינון הגס (אחוז קרוב לשלם) אינו מספיק: על התעודה של 1.9 הוא החזיר שני
+// מועמדים — עמק סמי 7% וגלבוע 13%. מה שהכריע הוא בדיקה הפוכה ומדויקת
+// לאגורה: 9 × 19.60 × 7% = 12.35 בדיוק, בעוד 9 × 10.55 × 13% = 12.34.
+// אגורה אחת מפרידה בין הצעה נכונה להצעה שגויה לגמרי, ולכן אין כאן סבילות.
+function aiDetectCatalogPromoGap(residualCents, aggregates, day) {
+  if (!(residualCents > 0) || !(aggregates instanceof Map)) return null;
+  const candidates = [];
+  aggregates.forEach(entry => {
+    const product = entry && entry.product;
+    if (!product) return;
+    // מוצר שכבר יש לו מבצע פעיל אינו החסר — גם אם המבצע לא הופעל בגלל סף סל.
+    if (promoActive(promoForProduct(product.id, day), day)) return;
+    const qty = Number(entry.qty) || 0;
+    const unit = Number(entry.paperUnitPrice) || 0;
+    if (!(qty > 0 && unit > 0)) return;
+    const gross = qty * unit;
+    const pct = Math.round(residualCents / (gross * 100) * 100);
+    if (!(pct > 0 && pct <= 50)) return;
+    if (aiMoneyCents(r2(gross * pct / 100)) !== residualCents) return;
+    candidates.push({
+      productId: product.id, name: product.name || '', pct: pct, qty: qty,
+      unitPrice: r2(unit), amount: residualCents / 100,
+      starred: Array.isArray(entry.promotionTexts) && entry.promotionTexts.length > 0,
+      text: 'חסר מבצע במאגר: ' + (product.name || '') + ' — ' + pct + '% (₪' + fmtMoney(residualCents / 100) + ')'
+    });
+  });
+  if (!candidates.length) return null;
+  // כוכבית על שורת הנייר היא ראיה מחזקת: תנובה מסמנת בה שורת מבצע. היא
+  // מכריעה רק כשהיא מצביעה על מועמד יחיד — לעולם לא במקום בדיקת האגורה.
+  const starred = candidates.filter(candidate => candidate.starred);
+  const picked = starred.length === 1 ? starred : candidates;
+  return picked.length === 1 ? picked[0] : null;
+}
 function aiEvaluateInvoiceScan(payload) {
   const scan = payload && payload.scan;
   const errors = [], warnings = [], findings = [], promoCandidates = [], barcodeSuggestions = [], aggregates = new Map(), docSummaries = [], residuals = [], pendings = [], autoResolutions = [], depositRows = [];
@@ -9123,6 +9159,9 @@ function aiEvaluateInvoiceScan(payload) {
   // v178: אין "סל שלם" בלי שכל התעודות חזרו עם שורות. "עודף" הוא מסקנה
   // מהיעדר שורה בנייר — ותעודה שלא נקראה היא היעדר שורות שאינו ראיה לכלום.
   const basketComplete = allRowsMapped && unusableRows === 0 && missingDocuments === 0 && returned.size === aiScanDocuments.length;
+  // v17: שארית ההנחה נשמרת ומוחזרת — היא הנתון שמאפשר גם למנתח לזהות מבצע
+  // חסר, וגם למסך להגיד "יש ₪X הנחה בלי כיסוי" במקום "פער לא מוסבר".
+  let promoRebuiltCents = 0, promoResidualCents = 0;
   if (aggregates.size > 0) {
     const day = todayStr();
     const paperBasketQty = pr => {
@@ -9161,10 +9200,33 @@ function aiEvaluateInvoiceScan(payload) {
     if (a.promotionTexts.length) findings.push({ type: 'printed_promo', productId: a.product.id, name: a.product.name, text: 'מבצע מודפס ליד ' + a.product.name + ': ' + Array.from(new Set(a.promotionTexts)).join(' · ') });
     });
     const expectedPromoDiscountCents = promoCandidates.reduce((sum, finding) => sum + Math.max(0, aiMoneyCents(finding.amount) || 0), 0);
+    // v17: השארית שאיש לא חישב.
+    // הקוד כאן השווה את ההנחה המודפסת לזו ששוחזרה מהמאגר, וכשהן לא היו שוות
+    // הסיק "הספק לא נתן את המבצעים שלנו" — האשמה שגויה שגם הרסה את משוואת
+    // הכסף. ההפרש עצמו, שהוא בדיוק ההנחה שאין לה כיסוי במאגר, נזרק. בשטח
+    // (1.9) זה הפך מבצע חסר אחד של ₪12.35 ל"פער לא מוסבר" של ₪50.04 שלא
+    // הצביע לשום כיוון. מעכשיו ההפרש מחושב ומקבל שם.
+    promoRebuiltCents = expectedPromoDiscountCents;
+    promoResidualCents = verifiedDocumentDiscountCents - expectedPromoDiscountCents;
+    const catalogPromoGap = (verifiedDocumentDiscountCents > 0 && promoResidualCents > 0)
+      ? aiDetectCatalogPromoGap(promoResidualCents, aggregates, day) : null;
     if (promoCandidates.length && verifiedDocumentDiscountCents > 0 && expectedPromoDiscountCents === verifiedDocumentDiscountCents) {
       findings.push({ type: 'printed_promo', amount: verifiedDocumentDiscountCents / 100, text: 'מבצעי המערכת מופיעים כהנחה כללית מאומתת בתעודה: ₪' + fmtMoney(verifiedDocumentDiscountCents / 100) });
+    } else if (catalogPromoGap) {
+      // המבצעים שהמערכת כן מכירה אכן מופיעים בהנחה המודפסת — הם אינם טענה
+      // נגד הספק, ואסור שייכנסו לכסף. מה שחסר הוא מבצע במאגר, וזה נאמר במפורש.
+      if (expectedPromoDiscountCents > 0) {
+        findings.push({ type: 'printed_promo', amount: expectedPromoDiscountCents / 100, text: 'מבצעי המערכת מופיעים בהנחה המודפסת: ₪' + fmtMoney(expectedPromoDiscountCents / 100) });
+      }
+      findings.push(Object.assign({ type: 'promo_missing_catalog' }, catalogPromoGap));
+      errors.push('חסר מבצע במאגר: ' + catalogPromoGap.name + ' ' + catalogPromoGap.pct + '% (₪' + fmtMoney(catalogPromoGap.amount) + '). הנייר נתן הנחה שהמערכת אינה מכירה, ולכן החשבון אינו נסגר.');
     } else {
       findings.push(...promoCandidates);
+      if (promoResidualCents > 0 && verifiedDocumentDiscountCents > 0) {
+        // לא זוהה מוצר יחיד — אבל הסכום עצמו ידוע, ואומרים אותו. "יש ₪X הנחה
+        // שאיני יודע להסביר" הוא אינסופית יותר שימושי מ"פער לא מוסבר".
+        errors.push('בתעודה יש הנחת מבצע של ₪' + fmtMoney(promoResidualCents / 100) + ' שאין לה מבצע מתאים במאגר. בדוק בדף המבצעים איזה מוצר קיבל הנחה ופתח לו מבצע.');
+      }
     }
     if (basketComplete) (reconcileData || []).forEach(line => {
       // v177: שורת פיקדון נגזרת אינה מוצר שנסרק — הפיקדון שבנייר מטופל
@@ -9190,7 +9252,8 @@ function aiEvaluateInvoiceScan(payload) {
   if (findingsReady && !closure.ok) errors.push(closure.reason || 'הממצאים אינם סוגרים את פער היחידות והסכום');
   const uniqueErrors = Array.from(new Set(errors));
   const uniqueWarnings = Array.from(new Set(warnings.concat(Array.isArray(scan.warnings) ? scan.warnings : [])));
-  return { valid: uniqueErrors.length === 0 && barcodeSuggestions.length === 0 && findingsReady && aggregates.size > 0 && totalVerified && unitsVerified && closure.ok, totalVerified, unitsVerified, closure, errors: uniqueErrors, warnings: uniqueWarnings, findings, barcodeSuggestions, allRowsMapped, findingsReady, basketComplete, missingDocuments, residuals, autoResolutions, aggregates, docSummaries, extractedTotal: extractedTotalCents / 100, extractedUnits, rowTotal: rowTotalCents / 100, supplierDiscount, depositRows };
+  return { valid: uniqueErrors.length === 0 && barcodeSuggestions.length === 0 && findingsReady && aggregates.size > 0 && totalVerified && unitsVerified && closure.ok, totalVerified, unitsVerified, closure,
+    promoDiscountPrinted: verifiedDocumentDiscountCents / 100, promoDiscountRebuilt: promoRebuiltCents / 100, promoDiscountResidual: promoResidualCents / 100, errors: uniqueErrors, warnings: uniqueWarnings, findings, barcodeSuggestions, allRowsMapped, findingsReady, basketComplete, missingDocuments, residuals, autoResolutions, aggregates, docSummaries, extractedTotal: extractedTotalCents / 100, extractedUnits, rowTotal: rowTotalCents / 100, supplierDiscount, depositRows };
 }
 function aiRotationRetryDocumentIndexes(evaluation) {
   if (!evaluation || !Array.isArray(evaluation.docSummaries)) return [];
@@ -9772,7 +9835,8 @@ function aiAnalyzePayload(ev) {
         units: receiptNoteUnits == null ? null : Number(receiptNoteUnits),
         documents: aiScanDocuments.map((d, i) => ({ doc: i + 1, amount: d.amount == null ? null : Number(d.amount), units: d.units == null ? null : Number(d.units) }))
       },
-      gap: { units: closure.expectedUnitsDelta, amountExVat: closure.expectedAmountDelta }
+      gap: { units: closure.expectedUnitsDelta, amountExVat: closure.expectedAmountDelta },
+      promoGap: { printedExVat: Number(ev.promoDiscountPrinted) || 0, rebuiltExVat: Number(ev.promoDiscountRebuilt) || 0, residualExVat: Number(ev.promoDiscountResidual) || 0 }
     }
   };
 }
@@ -9859,11 +9923,17 @@ async function aiRunAnalyzer(options) {
       throw new Error('הניתוח לא הסתיים. הממצאים של הסריקה עצמה לא השתנו.');
     }
     const analysis = payload.analysis || {};
-    const claims = Array.isArray(analysis.claims) ? analysis.claims : [];
+    const allClaims = Array.isArray(analysis.claims) ? analysis.claims : [];
+    // v17: טענת "מבצע חסר" אינה טענה כספית מול הספק אלא אבחנה על המאגר,
+    // ולכן היא מופרדת: היא אינה נכנסת למשוואת הכסף ואינה כפופה לשער הסגירה.
+    // ההפרדה הזאת היא כל העניין — בלעדיה האבחנה הנכונה ביותר הייתה נדחית
+    // יחד עם הכול, בדיוק במצב שבו היא הכי נחוצה.
+    const catalogGaps = allClaims.filter(claim => claim && claim.kind === 'missing_promo' && claim.productId);
+    const claims = allClaims.filter(claim => claim && claim.kind !== 'missing_promo');
     const findings = aiClaimsToFindings(claims, ev);
     const closure = aiFindingsClosure(ev, findings);
     aiAnalyzeResult = {
-      claims, findings, closure,
+      claims, findings, closure, catalogGaps,
       summary: String(analysis.summary || ''),
       unexplained: analysis.unexplained || '',
       droppedClaims: Number(analysis.droppedClaims) || 0,
@@ -9938,6 +10008,7 @@ function aiAnalyzeHtml(ev) {
       (result.summary ? '<div class="text-[11px] font-bold text-violet-800 mb-2">' + htmlEscape(tidyAiMoneyText(result.summary)) + '</div>' : '') +
       '<div class="space-y-2">' + result.claims.map(aiAnalyzeClaimCardHtml).join('') + '</div>' +
       '<div class="text-[10px] font-bold text-slate-500 mt-2">המנתח הוביל' + (result.closure.expectedUnitsDelta == null ? '' : ' · יחידות ' + result.closure.actualUnitsDelta + '/' + result.closure.expectedUnitsDelta) + ' · כסף ₪' + fmtMoney(result.closure.actualAmountDelta) + '/₪' + fmtMoney(result.closure.expectedAmountDelta) + (result.droppedClaims ? ' · ' + result.droppedClaims + ' טענות נדחו בשרת' : '') + '</div>' +
+      aiAnalyzerCatalogGapsHtml() +
       '<div class="flex gap-2 mt-2">' +
         '<button data-role="ai-analyze-copy" class="btn-tap flex-1 bg-white border border-violet-300 text-violet-700 rounded-xl py-2 font-black text-xs"><i class="fa-solid fa-copy"></i> העתק לטענות מול הספק</button>' +
         '' /* v34: כפתור המנתח הוסר — המצב לא קיים בשרת תנובה */ +
@@ -9946,7 +10017,8 @@ function aiAnalyzeHtml(ev) {
   // לא נסגר, נכשל, או שעדיין לא רץ — הממצאים שמוצגים הם של מנוע הסריקה.
   const note = aiAnalyzeError ? aiAnalyzeError
     : (result ? (result.unexplained || (result.closure && result.closure.reason) || 'ההסבר של המנתח לא נסגר על הכסף והיחידות') : '');
-  return '<div class="mt-3 rounded-xl border border-slate-200 bg-slate-50 p-2.5">' +
+  return aiAnalyzerCatalogGapsHtml() +
+    '<div class="mt-3 rounded-xl border border-slate-200 bg-slate-50 p-2.5">' +
     '<div class="text-[11px] font-black text-slate-600"><i class="fa-solid fa-scale-unbalanced ml-1"></i>' + (result || aiAnalyzeError ? 'המנתח לא סגר את הפער — הממצאים למעלה הם של מנוע הסריקה' : 'המנתח לא רץ על התעודה הזאת') + '</div>' +
     (note ? '<div class="text-[10px] font-bold text-slate-500 mt-1">' + htmlEscape(note) + '</div>' : '') +
     '<button data-role="ai-analyze" class="btn-tap w-full mt-2 bg-white border border-violet-300 text-violet-700 rounded-xl py-2 font-black text-xs"><i class="fa-solid fa-scale-balanced"></i> ' + (result || aiAnalyzeError ? 'הרץ את המנתח שוב' : 'הרץ את המנתח') + '</button>' +
@@ -10369,6 +10441,103 @@ function aiConfirmBarcodeSuggestion(documentIndex, rowIndex) {
   showToast('המוצר אושר. התוצאות חושבו מחדש.', null, null, 2400);
   return true;
 }
+// v17: הכרטיס שאומר בשם מה חסר, ומתקן בלחיצה אחת. משותף לשני המקורות —
+// הזיהוי הדטרמיניסטי של המנוע והטענה של המנתח — כדי שהמנהל יראה תמיד את
+// אותו כרטיס ואותו כפתור, בלי קשר למי מהשניים מצא.
+function aiCatalogGapCardHtml(gap, viaAi) {
+  return '<div class="rounded-xl border-2 border-orange-300 bg-orange-50 p-3">' +
+    '<div class="font-black text-orange-900"><i class="fa-solid fa-tags ml-1"></i>חסר מבצע במאגר — זו הסיבה שהחשבון לא נסגר</div>' +
+    '<div class="text-[12px] font-bold text-orange-900 mt-1.5 leading-relaxed">תנובה נתנה בתעודה הנחה של <b>₪' + fmtMoney(gap.amount) + '</b> על <b>' + htmlEscape(gap.name) + '</b>, ולמוצר הזה אין מבצע במערכת.</div>' +
+    (gap.qty && gap.unitPrice ? '<div class="text-[11px] font-bold text-orange-800 mt-1 bg-white/70 rounded-lg p-2">' + gap.qty + ' יח׳ × ₪' + fmtMoney(gap.unitPrice) + ' × ' + gap.pct + '% = ₪' + fmtMoney(gap.amount) + ' — מדויק לאגורה' + (gap.starred ? ' · השורה מסומנת בכוכבית מבצע בנייר' : '') + '</div>' : '') +
+    (viaAi ? '<div class="text-[10px] font-black text-violet-700 mt-1"><i class="fa-solid fa-robot"></i> זוהה על ידי המנתח</div>' : '') +
+    '<button data-role="ai-create-missing-promo" data-id="' + gap.productId + '" class="btn-tap w-full bg-orange-600 text-white rounded-xl py-3 font-black text-sm mt-2"><i class="fa-solid fa-plus ml-1"></i>פתח מבצע ' + gap.pct + '% וחשב מחדש</button>' +
+  '</div>';
+}
+function aiCatalogPromoGapHtml(ev) {
+  return (Array.isArray(ev && ev.findings) ? ev.findings : [])
+    .filter(f => f && f.type === 'promo_missing_catalog')
+    .map(gap => aiCatalogGapCardHtml(gap, false)).join('');
+}
+// טענת "מבצע חסר" של המנתח, מנורמלת לאותו מבנה שהמנוע מייצר. אם המנוע כבר
+// זיהה את אותו מוצר — אין טעם להציג פעמיים.
+function aiCatalogGapFromClaim(claim) {
+  if (!claim || !claim.productId) return null;
+  const pct = Math.round(Number(claim.discountPct) || 0);
+  if (!(pct > 0 && pct <= 50)) return null;
+  const ev = aiScanEvaluation;
+  const product = products.find(p => p.id === claim.productId);
+  const aggregate = ev && ev.aggregates instanceof Map ? ev.aggregates.get(claim.productId) : null;
+  const amount = r2(Number(claim.amountExVat) || 0);
+  if (!(amount > 0)) return null;
+  return {
+    productId: claim.productId,
+    name: (product && product.name) || (aggregate && aggregate.product && aggregate.product.name) || '',
+    pct: pct,
+    qty: Math.round(Number(claim.quantity) || (aggregate ? Number(aggregate.qty) || 0 : 0)),
+    unitPrice: r2(Number(aggregate && aggregate.paperUnitPrice) || Number(product && product.price) || 0),
+    amount: amount,
+    starred: false
+  };
+}
+function aiAnalyzerCatalogGapsHtml() {
+  const result = aiAnalyzeResult;
+  if (!result || !Array.isArray(result.catalogGaps) || !result.catalogGaps.length) return '';
+  const ev = aiScanEvaluation;
+  const already = new Set((Array.isArray(ev && ev.findings) ? ev.findings : [])
+    .filter(f => f && f.type === 'promo_missing_catalog').map(f => String(f.productId)));
+  return result.catalogGaps
+    .filter(claim => !already.has(String(claim.productId)))
+    .map(aiCatalogGapFromClaim).filter(Boolean)
+    .map(gap => aiCatalogGapCardHtml(gap, true)).join('');
+}
+// מחירי השורות נגזרים מהמבצעים הפעילים ברגע פתיחת מסך ההשוואה. אחרי שנוצר
+// מבצע חדש צריך לגזור אותם שוב — בלי לגעת במה שנספר פיזית ובמה שסומן.
+function reconcileRefreshPrices() {
+  const day = activeReceiptDate();
+  (reconcileData || []).forEach(line => {
+    if (line.isDeposit || String(line.productId || '').indexOf('deposit-') === 0) return;
+    const product = products.find(x => x.id === line.productId);
+    if (!product) return;
+    const base = r2(Number(product.price) || 0);
+    const promo = promoForProduct(line.productId, day);
+    const on = promoTriggered(promo, day);
+    const pct = on ? (Number(promo.pct) || 0) : 0;
+    line.basePrice = base; line.promoPct = pct; line.promoOn = on;
+    line.price = on ? discountedUnitPrice(base, pct) : base;
+  });
+}
+async function aiCreateMissingPromo(productId) {
+  const ev = aiScanEvaluation;
+  const fromEngine = (ev && Array.isArray(ev.findings) ? ev.findings : []).find(f => f && f.type === 'promo_missing_catalog' && String(f.productId) === String(productId));
+  const fromAnalyzer = (aiAnalyzeResult && Array.isArray(aiAnalyzeResult.catalogGaps) ? aiAnalyzeResult.catalogGaps : []).find(c => c && String(c.productId) === String(productId));
+  const gap = fromEngine || aiCatalogGapFromClaim(fromAnalyzer);
+  if (!gap) { showToast('הממצא כבר אינו זמין — הרץ את הסריקה מחדש', null, null, 3000); return; }
+  const day = activeReceiptDate();
+  const year = Number(day.slice(0, 4)), month = Number(day.slice(5, 7));
+  const pad = n => (n < 10 ? '0' : '') + n;
+  const start = year + '-' + pad(month) + '-01';
+  const end = year + '-' + pad(month) + '-' + pad(new Date(year, month, 0).getDate());
+  const name = (String(gap.name || '').split(' ')[0] || 'מבצע') + ' ' + gap.pct + '% · ₪' + gap.unitPrice;
+  showConfirm('פתיחת מבצע חסר',
+    'ייפתח מבצע "' + name + '" על ' + gap.name + ', ' + gap.pct + '% מ-' + start + ' עד ' + end + '. ' +
+    'זה מבוסס על ההנחה שנקראה מהתעודה (₪' + fmtMoney(gap.amount) + ') ונסגרת עליו בדיוק לאגורה. ודא מול דף המבצעים לפני האישור.',
+    'פתח מבצע', async function () {
+      const newId = makeOperationId('promo');
+      const data = { name: name, pct: r2(gap.pct), start: start, end: end, minQty: 1, minUnit: 'unit',
+                     cartonSize: null, productIds: [gap.productId], type: 'receipt', operationId: newId };
+      const saved = await runCloudTask('create missing promo', { op: 'set', path: dataPath('promos', newId), data: data, operationId: newId });
+      if (!saved) { showToast('פתיחת המבצע נכשלה — נסה שוב', null, null, 3200); return; }
+      // עדכון מקומי מיידי: מאזין הענן יגיע אחר כך עם אותו נתון, ובינתיים
+      // אפשר לחשב מחדש כאן ועכשיו במקום להשאיר את המסך על נתונים ישנים.
+      if (!promos.some(pr => pr && pr.id === newId)) promos.push(Object.assign({ id: newId }, data));
+      reconcileRefreshPrices();
+      aiScanEvaluation = aiEvaluateInvoiceScan(aiScanResponse);
+      aiAnalyzeResult = null; aiAnalyzeError = '';
+      logAction('promo', 'פתיחת מבצע חסר מתוך סריקת תעודה', name + ' · ' + gap.name, { productId: gap.productId, pct: gap.pct, amount: gap.amount });
+      showToast('המבצע נפתח. התוצאות חושבו מחדש.', null, null, 2800);
+      if (currentView === 'reconcile') renderReconcile();
+    });
+}
 function aiInvoiceCaptureHtml() {
   if (aiScanBusy) return '<div class="bg-white rounded-2xl border-2 border-violet-200 p-6 text-center mb-24"><i class="fa-solid fa-spinner fa-spin text-4xl text-violet-600"></i><div class="font-black text-lg mt-3">' + htmlEscape(aiScanProgressText || (aiScanResponse ? 'מכין את התוצאות…' : 'ה-AI קורא את כל דפי התעודות…')) + '</div><div class="text-xs text-slate-500 mt-1">אל תסגור את המסך. הקריאה והאימות עשויים לקחת כמה דקות.</div></div>';
   if (aiScanEvaluation) {
@@ -10390,13 +10559,18 @@ function aiInvoiceCaptureHtml() {
     // v178: פאנל האבחון היה תלוי בקיום ממצא פעיל, ולכן נעלם בדיוק במצב
     // שבו הוא הכי נחוץ (רק שאריות, או רק שגיאות). עכשיו הוא תמיד מוצג.
     const analyzerLed = ev.analyzerLed === true && aiAnalyzeResult && aiAnalyzeResult.accepted === true;
-    const findingsHtml = (!analyzerLed && actionableFindings.length ? aiActionableFindingsHtml(actionableFindings) : '') + residualLines + unknownCards + aiAnalyzeHtml(ev) + aiScanDiagnosticsHtml(ev);
+    // v17: המבצע החסר ראשון. הוא לא "עוד ממצא" — הוא הסיבה שכל השאר תקוע,
+    // ולכן הוא יושב מעל כולם עם התיקון שלו בלחיצה אחת.
+    const findingsHtml = aiCatalogPromoGapHtml(ev) + (!analyzerLed && actionableFindings.length ? aiActionableFindingsHtml(actionableFindings) : '') + residualLines + unknownCards + aiAnalyzeHtml(ev) + aiScanDiagnosticsHtml(ev);
     const allGood = ev.valid && !hasProblems;
     const statusHtml = allGood
       ? '<div class="rounded-xl bg-emerald-50 border border-emerald-200 p-3 font-black text-emerald-800"><i class="fa-solid fa-circle-check ml-1"></i>הכול תואם — לא נמצאו חוסר, עודף או בעיית מחיר/מבצע.</div>'
       : (ev.valid ? '' :
+        // v17: הסיבה החוסמת מוצגת פתוחה, לא מקופלת מאחורי "מה לא נסגר?".
+        // מסך שאומר "נעול" בלי לומר למה הוא מבוי סתום — וכך בדיוק נעצרה
+        // קליטה בשטח: אף אחד לא ידע מה מבקשים ממנו.
         '<div class="rounded-xl bg-amber-50 border border-amber-300 p-3"><div class="font-black text-amber-900 text-sm"><i class="fa-solid fa-triangle-exclamation ml-1"></i>הסריקה לא נסגרה במלואה — סגירת התעודה נעולה עד תיקון.' + (ev.basketComplete ? '' : ' עודפים ובעיות מחיר/מבצע יוצגו כשכל השורות ייקראו.') + '</div>' +
-        (blockingReasonsHtml ? '<details class="mt-2 text-right"><summary class="cursor-pointer text-[11px] font-black text-amber-800">מה לא נסגר?</summary><ul class="list-disc pr-5 mt-2 space-y-1 text-[10px] font-bold text-amber-800">' + blockingReasonsHtml + '</ul></details>' : '') + '</div>');
+        (blockingReasonsHtml ? '<div class="mt-2 text-[11px] font-black text-amber-900">מה חוסם:</div><ul class="list-disc pr-5 mt-1 space-y-1 text-[11px] font-bold text-amber-900">' + blockingReasonsHtml + '</ul>' : '') + '</div>');
     const autoNote = Array.isArray(ev.autoResolutions) && ev.autoResolutions.length
       ? '<div class="text-[10px] font-bold text-slate-500 text-center">' + ev.autoResolutions.length + ' שורות הותאמו אוטומטית לפי קוד/שם/מחיר/מבצע/כמות — מתועד ביומן.</div>'
       : '';
@@ -10409,6 +10583,12 @@ function aiInvoiceCaptureHtml() {
           : 'קריאת הנייר מהצילום הקודם — חושבה מחדש מול הכמויות המעודכנות, בלי צילום ובלי סריקה נוספת. השתנה משהו בנייר עצמו? <b>תיקון תעודה — חזרה לצילומים</b>.')
         + '</div>'
       : '';
+    // v17: יציאה תמיד. מסך התוצאות היה המקום היחיד בבדיקת התעודה שבו הוסרו
+    // גם "קלוט תעודה" שבסרגל וגם "סגור עם הפרש" — כלומר לא הייתה שום דרך
+    // לשמור. תעודה שהמערכת לא הצליחה להסביר היא עדיין שעה של עבודה, והיא
+    // נשמרת כפתוחה בדיוק כמו בכל שלב אחר, במקום ללכת לאיבוד.
+    const parkHtml = ev.valid ? ''
+      : '<button data-role="rc-recon-save" class="btn-tap w-full bg-white border-2 border-slate-300 text-slate-700 rounded-xl py-3 font-black text-sm"><i class="fa-solid fa-clock-rotate-left ml-1"></i>שמור כתעודה פתוחה ואטפל אחר כך</button>';
     // v133: זרימת אישור וסגירה. המשתמש מאשר שאלה אכן הבעיות, ורק אז נפתחות
     // "סגור תעודה עם החוסרים" (כשהחשבון נסגר) או "תיקון תעודה".
     let actionsHtml = '';
@@ -10417,7 +10597,8 @@ function aiInvoiceCaptureHtml() {
     } else if (!confirmed) {
       actionsHtml = '<div class="mt-4 space-y-2">' +
         '<button data-role="ai-confirm-findings" class="btn-tap w-full bg-violet-600 text-white rounded-xl py-3.5 font-black"><i class="fa-solid fa-check-double"></i> אלה אכן הבעיות — אשר</button>' +
-        '<button data-role="ai-edit-images" class="btn-tap w-full bg-white border border-slate-200 text-slate-500 rounded-xl py-2.5 font-black text-xs"><i class="fa-solid fa-camera-rotate"></i> תיקון תעודה — חזרה לצילומים</button></div>';
+        '<button data-role="ai-edit-images" class="btn-tap w-full bg-white border border-slate-200 text-slate-500 rounded-xl py-2.5 font-black text-xs"><i class="fa-solid fa-camera-rotate"></i> תיקון תעודה — חזרה לצילומים</button>' +
+        parkHtml + '</div>';
     } else {
       actionsHtml = '<div class="mt-4 space-y-2">' +
         (ev.valid
@@ -10426,7 +10607,7 @@ function aiInvoiceCaptureHtml() {
             '<button data-role="ai-edit-images" class="btn-tap w-full bg-white border-2 border-violet-300 text-violet-700 rounded-xl py-3 font-black"><i class="fa-solid fa-camera-rotate"></i> תיקון תעודה — חזרה לצילומים</button>') +
         // v45: הכפתור הזה היה כפילות של "חזור לסריקה" שבסרגל התחתון הקבוע
         // (אותו data-role בדיוק) — שני כפתורים זהים זה מתחת לזה. הוסר.
-        '</div>';
+        parkHtml + '</div>';
     }
     return '<div class="bg-white rounded-2xl border-2 ' + (ev.valid ? 'border-violet-300' : 'border-amber-300') + ' p-4 shadow-sm mb-24">' +
       '<div class="font-black text-xl text-slate-800 mb-1"><i class="fa-solid fa-wand-magic-sparkles text-violet-600"></i> תוצאות הסריקה החכמה</div>' +
@@ -16541,6 +16722,7 @@ app.addEventListener('click', (e) => {
   if (role === 'promo-import-close') { promoImport = null; renderPromos(); return; }
   if (role === 'ai-analyze-copy') { const text = aiAnalyzeClaimsPlainText(); if (!text) return; if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(text).then(() => showToast('הטענות הועתקו', null, null, 2200)).catch(() => showToast('ההעתקה נכשלה', null, null, 2200)); else showToast('ההעתקה אינה נתמכת בדפדפן הזה', null, null, 2600); return; }
   if (role === 'ai-rescan') { resetAiInvoiceScan(true); rcStep = 'ai'; renderReconcile(); return; } // force: בקשה מפורשת לסרוק מחדש
+  if (role === 'ai-create-missing-promo') { aiCreateMissingPromo(id); return; }
   if (role === 'ai-open-suggestion-page') { aiOpenBarcodeSuggestionPage(parseInt(t.dataset.doc, 10), parseInt(t.dataset.page, 10)); return; }
   if (role === 'ai-confirm-barcode-suggestion') { aiConfirmBarcodeSuggestion(parseInt(t.dataset.doc, 10), parseInt(t.dataset.row, 10)); return; }
   if (role === 'ai-confirm-name-candidate') { aiConfirmNameCandidate(parseInt(t.dataset.doc, 10), parseInt(t.dataset.row, 10), t.dataset.candidateId); return; }
