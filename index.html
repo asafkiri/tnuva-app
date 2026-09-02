@@ -158,6 +158,19 @@
         </div>
       </div>
     </div>
+    <!-- v246: החוסר הושלם בסחורה — הספק שלח את מה שחסר במשלוח מאוחר -->
+    <div id="shortGoodsModal" class="hidden fixed inset-0 bg-black/50 z-[70] items-center justify-center p-6">
+      <div class="bg-white rounded-2xl p-5 w-full max-w-sm shadow-2xl">
+        <div class="font-black text-lg text-slate-800 mb-1"><i class="fa-solid fa-truck-ramp-box text-sky-600"></i> התקבל זיכוי בסחורה</div>
+        <div class="text-sm text-slate-500 font-bold mb-3">הספק השלים את הסחורה שחסרה. התעודה תיחשב כאילו הגיע הכול, והחוסר לא יופחת מהתשלום.</div>
+        <div id="shortGoodsItems" class="bg-sky-50 border border-sky-200 rounded-xl p-2.5 text-xs font-bold text-sky-900 mb-3 space-y-1"></div>
+        <div class="text-[11px] text-slate-400 font-bold mb-3">אפשר לבטל מכרטיס התעודה אם הסחורה בסוף לא הגיעה.</div>
+        <div class="flex gap-2">
+          <button id="shortGoodsCancel" class="btn-tap flex-1 py-3 rounded-xl font-black bg-slate-100 text-slate-600">ביטול</button>
+          <button id="shortGoodsOk" class="btn-tap flex-1 py-3 rounded-xl font-black bg-sky-600 text-white">הסחורה הגיעה</button>
+        </div>
+      </div>
+    </div>
     <div id="confirmModal" role="dialog" aria-modal="true" aria-labelledby="confirmTitle" class="hidden fixed inset-0 bg-slate-900/60 backdrop-blur-sm items-center justify-center p-4 z-50">
       <div class="bg-white rounded-3xl shadow-2xl w-full max-w-sm overflow-hidden">
         <div class="p-6 text-center">
@@ -625,13 +638,14 @@ let receiptFix = null;           // תיקון תעודה פתוחה מההיס�
 let returnVerify = null;          // אימות תעודת זיכוי (חזרות)
 let returnEdit = null;            // v199: עריכת פריטים בתעודת חזרות/זיכוי שכבר נשלחה
 let shortCreditTarget = null;     // v203: התעודה שעליה נרשם זיכוי סוגר חוסר
+let shortGoodsTarget = null;      // v246: התעודה שהחוסר שלה הושלם בסחורה
 let rvOrigin = 'returnsHistory';  // מאיזה מסך נפתח אימות הזיכוי (לחזרה אליו)
 let signMaker = null;             // הכנת שלטי מבצע (בחירה + עריכה + תצוגה)
 let receiptDupConfirmed = false; // אישור שמירה למרות חשד לכפילות
 const RECEIPT_DRAFT_KEY = 'tn_receipt_draft';
 let receivingDigitsMissTimer = null;
 let receivingDigitsMissNotified = '';
-const APP_VERSION = '71'; // גרסה 71: אזהרת "הוקלד סכום שגוי" (סכום שלפני סד ההנחה) הפכה לכרטיס אדום פועם עם כפתור תיקון — במקום קופסה קטנה שקל לפספס
+const APP_VERSION = '72'; // גרסה 72: כפתור "התקבל זיכוי בסחורה" ליד "התקבל זיכוי מהספק" — הספק השלים את החוסר במשלוח, התעודה משולמת במלואה והחוסר יוצא מהסיכום
 // v40: תג גרסה קבוע בפינת המסך — לדעת בשנייה איזו גרסה באמת רצה על המכשיר
 // (עוזר במיוחד מול מטמון ה-PWA). pointer-events:none — לעולם לא חוסם מגע.
 document.body.insertAdjacentHTML('beforeend', '<div id="appVerBadge" style="position:fixed;bottom:4px;left:6px;z-index:9999;pointer-events:none;font-size:10px;font-weight:800;color:#64748b;opacity:.55;direction:rtl">גרסה ' + APP_VERSION + '</div>');        // מוצג בהגדרות; תואם למטמון sw.js
@@ -1956,6 +1970,8 @@ function actionTitleFromCloud(actionName, task) {
     'save return verification': ['returns', 'אימות תעודת זיכוי'],
     'edit return items': ['returns', 'עריכת פריטים בתעודת חזרות'],
     'close shortage by supplier credit': ['receipts', 'סגירת חוסר בזיכוי מהספק'],
+    'close shortage by goods credit': ['receipts', 'סגירת חוסר בהשלמת סחורה מהספק'],
+    'cancel goods credit': ['receipts', 'ביטול השלמת סחורה על חוסר'],
     'add product': ['product', 'הוספת מוצר'],
     'create product': ['product', 'הוספת מוצר'],
     'save product': ['product', 'עריכת מוצר'],
@@ -12572,6 +12588,15 @@ function receiptDiscrepancyInfo(rc, opts) {
   const shortValRaw = r2(shortVal);
   const shortFullyCredited = shortCreditEx > 0 && shortValRaw > 0 && r2(shortValRaw - shortCreditEx) <= 0.01;
   if (shortCreditEx > 0) shortVal = Math.max(0, r2(shortVal - shortCreditEx));
+  // v246: חוסר נסגר גם בסחורה — הספק שלח במשלוח מאוחר את מה שחסר. אז קיבלנו
+  // הכול כרגיל: התעודה משולמת במלואה (פחות זיכוי כספי שכבר נרשם, אם היה),
+  // שורות החוסר יוצאות מהמשחק — לא בסיכום, לא בקיזוזים — ונשמרות רק כתיעוד.
+  const shortGoodsCredit = rc && rc.shortGoodsCredit && typeof rc.shortGoodsCredit === 'object' ? rc.shortGoodsCredit : null;
+  const shortGoodsCredited = !!shortGoodsCredit && shortValRaw > 0 && !shortFullyCredited;
+  const shortGoodsEx = shortGoodsCredited ? Math.max(0, r2(shortValRaw - shortCreditEx)) : 0;
+  if (shortGoodsCredited) shortVal = 0;
+  // מה באמת יורד מהתשלום: כל החוסר — אלא אם הושלם בסחורה, ואז רק הכסף שכבר זוכה.
+  const shortDeductedEx = shortGoodsCredited ? Math.min(shortCreditEx, shortValRaw) : shortValRaw;
   const creditOpen = supplierCreditClaimOpen(rc) || supplierCreditClaimDeferred(rc);
   // ממצאי כמות של ה-AI נשמרים בהיסטוריה, אבל אינם משאירים תעודה אדומה אחרי
   // שהחוסר והעודף עצמם נסגרו בקיזוז. ממצא מחיר/מבצע עדיין מחייב טיפול.
@@ -12583,9 +12608,9 @@ function receiptDiscrepancyInfo(rc, opts) {
   const aiAuditOpen = !!(rc && rc.aiAudit && rc.aiAudit.hasDiscrepancy && (aiHasNonQuantityFinding || (!aiFindings.length && !(priceOffsets.length && !finalShort.length && !finalOver.length))));
   // חוסר שנסגר במלואו בזיכוי אינו פותח את התעודה; פער סכום חיובי (בכיוון
   // חוסר) נבלע גם הוא בזיכוי. עודף, פער יחידות וממצאי AI אינם נסגרים בכסף.
-  const shortSideOpen = (finalShort.length > 0 || (amountGapOpen && Math.round(unresolvedAmountGap * 100) > 0)) && !shortFullyCredited;
+  const shortSideOpen = (finalShort.length > 0 || (amountGapOpen && Math.round(unresolvedAmountGap * 100) > 0)) && !shortFullyCredited && !shortGoodsCredited;
   const overSideOpen = finalOver.length > 0 || (amountGapOpen && Math.round(unresolvedAmountGap * 100) < 0);
-  return { open: !!(shortSideOpen || overSideOpen || unresolvedUnitsGap !== 0 || aiAuditOpen || creditOpen), shortItems: finalShort, overItems: finalOver, priceOffsets, externalOffsets, shortVal: r2(shortVal), overVal: r2(overVal), shortValRaw, shortCreditEx, shortCreditNotes, shortFullyCredited, unresolvedAmountGap, unresolvedUnitsGap, amountGapOpen, amountToleranceCents, aiAuditOpen };
+  return { open: !!(shortSideOpen || overSideOpen || unresolvedUnitsGap !== 0 || aiAuditOpen || creditOpen), shortItems: shortGoodsCredited ? [] : finalShort, shortGoodsItems: shortGoodsCredited ? finalShort : [], overItems: finalOver, priceOffsets, externalOffsets, shortVal: r2(shortVal), overVal: r2(overVal), shortValRaw, shortDeductedEx: r2(shortDeductedEx), shortCreditEx, shortCreditNotes, shortFullyCredited, shortGoodsCredited, shortGoodsCredit, shortGoodsEx, unresolvedAmountGap, unresolvedUnitsGap, amountGapOpen, amountToleranceCents, aiAuditOpen };
 }
 function receiptsBalance() {
   let bal = 0, n = 0;
@@ -12608,7 +12633,8 @@ function receiptOffsets(rc) {
   // וגם השלים, והתשלום אליו יוצא חסר). הכמות המוצעת לכל שורה נחתכת כך
   // ששוויה לא יעלה על הכסף שעוד לא זוכה; שארית שאינה יחידה שלמה נשארת
   // חוב פתוח גלוי — כסף אמת, לא עיגול נוח.
-  if (!di.shortFullyCredited) {
+  // v246: חוסר שהושלם בסחורה כבר אינו חוסר — אין מה לקזז.
+  if (!di.shortFullyCredited && !di.shortGoodsCredited) {
     let remaining = (Number(di.shortCreditEx) || 0) > 0
       ? Math.max(0, r2((Number(di.shortValRaw) || 0) - (Number(di.shortCreditEx) || 0)))
       : Infinity;
@@ -12910,6 +12936,51 @@ async function confirmShortCredit() {
   showToast(after.shortFullyCredited ? 'החוסר נסגר בזיכוי מהספק ✓' : 'נרשם זיכוי ₪' + fmtMoney(amount) + ' — נותר חוב ₪' + fmtMoney(Math.max(0, r2(after.shortValRaw - after.shortCreditEx))), null, null, 3200);
   if (currentView === 'receiptsHistory') renderReceiptsHistory();
 }
+// v246: החוסר הושלם בסחורה — הספק שלח במשלוח מאוחר את מה שחסר. אין סכום להקליד:
+// כל מה שעוד פתוח בחוסר (אחרי זיכוי כספי חלקי, אם היה) נסגר בסחורה, והתעודה
+// חוזרת להיות משולמת במלואה. שורות החוסר נשמרות כתיעוד בלבד.
+function shortGoodsRemainingInfo(rc) {
+  const di = receiptDiscrepancyInfo(rc);
+  const items = (di.shortGoodsCredited ? di.shortGoodsItems : di.shortItems) || [];
+  const remaining = di.shortGoodsCredited ? di.shortGoodsEx : Math.max(0, r2((Number(di.shortValRaw) || 0) - (Number(di.shortCreditEx) || 0)));
+  return { di, items, remaining };
+}
+function openShortGoodsPrompt(rcId) {
+  const rc = receipts.find(x => x.id === rcId); if (!rc) return;
+  const { di, items, remaining } = shortGoodsRemainingInfo(rc);
+  if (di.shortGoodsCredited) { showToast('החוסר בתעודה הזאת כבר סומן כהושלם בסחורה', null, null, 2600); return; }
+  if (!(remaining > 0)) { showToast('אין חוסר פתוח להשלמה בתעודה הזאת', null, null, 2600); return; }
+  shortGoodsTarget = rcId;
+  const box = $('shortGoodsItems');
+  box.innerHTML = items.map(s => '<div class="flex justify-between gap-2"><span class="truncate">' + htmlEscape(s.name || '') + '</span><span class="shrink-0">' + offsetSideQtyText({ qty: Number(s.n) || 0, price: Number(s.price) || 0, value: lineTotalFromUnit(s.price, s.n) }) + '</span></div>').join('') +
+    (di.amountGapOpen && Math.round((Number(di.unresolvedAmountGap) || 0) * 100) > 0 ? '<div class="flex justify-between gap-2"><span>פער סכום שטרם שויך</span><span class="shrink-0">₪' + fmtMoney(Math.abs(di.unresolvedAmountGap)) + '</span></div>' : '') +
+    '<div class="flex justify-between gap-2 pt-1 mt-1 border-t border-sky-200 font-black"><span>שווי הסחורה שהושלמה</span><span class="shrink-0">₪' + fmtMoney(remaining) + '</span></div>' +
+    ((Number(di.shortCreditEx) || 0) > 0 ? '<div class="text-[11px] text-sky-800/80">זיכוי כספי של ₪' + fmtMoney(di.shortCreditEx) + ' שכבר נרשם נשאר בתוקף ומופחת מהתשלום.</div>' : '');
+  const m = $('shortGoodsModal'); m.classList.remove('hidden'); m.classList.add('flex');
+}
+function hideShortGoodsPrompt() { const m = $('shortGoodsModal'); m.classList.add('hidden'); m.classList.remove('flex'); shortGoodsTarget = null; }
+async function confirmShortGoodsCredit() {
+  const rc = receipts.find(x => x.id === shortGoodsTarget); if (!rc) { hideShortGoodsPrompt(); return; }
+  const { di, items, remaining } = shortGoodsRemainingInfo(rc);
+  if (di.shortGoodsCredited || !(remaining > 0)) { hideShortGoodsPrompt(); return; }
+  const credit = { at: Date.now(), amount: r2(remaining), items: items.map(s => ({ productId: s.productId || '', name: s.name || '', n: Number(s.n) || 0, price: Number(s.price) || 0 })) };
+  const saved = await runCloudTask('close shortage by goods credit', { op: 'update', path: dataPath('receipts', rc.id), data: { shortGoodsCredit: cloneSafe(credit) }, operationId: makeOperationId('short_goods') });
+  if (!saved) return;
+  rc.shortGoodsCredit = credit;
+  hideShortGoodsPrompt();
+  buzz(18);
+  showToast('החוסר הושלם בסחורה ✓ — התעודה משולמת במלואה (₪' + fmtMoney(receiptPayableBaseEx(rc)) + ')', null, null, 3400);
+  if (currentView === 'receiptsHistory') renderReceiptsHistory();
+}
+async function cancelShortGoodsCredit(rcId) {
+  const rc = receipts.find(x => x.id === rcId); if (!rc || !rc.shortGoodsCredit) { showToast('ההשלמה כבר בוטלה', null, null, 2200); return; }
+  const saved = await runCloudTask('cancel goods credit', { op: 'update', path: dataPath('receipts', rc.id), data: { shortGoodsCredit: null }, operationId: makeOperationId('short_goods_cancel') });
+  if (!saved) return;
+  rc.shortGoodsCredit = null;
+  buzz(16);
+  showToast('ההשלמה בסחורה בוטלה — החוסר חזר להיות פתוח ומופחת מהתשלום', null, null, 3200);
+  if (currentView === 'receiptsHistory') renderReceiptsHistory();
+}
 async function applyOffset(rcId, otherId, productId, otherProductId) {
   const rc = receipts.find(x => x.id === rcId);
   const other = receipts.find(x => x.id === otherId);
@@ -13088,6 +13159,9 @@ function renderReceiptsHistory() {
     } else if (di.shortFullyCredited) {
       statusTxt = '<i class="fa-solid fa-circle-check"></i> אומתה · החוסר נסגר בזיכוי';
       metaStatus = ' · <span class="text-emerald-700 font-black">נסגר בזיכוי</span>';
+    } else if (di.shortGoodsCredited) {
+      statusTxt = '<i class="fa-solid fa-circle-check"></i> אומתה · החוסר הושלם בסחורה';
+      metaStatus = ' · <span class="text-emerald-700 font-black">הושלם בסחורה</span>';
     } else if ((Number(rc.supplierDiscount) || 0) > 0) {
       statusTxt = '<i class="fa-solid fa-circle-check"></i> אומתה · מבצע ספק';
       metaStatus = ' · <span class="text-emerald-700 font-black">מבצע ספק</span>';
@@ -13135,6 +13209,16 @@ function renderReceiptsHistory() {
             '<div class="mt-1 pt-1 border-t ' + (di.shortFullyCredited ? 'border-emerald-200 text-emerald-700/80' : 'border-amber-200 text-amber-700/80') + '">החוסר המקורי (₪' + fmtMoney(di.shortValRaw) + ') נשמר למעלה בהיסטוריה; הוא נסגר בכסף, לא בהשלמת סחורה, ולא יקוזז מול תעודה עתידית.</div>' +
           '</div>';
         })() : '') +
+        // v246: החוסר הושלם בסחורה — קיבלנו הכול, התעודה משולמת במלואה
+        (di.shortGoodsCredited ? (function () {
+          const at = Number(di.shortGoodsCredit && di.shortGoodsCredit.at) || 0;
+          return '<div class="mt-2 bg-sky-50 border border-sky-200 rounded-xl p-2.5 text-xs text-sky-900">' +
+            '<div class="flex items-center justify-between gap-2 mb-1"><div class="font-black"><i class="fa-solid fa-truck-ramp-box"></i> החוסר הושלם בסחורה ✓' + (at ? ' <span class="font-bold opacity-70">' + new Date(at).toLocaleDateString('he-IL') + '</span>' : '') + '</div>' +
+              '<button data-role="rc-short-goods-cancel" data-id="' + htmlEscape(rc.id) + '" class="btn-tap shrink-0 bg-white border border-sky-300 text-rose-600 rounded-lg px-2 py-1 text-[10px] font-black">בטל</button></div>' +
+            (di.shortGoodsItems || []).map(s => '<div class="flex justify-between gap-2 font-bold"><span class="truncate">הושלם: ' + htmlEscape(s.name || '') + '</span><span class="shrink-0">' + offsetSideQtyText({ qty: Number(s.n) || 0, price: Number(s.price) || 0, value: lineTotalFromUnit(s.price, s.n) }) + ' · ₪' + fmtMoney(lineTotalFromUnit(s.price, s.n)) + '</span></div>').join('') +
+            '<div class="mt-1 pt-1 border-t border-sky-200 font-bold">הספק סיפק את הסחורה החסרה (₪' + fmtMoney(di.shortGoodsEx) + '). התעודה משולמת במלואה — ₪' + fmtMoney(payableEx) + ((Number(di.shortCreditEx) || 0) > 0 ? ' אחרי זיכוי כספי של ₪' + fmtMoney(di.shortCreditEx) : '') + ' — והחוסר אינו נספר בסיכום ולא יקוזז מול תעודה אחרת.</div>' +
+          '</div>';
+        })() : '') +
         // חוסר ועודף מוצגים בנפרד: חוסר מופחת מהתשלום; עודף אינו מכסה אותו
         // ואינו מתווסף לתשלום בלי חשבונית. קיזוז קורה רק באישור מפורש.
         (() => {
@@ -13145,8 +13229,10 @@ function renderReceiptsHistory() {
             ? '<div class="mt-2 bg-slate-50 border border-slate-200 rounded-xl p-2.5 text-xs font-black text-slate-700"><i class="fa-solid fa-scale-balanced"></i> חוסר ₪' + fmtMoney(openShortNow) + ' הופחת מהתשלום · עודף ₪' + fmtMoney(openOverNow) + ' הוא הערה בלבד ולא מקזז את החוסר</div>'
             : '';
           const creditLabel = 'התקבל זיכוי מהספק' + ((di.shortCreditEx || 0) > 0 ? ' (נותר ₪' + fmtMoney(openShortNow) + ')' : ' (₪' + fmtMoney(openShortNow) + ')');
-          const creditBtn = '<button data-role="rc-short-credit" data-id="' + rc.id + '" class="btn-tap mt-2 w-full bg-white border-2 border-emerald-300 text-emerald-700 rounded-xl py-2.5 font-black text-sm"><i class="fa-solid fa-file-invoice-dollar"></i> ' + creditLabel + '</button>';
-          return balanceLine + creditBtn;
+          const creditBtn = '<button data-role="rc-short-credit" data-id="' + rc.id + '" class="btn-tap bg-white border-2 border-emerald-300 text-emerald-700 rounded-xl py-2.5 px-2 font-black text-[13px] leading-tight"><i class="fa-solid fa-file-invoice-dollar"></i> ' + creditLabel + '</button>';
+          // v246: לצד הזיכוי הכספי — הספק השלים את הסחורה שחסרה, ולכן התעודה משולמת במלואה
+          const goodsBtn = '<button data-role="rc-short-goods" data-id="' + rc.id + '" class="btn-tap bg-white border-2 border-sky-300 text-sky-700 rounded-xl py-2.5 px-2 font-black text-[13px] leading-tight"><i class="fa-solid fa-truck-ramp-box"></i> התקבל זיכוי בסחורה (₪' + fmtMoney(openShortNow) + ')</button>';
+          return balanceLine + '<div class="mt-2 grid grid-cols-2 gap-2">' + creditBtn + goodsBtn + '</div>';
         })() +
         supplierCreditClaimCardHtml(rc) +
         (((rc.supplierPromoMismatchItems || []).length) ? '<div class="mt-2 bg-amber-50 border border-amber-200 rounded-xl p-2.5 text-xs text-amber-800"><div class="font-black mb-1"><i class="fa-solid fa-triangle-exclamation"></i> מבצע מוגדר במערכת אך לא הופיע אצל הספק</div><div class="font-bold">' + (rc.supplierPromoMismatchItems || []).map(x => htmlEscape(x.name)).join(' · ') + '</div></div>' : '') +
@@ -13197,7 +13283,8 @@ function renderReceiptsHistory() {
 function receiptPayableBaseEx(rc) {
   const di = receiptDiscrepancyInfo(rc);
   const paper = Number(rc && rc.noteTotalInc);
-  if (rc && rc.noteTotalInc != null && rc.noteTotalInc !== '' && Number.isFinite(paper) && paper >= 0) return r2(Math.max(0, paper - (Number(di.shortValRaw) || 0)));
+  // v246: חוסר שהושלם בסחורה אינו מופחת — שילמנו על סחורה שבסוף הגיעה.
+  if (rc && rc.noteTotalInc != null && rc.noteTotalInc !== '' && Number.isFinite(paper) && paper >= 0) return r2(Math.max(0, paper - (Number(di.shortDeductedEx) || 0)));
   return r2(Math.max(0, (Number(rc && rc.totalExVat) || 0) - (Number(di.overVal) || 0)));
 }
 function receiptRangeData(from, to) {
@@ -16048,6 +16135,10 @@ $('shortCreditCancel').addEventListener('click', hideShortCreditPrompt);
 $('shortCreditOk').addEventListener('click', confirmShortCredit);
 $('shortCreditAmount').addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); confirmShortCredit(); } });
 $('shortCreditModal').addEventListener('click', (e) => { if (e.target === $('shortCreditModal')) hideShortCreditPrompt(); });
+// v246: גם הדיאלוג של השלמת סחורה יושב מחוץ ל-#app — מאזינים ישירים
+$('shortGoodsCancel').addEventListener('click', hideShortGoodsPrompt);
+$('shortGoodsOk').addEventListener('click', confirmShortGoodsCredit);
+$('shortGoodsModal').addEventListener('click', (e) => { if (e.target === $('shortGoodsModal')) hideShortGoodsPrompt(); });
 $('confirmOk').addEventListener('click', () => { const cb = confirmCb; hideConfirm(); if (cb) cb(); });
 // v53: retMergeModal יושב מחוץ ל-#app — האצלת ה-data-role (הקשורה ל-#app בלבד)
 // מעולם לא ראתה את הלחיצות בתוכו. מאזין ישיר, כמו shortCreditModal השכן; רקע = ביטול.
@@ -16789,6 +16880,8 @@ app.addEventListener('click', (e) => {
   else if (role === 'rv-cancel') { returnVerify = null; setView(rvOrigin); }
   else if (role === 'rv-save') saveReturnVerify();
   else if (role === 'rc-short-credit') openShortCreditPrompt(id);
+  else if (role === 'rc-short-goods') openShortGoodsPrompt(id);
+  else if (role === 'rc-short-goods-cancel') showConfirm('ביטול השלמה בסחורה', 'לבטל את הסימון שהסחורה החסרה הגיעה? החוסר יחזור להיות פתוח ויופחת שוב מהתשלום.', 'בטל השלמה', () => cancelShortGoodsCredit(id));
   else if (role === 'ret-edit-items') openReturnItemsEdit(id);
   else if (role === 'ret-return-open') openRetReturnPicker(id);
   else if (role === 're-qty-minus') retEditStepQty(parseInt(id, 10), -1);
