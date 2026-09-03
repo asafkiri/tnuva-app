@@ -5204,7 +5204,8 @@ function buildReceiptRow(it) {
   const unit = p ? effectivePrice(p, it.qty, day) : 0;
   const shelfRec = shelfRecommendedPrice(p);
   const shelfRecTag = shelfRec != null ? '<span class="font-bold text-emerald-700">· מומלץ: ₪' + fmtMoney(shelfRec) + '</span>' : '';
-  // v243: מחיר הקופה בולט בשורת המוצר שנקלט; המומלץ נשאר קטן בשורת הפרטים
+  // v243: מחיר הקופה בולט בשורת המוצר שנקלט; המומלץ נשאר קטן בשורת הפרטים.
+  // מחיר הקנייה ליח׳ נשאר באותו גודל קטן, אבל בהדגשה וגוון כהה יותר — קל לאתר אותו במבט מהיר.
   const posLine = p
     ? (p.posPrice != null
       ? '<div class="text-base font-black text-sky-700 mt-0.5"><i class="fa-solid fa-cash-register text-xs"></i> בקופה: ₪' + fmtMoney(p.posPrice) + '</div>'
@@ -5224,7 +5225,7 @@ function buildReceiptRow(it) {
         posLine +
         '<div class="text-[11px] text-slate-400 mt-0.5 flex items-center gap-1.5 flex-wrap">' +
           '<span><i class="fa-solid fa-barcode"></i> ' + htmlEscape(it.barcode || 'ללא ברקוד') + '</span>' +
-          '<span>· ₪' + fmtUnitPrice(unit, triggered) + ' ליח׳</span>' +
+          '<span class="font-black text-slate-600">· ₪' + fmtUnitPrice(unit, triggered) + ' ליח׳</span>' +
           shelfRecTag +
           promoTag +
         '</div>' +
