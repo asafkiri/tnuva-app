@@ -101,6 +101,8 @@
           <button id="segOrder" style="display:none" class="flex-1 py-2 rounded-lg text-sm font-black flex items-center justify-center gap-1.5"><i class="fa-solid fa-cart-shopping text-xs"></i> הזמנה</button>
           <button id="segReceiving" class="flex-1 py-2 rounded-lg text-sm font-black flex items-center justify-center gap-1.5"><i class="fa-solid fa-truck-ramp-box text-xs"></i> קליטה</button>
           <button id="segReturns" class="flex-1 py-2 rounded-lg text-sm font-black flex items-center justify-center gap-1.5"><i class="fa-solid fa-rotate-left text-xs"></i> חזרות</button>
+          <!-- v248: ניהול הוא טאב קבוע בשורה — לא כרטיס מתקפל בתוך הקליטה -->
+          <button id="segManage" class="flex-1 py-2 rounded-lg text-sm font-black flex items-center justify-center gap-1.5"><i class="fa-solid fa-screwdriver-wrench text-xs"></i> ניהול</button>
         </div>
       </div>
 
@@ -1258,7 +1260,7 @@ function setView(v, navOpts) {
   navOpts = navOpts || {};
   currentView = v;
   movingId = null;
-  if (v === 'order' || v === 'returns' || v === 'receiving') mainMode = v;
+  if (v === 'order' || v === 'returns' || v === 'receiving' || v === 'manage') mainMode = v;
   if (!navOpts.fromPop) {
     try {
       const state = { tnuvaView: v };
@@ -1270,18 +1272,20 @@ function setView(v, navOpts) {
   window.scrollTo({ top: 0 });
 }
 function updateModeTabs() {
-  const o = $('segOrder'), r = $('segReturns'), c = $('segReceiving'); if (!o || !r || !c) return;
-  const base = 'flex-1 py-2 rounded-lg text-sm font-black flex items-center justify-center gap-1.5 ';
+  const o = $('segOrder'), r = $('segReturns'), c = $('segReceiving'), m = $('segManage'); if (!o || !r || !c) return;
+  const base = 'flex-1 py-2 rounded-lg text-sm font-black flex items-center justify-center gap-1.5 whitespace-nowrap ';
   const act = 'bg-white text-emerald-700 shadow', off = 'text-white/75';
   o.className = base + (mainMode === 'order' ? act : off);
   r.className = base + (mainMode === 'returns' ? act : off);
   c.className = base + (mainMode === 'receiving' ? act : off);
+  if (m) m.className = base + (mainMode === 'manage' ? act : off);
 }
 function renderView() {
   const isOrder = currentView === 'order';
   const isReturns = currentView === 'returns';
   const isReceiving = currentView === 'receiving';
-  const isMain = isOrder || isReturns || isReceiving;
+  const isManage = currentView === 'manage'; // v248
+  const isMain = isOrder || isReturns || isReceiving || isManage;
   $('searchWrap').style.display = isOrder ? '' : 'none';
   $('modeTabs').style.display = isMain ? '' : 'none';
   // v46: במסך ההשוואה הפוטר הדביק ("חזור לסריקה") יושב מעל הסרגל הגלובלי —
@@ -1291,6 +1295,7 @@ function renderView() {
   if (isOrder) renderOrder();
   else if (isReturns) renderReturns();
   else if (isReceiving) renderReceiving();
+  else if (isManage) renderManage();
   else if (currentView === 'settings') renderSettings();
   else if (currentView === 'contacts') renderContacts();
   else if (currentView === 'history') renderHistory();
@@ -1315,7 +1320,7 @@ function renderView() {
 }
 function updateBackBarLabel() {
   const b = $('backToOrder'); if (!b) return;
-  const txt = (currentView === 'trash' || currentView === 'health' || currentView === 'backup' || currentView === 'actionLog' || currentView === 'contacts') ? 'חזרה להגדרות' : (mainMode === 'returns' ? 'חזרה לחזרות' : 'חזרה לקליטה');
+  const txt = (currentView === 'trash' || currentView === 'health' || currentView === 'backup' || currentView === 'actionLog' || currentView === 'contacts') ? 'חזרה להגדרות' : (mainMode === 'returns' ? 'חזרה לחזרות' : (mainMode === 'manage' ? 'חזרה לניהול' : 'חזרה לקליטה'));
   b.innerHTML = '<i class="fa-solid fa-chevron-right"></i> ' + txt;
 }
 
@@ -5119,18 +5124,32 @@ function commitQty(again) {
 }
 
 // --- מסך התעודה הנוכחית ---
+// --- v248: מסך ניהול — טאב קבוע בשורת המצבים, לצד קליטה/חזרות ---
+// מרכז את כלי המנהל במקום אחד קבוע, כדי שלא יצטרכו להיכנס לקליטה כדי להגיע אליהם.
+function renderManage() {
+  const btn = (role, icon, label, extra) =>
+    '<button data-role="' + role + '" class="btn-tap ' + (extra || 'border-slate-200') + ' bg-white border rounded-2xl py-4 px-3 font-black text-slate-700 text-sm flex flex-col items-center justify-center gap-2 shadow-sm"><i class="fa-solid ' + icon + ' text-2xl"></i><span>' + label + '</span></button>';
+  const openRecs = receipts.filter(r => receiptDiscrepancyInfo(r).open);
+  const banner = openRecs.length ? '<button data-role="rc-history" class="btn-tap w-full bg-rose-50 border border-rose-200 text-rose-700 rounded-xl py-2.5 px-3 font-bold text-sm flex items-center justify-between gap-2 mb-3"><span><i class="fa-solid fa-clipboard-question"></i> ' + openRecs.length + ' תעודות עם הפרש פתוח</span><span class="text-xs font-black bg-rose-100 px-2 py-0.5 rounded-lg">לטיפול ←</span></button>' : '';
+  app.innerHTML = banner +
+    '<div class="bg-white rounded-2xl border border-slate-200 p-4 shadow-sm">' +
+      '<div class="flex items-center gap-2 mb-3"><i class="fa-solid fa-screwdriver-wrench text-slate-400"></i><span class="font-black text-slate-800 text-base">ניהול</span></div>' +
+      '<div class="grid grid-cols-2 gap-2">' +
+        btn('rc-prices', 'fa-tags text-blue-600', 'מוצרים ומחירים') +
+        btn('rc-promos', 'fa-percent text-rose-600', 'מבצעים') +
+        btn('rc-history', 'fa-folder-open text-blue-600', 'תעודות') +
+        btn('rc-analysis', 'fa-chart-simple text-emerald-600', 'ניתוח מוצרים') +
+      '</div>' +
+    '</div>';
+}
+
 function renderReceiving() {
   const t = receiptTotals();
   const opened = receiptOpened || receiptList.length > 0;
   const openRecs = receipts.filter(r => receiptDiscrepancyInfo(r).open);
   const banner = openRecs.length ? '<button data-role="rc-history" class="btn-tap w-full bg-rose-50 border border-rose-200 text-rose-700 rounded-xl py-2.5 px-3 font-bold text-sm flex items-center justify-between gap-2 mb-3"><span><i class="fa-solid fa-clipboard-question"></i> ' + openRecs.length + ' תעודות עם הפרש פתוח</span><span class="text-xs font-black bg-rose-100 px-2 py-0.5 rounded-lg">לטיפול ←</span></button>' : '';
-  const topButtons =
-    '<details class="bg-white border border-slate-200 rounded-xl mb-3 overflow-hidden"><summary class="btn-tap cursor-pointer px-3 py-2.5 font-black text-slate-600 text-sm flex items-center justify-between"><span><i class="fa-solid fa-screwdriver-wrench text-slate-400"></i> ניהול</span><i class="fa-solid fa-chevron-down hist-chevron"></i></summary><div class="grid grid-cols-2 gap-2 p-2 pt-0">' +
-      '<button data-role="rc-prices" class="btn-tap flex-1 bg-white border border-slate-200 rounded-xl py-2.5 font-black text-slate-700 text-xs flex items-center justify-center gap-1.5"><i class="fa-solid fa-tags text-blue-600"></i> מוצרים ומחירים</button>' +
-      '<button data-role="rc-promos" class="btn-tap flex-1 bg-white border border-slate-200 rounded-xl py-2.5 font-black text-slate-700 text-xs flex items-center justify-center gap-1.5"><i class="fa-solid fa-percent text-rose-600"></i> מבצעים</button>' +
-      '<button data-role="rc-history" class="btn-tap flex-1 bg-white border border-slate-200 rounded-xl py-2.5 font-black text-slate-700 text-xs flex items-center justify-center gap-1.5"><i class="fa-solid fa-folder-open text-blue-600"></i> תעודות</button>' +
-      '<button data-role="rc-analysis" class="btn-tap bg-white border border-slate-200 rounded-xl py-2.5 font-black text-slate-700 text-xs flex items-center justify-center gap-1.5"><i class="fa-solid fa-chart-simple text-emerald-600"></i> ניתוח מוצרים</button>' +
-    '</div></details>';
+  // v248: כלי הניהול עברו לטאב "ניהול" משלהם בשורת המצבים — מסך הקליטה נשאר נקי
+  const topButtons = '';
   if (!opened) {
     app.innerHTML = banner + topButtons +
       '<div class="bg-white rounded-2xl border border-slate-200 p-5 shadow-sm mt-2">' +
@@ -16273,10 +16292,11 @@ $('retMergeModal').addEventListener('click', (e) => {
   else if (b.dataset.role === 'ret-merge-pick') confirmReturnMergePick(b.dataset.id);
 });
 $('brandHome').addEventListener('click', () => setView('receiving'));
-$('btnHistory').addEventListener('click', () => setView(mainMode === 'returns' ? 'returnsHistory' : (mainMode === 'receiving' ? 'receiptsHistory' : 'history')));
+$('btnHistory').addEventListener('click', () => setView(mainMode === 'returns' ? 'returnsHistory' : ((mainMode === 'receiving' || mainMode === 'manage') ? 'receiptsHistory' : 'history')));
 $('segOrder').addEventListener('click', () => setView('order'));
 $('segReturns').addEventListener('click', () => setView('returns'));
 $('segReceiving').addEventListener('click', () => setView('receiving'));
+$('segManage').addEventListener('click', () => setView('manage')); // v248
 $('btnSettings').addEventListener('click', () => setView('settings'));
 $('btnNotes').addEventListener('click', () => setView('notes'));
 // ===== ניתוח מוצרים (v33) =====
