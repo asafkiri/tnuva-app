@@ -18,6 +18,7 @@ const names = ['tnuvaPaperCheck', 'tnuvaResetPhotoReceipt', 'tnuvaCachedDoc', 't
   'tnuvaStoreScanResults', 'tnuvaReceiptScanAudit', 'receiptDraftPayload', 'saveReceiptDraft',
   'restoreDraftScan', 'restoreReceiptDraft', 'normNote', 'noteSum', 'noteAnchorSum', 'recomputeNoteTotal',
   'aiScanSingleDocPipeline', 'aiRunInvoiceScan', 'aiTotalPages', 'aiMoneyCents', 'aiDocRowUnits',
+  'rememberReceiptManualInput', 'switchReceiptEntryMode', 'receiptBackToPhotosHtml', 'noteEditorBodyHtml', 'parseNoteVal', 'readNoteEntry',
   'aiSingleDocScore', 'aiSingleDocScoreBetter', 'aiFetchWithRetry', 'aiRequestSingleDocScan'];
 function context(extra = {}) {
   const storage = new Map();
@@ -25,6 +26,7 @@ function context(extra = {}) {
     Map, Set, Array, Object, String, Promise, Error,
     receiptDraftId: null, receiptDocDate: null, receiptNoteLines: null, receiptLinesConfirmed: false,
     makeOperationId: () => 'fixture-receipt', VAT: .18, settings: {},
+    receiptManualInput: null, $: () => null, htmlEscape: String, fmtMoney: String,
     receiptEntryMode: 'photo', receiptAnchorSource: null, receiptPaperScanState: '', receiptPaperScanProblems: [],
     receiptPhotoCaptureOpen: false, receiptScanHistory: [], aiScanRunId: 0, receiptOpened: false,
     receiptNotes: [], receiptNoteTotal: null, receiptNoteUnits: null, receiptList: [], receiptDepositWaived: false,
@@ -85,6 +87,7 @@ test('background scan allows counting immediately; no premature comparison or an
   c.openReceivingScanner = () => { barcodeOpened = true; };
   c.aiEvaluateInvoiceScan = () => { throw new Error('Premature comparison'); };
   c.aiRunAnalyzer = () => { throw new Error('Premature paid analysis'); };
+  c.receiptManualInput = { amount: '12.', count: '3' };
   const run = c.tnuvaStartPaperScan();
   await tick();
   assert.equal(barcodeOpened, true);
@@ -94,6 +97,7 @@ test('background scan allows counting immediately; no premature comparison or an
   assert.equal(c.receiptList[0].qty, 4);
   assert.equal(c.receiptPaperScanState, 'ok');
   assert.equal(c.receiptNoteTotal, 50);
+  assert.equal(c.receiptManualInput, null, 'Validated paper must not leave an extra pending manual note');
   assert.equal(c.receiptScanHistory.length, 1);
   assert.equal(c.aiScanEvaluation, null);
 });
@@ -326,4 +330,77 @@ test('repeated printed product codes use printed line count and aggregate real q
   assert.equal(c.aiScanEvaluation.totalVerified, true);
   assert.equal(c.aiScanEvaluation.unitsVerified, true);
   assert.equal(c.aiScanEvaluation.findings.some(f => ['shortage', 'surplus'].includes(f.type)), false);
+});
+
+test('manual selection without any work returns to photo on reload; active drafts stay manual', () => {
+  for (const data of [{}, { opened: true }, { notes: [{ amount: 50, lines: 10 }] },
+    { manualInput: { amount: '50.', count: '' } }, { noDoc: true }, { attach: { id: 'existing' } }, { docDate: '2026-08-18' }]) {
+    const c = context();
+    c.localStorage.setItem('fixture', JSON.stringify({ entryMode: 'manual', anchorSource: 'manual',
+      items: [], notes: [], photoInputs: [{ pageCount: 0 }], ...data }));
+    c.restoreReceiptDraft();
+    assert.equal(c.receiptEntryMode, Object.keys(data).length ? 'manual' : 'photo');
+  }
+});
+
+test('manual to photo and back preserves pending input, counts, notes and cached paper without scanning', () => {
+  let nodes = { rcNoteInput: { value: '50.' }, rcNoteLines: { value: '10' }, rcDocDate: { value: '2026-08-18' } };
+  const c = context({ $: id => nodes[id], receiptEntryMode: 'manual', receiptOpened: true,
+    receiptAnchorSource: 'manual', receiptNotes: [{ amount: 25, lines: 5 }],
+    receiptList: [{ productId: 'milk', qty: 3 }], receiptAttachTarget: { id: 'existing' } });
+  const doc = input(); doc.cachedPages = doc.pages.slice(); doc.cachedResult = { ok: true };
+  c.aiScanDocuments = [doc];
+  const beforeNotes = c.receiptNotes, beforeItems = c.receiptList;
+  c.aiRunInvoiceScan = () => { throw new Error('Switching must not scan'); };
+  const block = html.slice(html.indexOf("  if (role.startsWith('rc-photo-')) {"), html.indexOf("  if (aiScanBusy && ['ai-run'"));
+  c.t = { dataset: {} }; c.role = 'rc-photo-capture';
+  vm.runInContext('(function(){' + block + '})()', c);
+  assert.equal(c.receiptEntryMode, 'photo');
+  assert.equal(c.receiptPhotoCaptureOpen, true);
+  assert.equal(c.receiptNotes, beforeNotes);
+  assert.equal(c.receiptList, beforeItems);
+  assert.equal(c.aiScanDocuments[0], doc);
+  assert.equal(c.tnuvaCachedDoc(doc), true);
+  assert.equal(c.receiptManualInput.amount, '50.');
+  const restored = context(); restored.localStorage.setItem('fixture', c.localStorage.getItem('fixture'));
+  restored.restoreReceiptDraft();
+  assert.equal(restored.receiptPhotoCaptureOpen, true);
+  assert.equal(restored.receiptManualInput.count, '10');
+  assert.equal(restored.receiptList[0].qty, 3);
+  assert.equal(restored.receiptAttachTarget.id, 'existing');
+  assert.equal(restored.receiptDocDate, '2026-08-18');
+  nodes = {};
+  c.role = 'rc-photo-manual'; vm.runInContext('(function(){' + block + '})()', c);
+  assert.equal(c.receiptEntryMode, 'manual');
+  assert.equal(c.editingNotes, true);
+  assert.equal(c.receiptPhotoCaptureOpen, false);
+  assert.match(c.noteEditorBodyHtml(), /id="rcNoteInput" value="50\."/);
+  assert.match(c.noteEditorBodyHtml(), /data-role="rc-photo-capture"/);
+  assert.equal(c.tnuvaCachedDoc(doc), true);
+});
+
+test('partial manual input survives reload and is cleared after adding the note, preventing duplicate entry', () => {
+  const nodes = { rcNoteInput: { value: '50.' }, rcNoteLines: { value: '10' } };
+  const c = context({ $: id => nodes[id], receiptEntryMode: 'manual' });
+  c.rememberReceiptManualInput(); c.saveReceiptDraft();
+  const restored = context({ $: id => nodes[id] });
+  restored.localStorage.setItem('fixture', c.localStorage.getItem('fixture')); restored.restoreReceiptDraft();
+  assert.equal(restored.receiptEntryMode, 'manual');
+  assert.equal(restored.receiptManualInput.amount, '50.');
+  const note = restored.readNoteEntry(true);
+  assert.equal(note.amount, 50); assert.equal(note.lines, 10);
+  restored.receiptNotes.push(note); restored.recomputeNoteTotal(); restored.saveReceiptDraft();
+  assert.equal(restored.receiptManualInput, null);
+  assert.match(restored.noteEditorBodyHtml(), /id="rcNoteInput" value=""/);
+  restored.tnuvaResetPhotoReceipt();
+  assert.equal(restored.receiptEntryMode, 'photo');
+  assert.equal(restored.receiptManualInput, null);
+});
+
+test('capture method cannot change while OCR is running', () => {
+  const c = context({ aiScanBusy: true, receiptEntryMode: 'manual' });
+  c.renderReceiving = () => { throw new Error('Busy scan must remain untouched'); };
+  c.switchReceiptEntryMode('photo');
+  assert.equal(c.receiptEntryMode, 'manual');
+  assert.equal(c.aiScanRunId, 0);
 });
