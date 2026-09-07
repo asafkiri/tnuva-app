@@ -631,6 +631,7 @@ let reconcileDetectiveRoundingGap = null; // סטיית עיגול זעירה ש
 let reconcilePaperEntered = false;
 const AI_SCAN_WORKER_URL = 'https://tnuva-ai-scan-701905665767.europe-west1.run.app/scan'; // v34: שירות תנובה הנפרד
 let receiptEntryMode = 'photo', receiptAnchorSource = null;
+let receiptManualInput = null; // Unsubmitted manual fields survive switching capture methods.
 let receiptPaperScanState = '', receiptPaperScanProblems = [];
 let receiptPhotoCaptureOpen = false, receiptScanHistory = [], aiScanRunId = 0;
 let aiScanDocuments = [];        // תמונות בזיכרון בלבד — אינן נשמרות בטיוטה או בענן
@@ -670,7 +671,7 @@ let receiptDupConfirmed = false; // אישור שמירה למרות חשד לכ
 const RECEIPT_DRAFT_KEY = 'tn_receipt_draft';
 let receivingDigitsMissTimer = null;
 let receivingDigitsMissNotified = '';
-const APP_VERSION = '76'; // גרסה 74: קליטה בלי תעודה — סורקים לפי ספירה, התעודה נשמרת פתוחה, וכשהנייר מגיע מזינים את נתוניו והבדיקה הרגילה רצה
+const APP_VERSION = '77'; // גרסה 74: קליטה בלי תעודה — סורקים לפי ספירה, התעודה נשמרת פתוחה, וכשהנייר מגיע מזינים את נתוניו והבדיקה הרגילה רצה
 // גרסה 73: מוצר בלי מחיר קופה — חלון הכמות מציג מיד את העלות ליח׳ (ללא מע״מ) ופותח שדה להקלדת המחיר שעובר בקופה, בלי לנדוד למסך המחירים
 // v40: תג גרסה קבוע בפינת המסך — לדעת בשנייה איזו גרסה באמת רצה על המכשיר
 // (עוזר במיוחד מול מטמון ה-PWA). pointer-events:none — לעולם לא חוסם מגע.
@@ -992,7 +993,7 @@ function tnuvaResetPhotoReceipt() {
   aiScanRunId++;
   receiptEntryMode = 'photo'; receiptAnchorSource = null;
   receiptPaperScanState = ''; receiptPaperScanProblems = [];
-  receiptPhotoCaptureOpen = false; receiptScanHistory = [];
+  receiptPhotoCaptureOpen = false; receiptScanHistory = []; receiptManualInput = null;
 }
 function refreshScanHost() {
   if (currentView === 'receiving') {
@@ -1076,6 +1077,7 @@ function tnuvaAdoptPaperAnchors() {
   if (returned.length !== aiScanDocuments.length) problems.push('לא כל התעודות פוענחו');
   receiptPaperScanProblems = [...new Set((aiScanError ? [aiScanError] : []).concat(problems))].slice(0, 8);
   if (problems.length) { receiptPaperScanState = 'failed'; saveReceiptDraft(); refreshScanHost(); return false; }
+  receiptManualInput = null; // Verified paper replaces any unfinished manual entry.
   receiptNotes = notes.map(normNote); recomputeNoteTotal();
   receiptAnchorSource = 'paper'; receiptPaperScanState = 'ok';
   aiScanDocuments.forEach((doc, i) => { doc.amount = notes[i].amount; doc.units = null; doc.lines = notes[i].lines; });
@@ -1138,6 +1140,29 @@ function tnuvaScanHistoryHtml(audit) {
         htmlEscape(a.model || a.requestedModel || '') + ' · ' + htmlEscape(a.stage || '') + ' · ' + htmlEscape(a.outcome || '') + (a.selected ? ' ✓' : '') + '</div>').join('') :
         '<div dir="ltr">' + htmlEscape(entry.model || 'ללא דיווח מודל מהשרת') + '</div>') + '</div>').join('') + '</details>';
 }
+// Switching capture methods keeps the current count, notes, images and cached OCR.
+function rememberReceiptManualInput() {
+  const amount = $('rcNoteInput'), count = $('rcNoteLines');
+  if (amount || count) {
+    const fields = { amount: amount ? amount.value : '', count: count ? count.value : '' };
+    receiptManualInput = fields.amount.trim() || fields.count.trim() ? fields : null;
+  }
+  const date = $('rcDocDate'); if (date) receiptDocDate = date.value || null;
+}
+function switchReceiptEntryMode(mode) {
+  if (aiScanBusy || !['photo', 'manual'].includes(mode)) return;
+  rememberReceiptManualInput();
+  aiScanRunId++;
+  receiptEntryMode = mode;
+  receiptPhotoCaptureOpen = mode === 'photo';
+  editingNotes = mode === 'manual' && receiptOpened;
+  if (mode === 'manual') receiptAnchorSource = 'manual';
+  saveReceiptDraft(); renderReceiving();
+}
+function receiptBackToPhotosHtml() {
+  return '<button data-role="rc-photo-capture" class="btn-tap w-full mb-3 py-3 bg-blue-50 border border-blue-200 text-blue-700 rounded-xl font-black text-sm"><i class="fa-solid fa-camera"></i> חזרה לצילום התעודה / גלריה</button>';
+}
+
 function noteEditorBodyHtml() {
   const chips = receiptNotes.map((raw, i) => {
     const n = normNote(raw);
@@ -1153,13 +1178,13 @@ function noteEditorBodyHtml() {
     ? '<div class="text-[11px] font-bold text-slate-400 mt-1">סה"כ שורות: ' + receiptNoteLines + '</div>'
     : '';
   const total = receiptNotes.length ? '<div class="flex items-center justify-between mt-2 pt-2 border-t border-slate-200"><span class="font-bold text-slate-500 text-sm">סה"כ ' + receiptNotes.length + ' תעודות</span><span class="font-black text-blue-600 text-lg">₪' + fmtMoney(noteSum()) + '</span></div>' + anchorsSummary : '';
-  return chips +
+  return receiptBackToPhotosHtml() + chips +
     '<div class="text-xs text-slate-500 font-bold mb-1.5"><i class="fa-solid fa-circle-info"></i> לכל תעודה הקלד סכום <b class="text-slate-700">ללא מע״מ</b> ואת מספר השורות — המספר שמודפס ליד „פריטים”</div>' +
     '<div class="flex gap-2 items-stretch">' +
-      '<div class="flex-1 flex items-center gap-1 border-2 border-slate-200 rounded-xl px-2 focus-within:border-blue-500"><span class="text-slate-400 font-black">₪</span><input id="rcNoteInput" type="text" inputmode="decimal" placeholder="סכום ללא מע״מ" class="w-full h-11 text-center text-base font-black outline-none bg-transparent"></div>' +
+      '<div class="flex-1 flex items-center gap-1 border-2 border-slate-200 rounded-xl px-2 focus-within:border-blue-500"><span class="text-slate-400 font-black">₪</span><input id="rcNoteInput" value="' + htmlEscape((receiptManualInput || {}).amount || '') + '" type="text" inputmode="decimal" placeholder="סכום ללא מע״מ" class="w-full h-11 text-center text-base font-black outline-none bg-transparent"></div>' +
       '<button data-role="rc-note-add" class="btn-tap px-4 rounded-xl font-black bg-slate-100 text-slate-700 flex items-center gap-1"><i class="fa-solid fa-plus"></i> הוסף</button>' +
     '</div>' +
-    '<input id="rcNoteLines" type="text" inputmode="numeric" placeholder="מספר שורות (ליד „פריטים”)" class="w-full h-11 mt-1.5 text-center text-sm font-black border-2 border-slate-200 rounded-xl outline-none focus:border-blue-500 bg-white">' +
+    '<input id="rcNoteLines" value="' + htmlEscape((receiptManualInput || {}).count || '') + '" type="text" inputmode="numeric" placeholder="מספר שורות (ליד „פריטים”)" class="w-full h-11 mt-1.5 text-center text-sm font-black border-2 border-slate-200 rounded-xl outline-none focus:border-blue-500 bg-white">' +
     '<div class="text-xs text-slate-500 font-bold mt-1"><i class="fa-solid fa-wand-magic-sparkles"></i> המספר שמודפס ליד „פריטים” בתחתית התעודה</div>' +
     total;
 }
@@ -1180,6 +1205,7 @@ function readNoteEntry(required) {
     if (linesInp) linesInp.focus();
     return false;
   }
+  receiptManualInput = null;
   return { amount: r2(v), lines: lns };
 }
 // v15: קריאת הנייר נשמרת בטיוטה, הצילומים לא.
@@ -1189,6 +1215,7 @@ function readNoteEntry(required) {
 // על התוצאות; מה שיידרש צילום מחדש הוא רק סריקה חדשה של אותו נייר.
 function receiptDraftPayload(includeScan) {
   const base = { schemaVersion: 3, draftId: receiptDraftId, items: receiptList, notes: receiptNotes, opened: receiptOpened, docDate: receiptDocDate || null, noDoc: receiptNoDoc, attach: receiptAttachTarget, updatedAt: Date.now(), entryMode: receiptEntryMode, anchorSource: receiptAnchorSource,
+    manualInput: receiptManualInput, photoCaptureOpen: receiptPhotoCaptureOpen,
     paperState: receiptPaperScanState, paperProblems: receiptPaperScanProblems, scanHistory: receiptScanHistory,
     photoInputs: aiScanDocuments.map(d => ({ amount: d.amount, units: d.units, lines: d.lines, pageCount: d.pages.length || d.restoredPageCount || 0 })) };
   if (includeScan && aiScanResponse && aiScanResponse.scan) {
@@ -1258,8 +1285,16 @@ function restoreReceiptDraft() {
       receiptDraftId = o.draftId || null;
       // v74: קליטה בלי תעודה, וצירוף נייר לקליטה כזאת, שורדים ריענון וניתוק
       receiptNoDoc = !!o.noDoc;
-      receiptEntryMode = o.entryMode === 'photo' || (!o.entryMode && !receiptOpened && !receiptNotes.length && !o.attach) ? 'photo' : 'manual';
-      receiptAnchorSource = o.anchorSource || null;
+      const manual = o.manualInput;
+      receiptManualInput = manual && typeof manual.amount === 'string' && typeof manual.count === 'string'
+        && (manual.amount.trim() || manual.count.trim()) ? { amount: manual.amount, count: manual.count } : null;
+      const emptyDraft = !receiptOpened && !receiptNotes.length && !receiptNoDoc && !o.attach
+        && !receiptManualInput && !o.docDate && !o.paperState && !o.aiScan
+        && !(Array.isArray(o.photoInputs) && o.photoInputs.some(d => d.pageCount > 0));
+      receiptEntryMode = o.entryMode === 'photo' || emptyDraft ? 'photo' : 'manual';
+      receiptAnchorSource = emptyDraft ? null : (o.anchorSource || null);
+      receiptPhotoCaptureOpen = receiptEntryMode === 'photo' && !!o.photoCaptureOpen;
+      editingNotes = receiptEntryMode === 'manual' && receiptOpened && !!receiptManualInput;
       receiptPaperScanState = o.paperState || '';
       receiptPaperScanProblems = Array.isArray(o.paperProblems) ? o.paperProblems : [];
       receiptScanHistory = Array.isArray(o.scanHistory) ? o.scanHistory : [];
@@ -17407,7 +17442,9 @@ $('contactList').addEventListener('click', (e) => { const b = e.target.closest('
 $('sendModal').addEventListener('click', (e) => { const b = e.target.closest('[data-role="ret-save-only"]'); if (b) saveReturnsWithoutSending(); });
 
 app.addEventListener('input', (e) => {
-  const t = e.target; const role = t.getAttribute && t.getAttribute('data-role');
+  const t = e.target;
+  if (['rcNoteInput', 'rcNoteLines'].includes(t.id)) { rememberReceiptManualInput(); saveReceiptDraft(); return; }
+  const role = t.getAttribute && t.getAttribute('data-role');
   if (role === 'device-name') { setDeviceNameLocal(t.value); return; }
   if (t.id === 'returnsSearch') { renderReturnsResults(t.value); return; }
   if (t.id === 'retDocDate') { returnsDocDate = t.value || ''; saveReturnsDraft(); refreshReturnsList(); return; } // v208: תג המבצע ברשימה תלוי בתאריך התעודה
@@ -17639,10 +17676,9 @@ app.addEventListener('click', (e) => {
     if (aiScanBusy) return;
     const docIndex = Number(t.dataset.doc) || 0;
     if (role === 'rc-photo-start') { tnuvaStartPaperScan(); return; }
-    if (role === 'rc-photo-manual') {
-      aiScanRunId++; receiptEntryMode = 'manual'; receiptAnchorSource = 'manual';
-      receiptPhotoCaptureOpen = false; editingNotes = receiptOpened;
-    } else if (role === 'rc-photo-add-doc' && aiScanDocuments.length < 4) {
+    if (role === 'rc-photo-manual') { switchReceiptEntryMode('manual'); return; }
+    if (role === 'rc-photo-capture') { switchReceiptEntryMode('photo'); return; }
+    if (role === 'rc-photo-add-doc' && aiScanDocuments.length < 4) {
       aiScanDocuments.push({ noteIndex: aiScanDocuments.length, amount: null, units: null, pages: [] });
     } else if (role === 'rc-photo-remove-doc' && aiScanDocuments.length > 1) {
       aiScanDocuments.splice(docIndex, 1); aiScanDocuments.forEach((d, i) => { d.noteIndex = i; });
