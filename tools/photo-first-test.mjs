@@ -76,7 +76,7 @@ test('background completion refreshes the visible invoice header without replaci
   assert.equal(c.tnuvaAdoptPaperAnchors(), true);
   assert.equal(nodes.rcNoteSummaryValue.textContent, '₪971.42');
   assert.match(nodes.rcNoteSummaryLabel.textContent, /1 שורות/);
-  assert.match(nodes.rcPaperStatus.innerHTML, /סיכומיה אומתו/);
+  assert.match(nodes.rcPaperStatus.innerHTML, /נקראה ואומתה/);
   assert.equal(nodes.activeQuantity, activeInput);
   assert.equal(activeInput.value, '7');
   assert.equal(activeInput.selectionStart, 1);
