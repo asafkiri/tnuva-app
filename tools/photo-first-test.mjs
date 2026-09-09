@@ -13,7 +13,7 @@ function source(name) {
   assert.ok(end > firstEnd);
   return html.slice(match.index, end + 2);
 }
-const names = ['receiptRememberScanResults','receiptRebuildScanResponse','receiptScanChanged','receiptScanSnapshot','receiptStorageNotice','persistReceiptDraft','receiptDraftActive','scheduleReceiptDraftSync','refreshReceiptDraftNotice','tnuvaPaperCheck', 'tnuvaResetPhotoReceipt', 'tnuvaCachedDoc', 'tnuvaPhotoReady',
+const names = ['priceAuditNumber','priceAuditDate','priceAuditCapture','priceAuditSource','priceAuditIdentity','priceAuditDocumentComplete','receiptPriceAudit','receiptPriceAuditHtml','priceAuditLegacyVisible','refreshPriceScannerNotice','receiptRememberScanResults','receiptRebuildScanResponse','receiptScanChanged','receiptScanSnapshot','receiptStorageNotice','persistReceiptDraft','receiptDraftActive','scheduleReceiptDraftSync','refreshReceiptDraftNotice','tnuvaPaperCheck', 'tnuvaResetPhotoReceipt', 'tnuvaCachedDoc', 'tnuvaPhotoReady',
   'tnuvaInvalidatePhotoDoc', 'tnuvaAdoptPaperAnchors', 'tnuvaStartPaperScan', 'tnuvaScanMetadata',
   'tnuvaStoreScanResults', 'tnuvaReceiptScanAudit', 'receiptDraftPayload', 'saveReceiptDraft',
   'restoreDraftScan', 'restoreReceiptDraft', 'normNote', 'noteSum', 'noteAnchorSum', 'recomputeNoteTotal',
@@ -23,7 +23,7 @@ const names = ['receiptRememberScanResults','receiptRebuildScanResponse','receip
 function context(extra = {}) {
   const storage = new Map();
   const c = vm.createContext({ console, setTimeout, clearTimeout, AbortController, Date, JSON, Math, Number,
-    Map, Set, Array, Object, String, Promise, Error,
+    Map, Set, Array, Object, String, Promise, Error, PRICE_AUDIT_SUPPLIER: 'tnuva', receiptPriceSaveFailed:false,
     receiptDraftId: null, receiptDocDate: null, receiptNoteLines: null, receiptLinesConfirmed: false,
     makeOperationId: () => 'fixture-receipt', VAT: .18, settings: {},
     db:null, receiptStorageWarning:'',receiptDraftId:null,makeOperationId:()=> 'test-' + Math.random(),receiptAnalysisCache:null,aiScanEditingImages:false,
