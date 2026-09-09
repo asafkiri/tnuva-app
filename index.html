@@ -9989,7 +9989,10 @@ function aiEvaluateInvoiceScan(payload) {
   // חסר, וגם למסך להגיד "יש ₪X הנחה בלי כיסוי" במקום "פער לא מוסבר".
   let promoRebuiltCents = 0, promoResidualCents = 0;
   if (aggregates.size > 0) {
-    const day = todayStr();
+    // תוקף המבצע נקבע לפי תאריך התעודה, כמו בבדיקת המחירים ובמסך ההשוואה.
+    // עד כאן נבדק לפי היום, ולכן תעודה מתאריך קודם נשפטה מול מבצעי היום
+    // ודרישת הזיכוי מהספק נבנתה על מחיר צפוי שגוי.
+    const day = activeReceiptDate();
     const paperBasketQty = pr => {
       if (!pr || !Array.isArray(pr.productIds)) return 0;
       let total = 0;
