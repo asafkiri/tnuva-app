@@ -99,7 +99,51 @@ if(supplier!=='berman'){
  test(supplier+': general discount without provable row allocation stays incomplete',async()=>{
   const data=fixture({summary:10,promo:{productIds:['milk','coffee']}}),d=data.paper.scan.documents[0];d.rows.push({...d.rows[0],code:'15',itemCode:'15',barcode:'7290000000015',barcodeObserved:'7290000000015',lineNumber:2});
   d.subtotalExVat=90;d.itemsSectionTotalExVat=100;d.printedLines=d.itemsPrintedLines=2;d.printedUnits=20;
-  const c=create(data);await scan(c,data);assert.equal(report(c).complete,false);assert.match(view(c),/אין מספיק ראיות לשיוך/);assert.equal(requests(c),1);
+  const c=create(data);await scan(c,data);assert.equal(report(c).complete,false);assert.match(view(c),/אין מספיק ראיות לשיוך/);assert.match(view(c),/מבצע אחד לא הופעל, אך אי אפשר לקבוע איזה/);assert.equal(requests(c),1);
+ });
+ // שתי שורות מבצע באותה תעודה: הרכב הנחת הסיכום הוא הראיה שכל המבצעים ירדו.
+ const twoPromoRows=(second,promo,summary)=>{
+  const data=fixture({unit:8.82,qty:8,base:8.82,summary,promo:{productIds:['milk','coffee'],pct:18,...(promo||{})}}),d=data.paper.scan.documents[0];
+  Object.assign(data.products[1],{price:second.base,listPrice:second.base});
+  d.rows.push({...d.rows[0],code:'15',itemCode:'15',supplierItemCode:'15',barcode:'7290000000015',barcodeObserved:'7290000000015',description:'מוצר שני',lineNumber:2,
+    quantity:second.qty,unitPriceExVat:second.unit,grossLineTotalExVat:second.unit*second.qty,lineTotalExVat:second.unit*second.qty});
+  const sum=d.rows.reduce((n,r)=>n+r.lineTotalExVat,0);
+  d.itemsSectionTotalExVat=sum;d.subtotalExVat=d.netToChargeExVat=sum-summary;
+  d.printedLines=d.itemsPrintedLines=2;d.printedUnits=d.totalUnits=d.rows.reduce((n,r)=>n+r.quantity,0);
+  return data;
+ };
+ test(supplier+': a summary discount covering every promotion row proves all of them landed',async()=>{
+  const data=twoPromoRows({unit:8.82,qty:8,base:8.82},null,25.4),c=create(data);c.expectedUploads=1;const html=await scan(c,data);
+  const rows=report(c).rows;assert.equal(rows.length,2);assert.equal(report(c).complete,true);
+  assert.ok(rows.every(r=>r.result==='match'));assert.ok(rows.every(r=>Math.abs(r.chargedUnitPrice-7.2324)<=.0001));
+  assert.match(html,/מכסה בדיוק את כל 2 שורות המבצע/);assert.match(html,/המחירים שנבדקו תואמים/);
+  assert.doesNotMatch(html,/אין מספיק ראיות לשיוך/);assert.equal(requests(c),1);record('two promotion rows, full summary discount',c,html);
+ });
+ test(supplier+': a short summary discount names the promotion that never landed',async()=>{
+  const data=twoPromoRows({unit:5,qty:10,base:5},null,12.7),c=create(data);c.expectedUploads=1;const html=await scan(c,data);
+  const rows=report(c).rows,milk=rows[0],coffee=rows[1];assert.equal(report(c).complete,true);
+  // הנחת הסיכום שווה בדיוק להנחת השורה הראשונה, ולכן המבצע של השנייה לא ירד.
+  assert.equal(milk.result,'match');assert.ok(Math.abs(milk.chargedUnitPrice-7.2324)<=.0001);
+  assert.equal(coffee.result,'difference');assert.equal(coffee.chargedUnitPrice,5);
+  assert.match(coffee.reason,/המבצע שבמאגר לא הופעל בתעודה/);
+  assert.equal(coffee.expectedOptions[0].lineDifference,9);assert.match(html,/מכסה 1 מתוך 2 שורות המבצע/);
+  assert.match(html,/המבצע לא הופעל בשורה: מוצר שני/);assert.equal(requests(c),1);record('two promotion rows, one promotion missing',c,html);
+ });
+ // התנהגות שנשמרה מ-main: שורת מבצע יחידה שהמחיר המודפס בה אינו מחיר המאגר,
+ // כשהנחת הסיכום סוגרת את הפער בדיוק — עדיין מוכרעת, ולא נחסמת.
+ test(supplier+': a single promotion row below the catalog price still resolves when the summary closes it exactly',async()=>{
+  const data=fixture({unit:4.5,summary:5,promo:{}}),c=create(data);await scan(c,data);
+  const r=report(c).rows[0];assert.equal(r.chargedUnitPrice,4);assert.equal(r.result,'match');assert.equal(report(c).complete,true);assert.equal(requests(c),1);
+ });
+ test(supplier+': a summary discount larger than the known promotions reads as a possible missing promotion',async()=>{
+  const data=fixture({unit:5,summary:25,promo:{}}),c=create(data);await scan(c,data);
+  assert.equal(report(c).complete,false);assert.equal(report(c).rows[0].capability,'partial');
+  assert.match(view(c),/אינה מתיישבת עם סך הנחות המבצע הצפויות ₪10\.00/);assert.match(view(c),/ייתכן שחסר מבצע במאגר/);assert.equal(requests(c),1);
+ });
+ test(supplier+': a row priced at neither the catalog nor the promotion blocks attribution',async()=>{
+  const data=twoPromoRows({unit:6,qty:10,base:5},{productIds:['milk'],pct:18},12.7),c=create(data);await scan(c,data);
+  assert.equal(report(c).complete,false);assert.ok(report(c).rows.every(r=>r.capability==='partial'));
+  assert.match(view(c),/אינו מחיר המאגר ואינו מחיר המבצע/);assert.equal(requests(c),1);
  });
 }
 if(supplier==='yotvata'){

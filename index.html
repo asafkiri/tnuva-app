@@ -699,7 +699,7 @@ let receiptDupConfirmed = false; // אישור שמירה למרות חשד לכ
 const RECEIPT_DRAFT_KEY = 'tn_receipt_draft';
 let receivingDigitsMissTimer = null;
 let receivingDigitsMissNotified = '';
-const APP_VERSION = '86'; // מסך נפרד לבדיקת כמויות ידנית
+const APP_VERSION = '87'; // הנחת המבצע בסיכום התעודה משויכת לכל שורות המבצע
 // גרסה 73: מוצר בלי מחיר קופה — חלון הכמות מציג מיד את העלות ליח׳ (ללא מע״מ) ופותח שדה להקלדת המחיר שעובר בקופה, בלי לנדוד למסך המחירים
 // v40: תג גרסה קבוע בפינת המסך — לדעת בשנייה איזו גרסה באמת רצה על המכשיר
 // (עוזר במיוחד מול מטמון ה-PWA). pointer-events:none — לעולם לא חוסם מגע.
@@ -8756,6 +8756,89 @@ function priceAuditPromoDay() {
   docs.forEach(doc => { const day = priceAuditDocumentDay(doc); if (day) days.add(day); });
   return days.size === 1 ? days.values().next().value : activeReceiptDate();
 }
+// תנובה מדפיסה כל שורה בברוטו ומרכזת את כל הנחות המבצע בשורת סיכום אחת
+// ("סד הנחה בגין מבצעים"). לכן השאלה "אילו מבצעים ירדו" היא שאלה על ההרכב של
+// הסכום הזה, ולא על שורה בודדת. עד כאן שויכה ההנחה רק כששורת מבצע יחידה יכלה
+// להסביר אותה לבדה, ותעודה עם שתי שורות מבצע נשארה "לא נבדקה" גם כשסכום
+// ההנחות הצפוי נסגר בדיוק מול המודפס. כאן נפתרת ההרכבה עצמה.
+const PRICE_AUDIT_UNIT_TOLERANCE = .020000001;
+const PRICE_AUDIT_PROMO_SUBSET_LIMIT = 14;
+const PRICE_AUDIT_SUBSET_SOLUTION_LIMIT = 8;
+// הספק מעגל כל הנחת שורה בנפרד לפני שהוא מסכם, ולכן ההרכב רשאי לסטות מהמודפס
+// עד חצי אגורה לשורה. פחות מזה פוסל הרכב נכון; יותר מזה מטשטש בין שני הרכבים.
+function priceAuditSubsetTolerance(size) { return Math.max(1, Math.ceil(size / 2)); }
+// כל תת-קבוצה של שורות המבצע שסכום ההנחות שלה שווה למודפס. מוחזרות כולן
+// בכוונה: שני הרכבים באותו סכום פירושם שאי אפשר לדעת איזה מבצע לא ירד.
+function priceAuditPromoSubsets(values, targetCents) {
+  const n = values.length, order = values.map((v, i) => i).sort((a, b) => values[b] - values[a]);
+  const sorted = order.map(i => values[i]), suffix = new Array(n + 1).fill(0);
+  for (let i = n - 1; i >= 0; i--) suffix[i] = suffix[i + 1] + sorted[i];
+  const maxTol = priceAuditSubsetTolerance(n) + 1e-9, solutions = [];
+  let overflow = false;
+  (function dfs(i, sum, picked) {
+    if (overflow || sum - targetCents > maxTol || sum + suffix[i] - targetCents < -maxTol) return;
+    if (i === n) {
+      const diff = Math.abs(sum - targetCents);
+      if (diff <= priceAuditSubsetTolerance(picked.length) + 1e-9) {
+        solutions.push({ picked: picked.slice(), diff });
+        if (solutions.length > PRICE_AUDIT_SUBSET_SOLUTION_LIMIT) overflow = true;
+      }
+      return;
+    }
+    picked.push(order[i]); dfs(i + 1, sum + sorted[i], picked); picked.pop();
+    dfs(i + 1, sum, picked);
+  })(0, 0, []);
+  return { solutions, overflow };
+}
+// מחזיר את שיוך הנחת הסיכום לשורות, או את הסיבה שאי אפשר לשייך. שורה שהמחיר
+// המודפס בה אינו מחיר המאגר ואינו מחיר המבצע היא צרכנית אפשרית של ההנחה בסכום
+// לא ידוע — ולכן היא חוסמת את ההרכב כולו, ולא רק את עצמה.
+function priceAuditSummaryPlan(entries, discount) {
+  const money = n => '₪' + fmtMoney(n), tail = '; אין מספיק ראיות לשיוך ההנחה לכל מוצר';
+  // הסיבה המלאה נכתבת פעם אחת ברמת התעודה. בשורה עצמה נשארת שורה קצרה, כדי
+  // שכרטיס המוצר לא יחזור על אותו משפט ארוך בכל שורה בתעודה.
+  const blocked = text => ({ ok: false, status: text + tail, rowReason: 'הנחת המבצע שבסיכום התעודה לא שויכה לשורות' + tail });
+  const applied = [], members = [];
+  for (const e of entries) {
+    const row = e.row;
+    if (row.capability !== 'checkable') return blocked('לא כל שורות התעודה ניתנות לבדיקה');
+    const gross = row.comparisonPrice, base = row.catalogBasePrice, qty = row.quantity;
+    if (gross == null || !(base > 0) || !(qty > 0)) return blocked('חסר מחיר או כמות בשורה');
+    const expected = row.promo ? discountedUnitPrice(base, row.promo.pct) : base;
+    // שורה שכבר עומדת במחיר הצפוי לה אינה נוטלת דבר מהנחת הסיכום.
+    if (Math.abs(gross - expected) <= PRICE_AUDIT_UNIT_TOLERANCE) continue;
+    // שורת מבצע שהמחיר המודפס בה גבוה ממחיר המבצע היא מועמדת בסכום ידוע.
+    if (row.promo && gross > expected) { members.push({ entry: e, cents: (gross - expected) * qty * 100 }); continue; }
+    // כל שורה אחרת היא צרכנית אפשרית של ההנחה בסכום לא ידוע, ולכן היא חוסמת
+    // את ההרכב כולו ולא רק את עצמה — אחרת אפשר "להסביר" כל פער בכל שורה.
+    return blocked('המחיר בשורה "' + row.name + '" אינו מחיר המאגר ואינו מחיר המבצע, ולכן לא ידוע איזה חלק מהנחת הסיכום שייך לה');
+  }
+  const expectedTotal = members.reduce((n, m) => n + m.cents, 0) / 100;
+  if (!members.length) return blocked('הנחת הסיכום ' + money(discount) + ' אינה מוסברת על ידי מבצע כלשהו במאגר; ייתכן שחסר מבצע במאגר');
+  if (members.length > PRICE_AUDIT_PROMO_SUBSET_LIMIT) return blocked(members.length + ' שורות מבצע בתעודה — יותר מדי הרכבים אפשריים');
+  const { solutions, overflow } = priceAuditPromoSubsets(members.map(m => m.cents), discount * 100);
+  const exact = solutions.filter(s => s.diff <= .5 + 1e-9), pool = exact.length ? exact : solutions;
+  if (!pool.length || overflow) {
+    return blocked(overflow ? 'יש יותר מדי דרכים לשייך את הנחת הסיכום ' + money(discount) + ' בין שורות המבצע'
+      : 'הנחת הסיכום ' + money(discount) + ' אינה מתיישבת עם סך הנחות המבצע הצפויות ' + money(expectedTotal)
+        + '; ייתכן שחסר מבצע במאגר, שהמבצע שבמאגר אינו זה שירד בפועל, או שהמחיר המודפס שונה');
+  }
+  if (pool.length > 1) {
+    const misses = new Set(pool.map(s => members.length - s.picked.length)), only = misses.size === 1 ? [...misses][0] : null;
+    return blocked('יש יותר מדרך אחת לשייך את הנחת הסיכום ' + money(discount) + ' בין ' + members.length + ' שורות המבצע'
+      + (only === 1 ? ' — מבצע אחד לא הופעל, אך אי אפשר לקבוע איזה' : only ? ' — ' + only + ' מבצעים לא הופעלו, אך אי אפשר לקבוע אילו' : ''));
+  }
+  const picked = new Set(pool[0].picked), missed = [];
+  const note = members.length === 1 ? 'שורת מבצע יחידה; שאר השורות תואמות' : 'לפי הרכב הנחות המבצע בתעודה';
+  members.forEach((m, i) => { if (picked.has(i)) applied.push({ entry: m.entry, share: m.cents / 100, note }); else missed.push(m); });
+  const names = missed.map(m => m.entry.row.name).join(', ');
+  return { ok: true, applied, missed: missed.map(m => m.entry), expectedTotal,
+    status: missed.length
+      ? 'הנחת הסיכום ' + money(discount) + ' מכסה ' + (members.length - missed.length) + ' מתוך ' + members.length
+        + ' שורות המבצע בתעודה; המבצע לא הופעל ב' + (missed.length === 1 ? 'שורה: ' : 'שורות: ') + names + ' (' + money(expectedTotal - discount) + ')'
+      : 'הנחת הסיכום ' + money(discount) + (members.length === 1 ? ' מכסה בדיוק את שורת המבצע היחידה בתעודה'
+        : ' מכסה בדיוק את כל ' + members.length + ' שורות המבצע בתעודה') + '; כל מבצע שויך לשורה שלו' };
+}
 function receiptPriceAudit() {
   const docs = aiScanResponse && aiScanResponse.scan && aiScanResponse.scan.documents || [];
   const out = { version: 1, supplier: PRICE_AUDIT_SUPPLIER, documents: [], rows: [], complete: false, state: 'empty' };
@@ -8801,7 +8884,6 @@ function receiptPriceAudit() {
       if (row.capability === 'checkable' && (raw.priceIncludesVat === true || raw.priceIncludesDeposit === true)) { row.capability = 'partial'; row.reason = 'חסר פירוט להפרדת מע״מ או פיקדון ממחיר השורה'; }
       return { row, raw, mapped, product };
     });
-    const eligible = entries.filter(e => e.row.capability === 'checkable');
     entries.forEach(e => {
       const { row, raw, product } = e;
       if (row.capability !== 'checkable') return;
@@ -8845,16 +8927,18 @@ function receiptPriceAudit() {
       const included = subtotal != null && aiMoneyCents(sum) === aiMoneyCents(subtotal);
       info.summaryDiscount = discount;
       if (discount > 0 && separate) {
-        const candidates = eligible.filter(e => e.row.promo && e.row.expectedOptions.length && e.row.comparisonPrice > e.row.expectedOptions[0].price + .005);
-        const canAssign = allComplete && entries.every(e => e.row.capability === 'checkable') && candidates.length === 1
-          && aiMoneyCents((candidates[0].row.comparisonPrice - candidates[0].row.expectedOptions[0].price) * candidates[0].row.quantity) === aiMoneyCents(discount)
-          && entries.filter(e => e !== candidates[0]).every(e => Math.abs(e.row.comparisonPrice - e.row.expectedOptions[0].price) <= .02);
-        info.summaryStatus = canAssign ? 'הנחת הסיכום נפרדת משורות הנטו; שורת מבצע יחידה ושאר השורות תואמות מאפשרות שיוך לפי הכלל הקיים' : 'הנחה נפרדת בסיכום; אין מספיק ראיות לשיוך ההנחה לכל מוצר';
-        if (canAssign) {
-          const r = candidates[0].row;
-          r.chargedUnitPrice -= discount / r.quantity; r.comparisonPrice = r.chargedUnitPrice;
-          r.chargeDerivation += ' פחות הנחת סיכום ₪' + fmtMoney(discount) + ' ÷ ' + r.quantity + ' (שורת מבצע יחידה; שאר השורות תואמות)';
-        } else entries.forEach(e => { if (e.row.capability === 'checkable') { e.row.capability = 'partial'; e.row.reason = info.summaryStatus; e.row.chargedUnitPrice = null; } });
+        const plan = priceAuditSummaryPlan(entries, discount);
+        info.summaryStatus = plan.status;
+        if (plan.ok) {
+          plan.applied.forEach(({ entry, share, note }) => {
+            const r = entry.row;
+            r.chargedUnitPrice -= share / r.quantity; r.comparisonPrice = r.chargedUnitPrice;
+            r.chargeDerivation += ' פחות הנחת סיכום ₪' + fmtMoney(share) + ' ÷ ' + r.quantity + ' (' + note + ')';
+          });
+          // המבצע שלא נכלל בהרכב לא ירד בתעודה. זה ממצא מחיר מוכח, לא שורה
+          // שאי אפשר לבדוק, ולכן היא נשארת checkable ומגיעה להשוואה הרגילה.
+          plan.missed.forEach(e => { e.row.promoNotApplied = true; });
+        } else entries.forEach(e => { if (e.row.capability === 'checkable') { e.row.capability = 'partial'; e.row.reason = plan.rowReason || plan.status; e.row.chargedUnitPrice = null; } });
       } else if (discount > 0 && included) info.summaryStatus = 'ההנחה בסיכום כבר כלולה בסכומי השורות; לא הופחתה שוב';
       else if (discount > 0) info.summaryStatus = 'הנחת הסיכום אינה נסגרת מול סכומי השורות; אין חלוקה למוצרים';
     }
@@ -8867,7 +8951,9 @@ function receiptPriceAudit() {
         row.result = matches.length ? 'match' : 'difference';
         row.matchedForms = matches.map(o => o.label);
         row.expectedOptions = row.expectedOptions.map(o => ({ ...o, unitDifference: row.comparisonPrice - o.price, lineDifference: r2((row.comparisonPrice - o.price) * row.quantity) }));
-        row.reason = matches.length ? (matches.length > 1 ? 'המחיר מתאים לכמה צורות מחיר; לא ניתן לדעת איזו הנחה יושמה' : 'המחיר תואם: ' + matches[0].label) : 'המחיר בתעודה שונה מהמחיר שבמאגר';
+        row.reason = matches.length ? (matches.length > 1 ? 'המחיר מתאים לכמה צורות מחיר; לא ניתן לדעת איזו הנחה יושמה' : 'המחיר תואם: ' + matches[0].label)
+          : row.promoNotApplied ? 'המחיר בתעודה שונה מהמחיר שבמאגר: המבצע שבמאגר לא הופעל בתעודה — הנחת הסיכום מכסה את שאר שורות המבצע בלבד'
+          : 'המחיר בתעודה שונה מהמחיר שבמאגר';
       }
       out.rows.push(row);
     });
