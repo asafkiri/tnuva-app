@@ -95,6 +95,89 @@ test(supplier+': real price differences remain visible and financial handling is
  assert.ok(json(manual,'receiptPriceAudit().rows').some(r=>r.result==='difference'));
  assert.ok(manual.run('!!pendingReceipt.supplierCreditClaim || pendingReceipt.status === "open"'));
 });
+// v88: "קיבלנו הכול לפי התעודה" — סגירה בהסכמה של פער כמויות בלבד.
+const settleView=r=>{r.run('renderReconcile()');return r.node('app').innerHTML;};
+test(supplier+': settling to the paper closes exactly like a delivery that had no gap',async()=>{
+ const normal=await scanned(plainData());normal.run('finishReceipt()');closeNormal(normal);
+ const data=plainData();data.items[0].qty-=2;data.items[1].qty+=3;
+ const settled=await scanned(data);settled.run('finishReceipt()');
+ assert.match(settleView(settled),/rc-settle-to-paper/);
+ settled.click('rc-settle-to-paper');
+ // אין מה להכריע אחרי היישור, ולכן התעודה נסגרת בלי לשאול שוב.
+ assert.ok(settled.run('!!pendingReceipt'));
+ assert.deepEqual(finance(settled),finance(normal));
+ assert.equal(settled.run('receiptList.find(l=>l.productId==="milk").qty'),10);
+ assert.equal(settled.run('receiptList.find(l=>l.productId==="coffee").qty'),6);
+ assert.equal(settled.run('(aiScanEvaluation.findings||[]).filter(f=>f.type==="shortage"||f.type==="surplus").length'),0);
+ const audit=json(settled,'receiptQuantityCheckAudit()');
+ assert.equal(audit.method,'settled_to_paper');assert.deepEqual(audit.differences,[]);
+ assert.deepEqual(audit.settledToPaper.waived.map(w=>[w.productId,w.paperQty,w.received]),[['milk',10,8],['coffee',6,9]]);
+});
+test(supplier+': a product received instead of another closes per the paper and keeps both sides on record',async()=>{
+ const normal=await scanned(plainData());normal.run('finishReceipt()');closeNormal(normal);
+ const data=plainData();
+ data.items=[{productId:'milk',name:'מוצר ראשון',barcode:'7290000000008',qty:10},
+   {productId:'extra',name:'מוצר נוסף',barcode:'7290000000022',qty:6}];
+ const settled=await scanned(data);settled.run('finishReceipt()');
+ settled.click('rc-settle-to-paper');closeNormal(settled);
+ assert.deepEqual(finance(settled),finance(normal));
+ assert.equal(settled.run('receiptList.some(l=>l.productId==="extra")'),false);
+ assert.equal(settled.run('receiptList.find(l=>l.productId==="coffee").qty'),6);
+ assert.deepEqual(json(settled,'receiptQuantityCheckAudit().settledToPaper.waived').map(w=>[w.productId,w.paperQty,w.received]),
+   [['coffee',6,0],['extra',0,6]]);
+});
+test(supplier+': settling quantities never levels a price gap or an absent promotion',async()=>{
+ const data=plainData();data.items[0].qty-=2;
+ const r=await scanned(data);r.run('products[0].price=4;products[0].listPrice=4;finishReceipt()');
+ r.click('rc-settle-to-paper');
+ assert.equal(r.run('!!pendingReceipt'),false); // ממצא מחיר עוצר לאדם, גם אחרי ההסכמה על הכמויות
+ const types=json(r,'(aiScanEvaluation.findings||[]).map(f=>f.type)');
+ assert.equal(types.includes('shortage'),false);assert.ok(types.includes('price'));
+ assert.ok(json(r,'receiptPriceAudit().rows').some(row=>row.result==='difference'));
+ closeNormal(r);
+ assert.ok(r.run('!!pendingReceipt.supplierCreditClaim || pendingReceipt.status === "open"'));
+});
+test(supplier+': closing per the paper waits for confirmation and cannot double quantities',async()=>{
+ const data=plainData();data.items[0].qty-=2;
+ const r=await scanned(data);r.run('finishReceipt()');
+ r.run('showConfirm=(...args)=>{globalThis.pendingChoice=args[3]}');
+ r.click('rc-settle-to-paper');
+ assert.equal(r.run('receiptList.find(l=>l.productId==="milk").qty'),8);
+ assert.equal(r.run('receiptQuantityReview'),null);
+ r.run('pendingChoice()');const first=json(r,'receiptList');
+ assert.equal(first.find(l=>l.productId==='milk').qty,10);
+ r.run('showConfirm=(a,b,c,fn)=>fn();settleReceiptQuantitiesToPaper()');
+ assert.deepEqual(json(r,'receiptList'),first);
+});
+test(supplier+': the settle action is offered only for a quantity gap',async()=>{
+ const priceOnly=await scanned(plainData());priceOnly.run('products[0].price=4;products[0].listPrice=4;finishReceipt()');
+ assert.doesNotMatch(settleView(priceOnly),/rc-settle-to-paper/);
+ const data=plainData();data.items[0].qty-=2;
+ const gap=await scanned(data);gap.run('finishReceipt()');
+ assert.match(settleView(gap),/rc-settle-to-paper/);
+ // גם אחרי "אלה אכן הבעיות — אשר" ההסכמה עדיין זמינה, ליד סגירת החוסרים.
+ gap.click('ai-confirm-findings');assert.match(settleView(gap),/rc-settle-to-paper/);
+});
+test(supplier+': an unread or unmapped paper can never be settled to',async()=>{
+ for(const mutation of ['receiptPaperScanState="failed"','aiScanResponse.scan.documents=[]','products=[]']){
+  const data=plainData();data.items[0].qty-=2;
+  const r=await scanned(data);r.run('finishReceipt()');const before=json(r,'receiptList');
+  r.run(mutation);r.click('rc-settle-to-paper');
+  assert.deepEqual(json(r,'receiptList'),before);assert.equal(r.run('receiptQuantityReview'),null);
+ }
+});
+test(supplier+': the final save records that the quantities were settled to the paper',async()=>{
+ const cloud=supplier==='berman'?null:harness.fakeCloud();
+ const data=plainData();data.items[0].qty-=2;
+ const r=create({data,cloud});if(cloud)await cloud.tick();await r.scan();
+ r.run('receiptDupConfirmed=true;showConfirm=(a,b,c,fn)=>fn();finishReceipt()');
+ r.click('rc-settle-to-paper');closeNormal(r);
+ await r.run('confirmReceipt()');const saved=r.writes.find(w=>w.op==='set' && w.path.includes('receipts'));
+ assert.ok(saved);assert.equal(saved.data.quantityCheck.method,'settled_to_paper');
+ assert.deepEqual(saved.data.quantityCheck.settledToPaper.waived.map(w=>[w.productId,w.paperQty,w.received]),[['milk',10,8]]);
+ assert.equal(saved.data.items.find(i=>i.productId==='milk').qty,10);
+ assert.equal(saved.data.status,'ok');assert.equal(r.run('receiptQuantityReview'),null);
+});
 test(supplier+': final ordinary save records manual provenance and clears review with the draft',async()=>{
  const cloud=supplier==='berman'?null:harness.fakeCloud();
  const r=create({data:plainData(),cloud});if(cloud)await cloud.tick();await r.scan();
