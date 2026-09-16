@@ -702,7 +702,7 @@ let receiptDupConfirmed = false; // אישור שמירה למרות חשד לכ
 const RECEIPT_DRAFT_KEY = 'tn_receipt_draft';
 let receivingDigitsMissTimer = null;
 let receivingDigitsMissNotified = '';
-const APP_VERSION = '93'; // סגירת תעודה בהסכמה: קיבלנו הכול לפי התעודה
+const APP_VERSION = '94'; // סגירת תעודה בהסכמה: קיבלנו הכול לפי התעודה
 // גרסה 73: מוצר בלי מחיר קופה — חלון הכמות מציג מיד את העלות ליח׳ (ללא מע״מ) ופותח שדה להקלדת המחיר שעובר בקופה, בלי לנדוד למסך המחירים
 // v40: תג גרסה קבוע בפינת המסך — לדעת בשנייה איזו גרסה באמת רצה על המכשיר
 // (עוזר במיוחד מול מטמון ה-PWA). pointer-events:none — לעולם לא חוסם מגע.
@@ -8171,9 +8171,25 @@ function aiPaperSpan(bright, rough, width, height, axis) {
   const lo = paper * 0.80, hi = paper * 1.12;
   // הצמיחה רק מרחיבה את הגרעין ולעולם אינה מכווצת אותו: הגרעין כבר עבר
   // את מבחן הבהירות והחלקות, ואסור שמדרון תאורה יוריד ממנו.
-  let a = core.lo, b = core.hi;
-  while (a > 0 && rawP85[a - 1] >= lo && rawP85[a - 1] <= hi) a--;
-  while (b < n - 1 && rawP85[b + 1] >= lo && rawP85[b + 1] <= hi) b++;
+  //
+  // חספוס אינו פוסל פס בצמיחה, אבל ריצה מחוספסת ארוכה כן עוצרת אותה.
+  // ההבחנה נמדדה על צילומים אמיתיים: קמט בקבלה הוא פס מקומי של שתי
+  // עמודות, ואילו מחצלת כסופה מחוספסת לכל האורך. בלי הכלל הזה הצמיחה
+  // נמשכה לתוך המחצלת בצד שבו בהירותה יורדת בהדרגה ואין מדרגה לעצור בה.
+  const roughRun = Math.max(3, Math.round(n * 0.04));
+  const inBand = (i) => rawP85[i] >= lo && rawP85[i] <= hi;
+  let a = core.lo, b = core.hi, streak = 0;
+  while (a > 0 && inBand(a - 1)) {
+    streak = sd[a - 1] > smoothCut ? streak + 1 : 0;
+    if (streak > roughRun) break;
+    a--;
+  }
+  streak = 0;
+  while (b < n - 1 && inBand(b + 1)) {
+    streak = sd[b + 1] > smoothCut ? streak + 1 : 0;
+    if (streak > roughRun) break;
+    b++;
+  }
   return { lo: a, hi: b };
 }
 // יעד ההקטנה. ה-API מקטין כל תמונה לתקציב patches לפני שהמודל רואה אותה,
