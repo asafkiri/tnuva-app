@@ -699,7 +699,7 @@ let receiptDupConfirmed = false; // אישור שמירה למרות חשד לכ
 const RECEIPT_DRAFT_KEY = 'tn_receipt_draft';
 let receivingDigitsMissTimer = null;
 let receivingDigitsMissNotified = '';
-const APP_VERSION = '88'; // סגירת תעודה בהסכמה: קיבלנו הכול לפי התעודה
+const APP_VERSION = '89'; // סגירת תעודה בהסכמה: קיבלנו הכול לפי התעודה
 // גרסה 73: מוצר בלי מחיר קופה — חלון הכמות מציג מיד את העלות ליח׳ (ללא מע״מ) ופותח שדה להקלדת המחיר שעובר בקופה, בלי לנדוד למסך המחירים
 // v40: תג גרסה קבוע בפינת המסך — לדעת בשנייה איזו גרסה באמת רצה על המכשיר
 // (עוזר במיוחד מול מטמון ה-PWA). pointer-events:none — לעולם לא חוסם מגע.
@@ -7899,7 +7899,7 @@ function aiRefineCropEdges(data, width, height, box, analysis) {
 // לכן גם שולחן כהה בתוך הפריים אינו גונב את הניגודיות. אין חיתוך ואין
 // יישור: הכול נשאר בתמונה (רקע כהה פשוט נצבע שחור), ומסך אישור הכיוון
 // מציג את התוצאה לפני שנשלח דבר. תמונה שכבר חדה — לא נוגעים בה.
-function aiInkAnchorContrast(data, width, height) {
+function aiInkAnchorContrast(data, width, height, afterFlatten) {
   if (!width || !height || data.length < width * height * 4) return false;
   const x0 = Math.floor(width * 0.15), x1 = Math.ceil(width * 0.85);
   const y0 = Math.floor(height * 0.10), y1 = Math.ceil(height * 0.90);
@@ -7908,7 +7908,12 @@ function aiInkAnchorContrast(data, width, height) {
   for (let y = y0; y < y1; y++) {
     let i = (y * width + x0) * 4;
     for (let x = x0; x < x1; x++, i += 4) {
-      hist[((data[i] * 299 + data[i + 1] * 587 + data[i + 2] * 114) / 1000) | 0]++;
+      const v = ((data[i] * 299 + data[i + 1] * 587 + data[i + 2] * 114) / 1000) | 0;
+      // אחרי השטחת התאורה, 255 הוא ברובו תוצר קטימה ולא לובן אמיתי. ספירתו
+      // מושכת את אחוזון ה-99 כלפי מעלה, וה-LUT שנגזר ממנו מחשיך את הנייר —
+      // בדיוק מה שההבטחה למטה ("הנייר לעולם אינו מוחשך") שוללת.
+      if (afterFlatten && v >= 255) continue;
+      hist[v]++;
       total++;
     }
   }
@@ -7933,7 +7938,10 @@ function aiInkAnchorContrast(data, width, height) {
   for (let v = cut; v < 256; v++) { cum += hist[v]; if (cum >= lowTarget) { low = v; break; } }
   const span = high - low;
   if (span < 8) return false;
-  const slope = Math.min(3.0, 233 / span);
+  // על פיקסלים שכבר הושטחו, שיפוע 3.0 מרחיב את רצועת ההשחרה המוחלטת ובולע
+  // דיו פחמן דהוי. 1.8 נמדד כנקודה שבה ההפרדה דיו/נייר הגבוהה ביותר מושגת
+  // בלי להחשיך את הנייר. המסלול העצמאי (כשההשטחה ויתרה) נשאר כשהיה.
+  const slope = Math.min(afterFlatten ? 1.8 : 3.0, 233 / span);
   // עיגון על הלבן: הנייר תמיד ממופה ל-243, והדיו מוכהה לפי המרחק ממנו.
   // כך גם כשהשיפוע מוגבל, הנייר לעולם אינו מוחשך.
   const lut = new Uint8ClampedArray(256);
@@ -7950,7 +7958,7 @@ function aiInkAnchorContrast(data, width, height) {
 // נתפסת ב־try/catch שב־aiCompressInvoiceImage וממשיכים עם המקור.
 function aiEnhanceDocumentPixels(data, width, height) {
   const flattened = aiFlattenIllumination(data, width, height);
-  const anchored = aiInkAnchorContrast(data, width, height);
+  const anchored = aiInkAnchorContrast(data, width, height, flattened);
   return flattened || anchored;
 }
 function aiCanvasToInvoiceJpeg(canvas, startQuality) {
