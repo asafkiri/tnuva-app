@@ -702,7 +702,7 @@ let receiptDupConfirmed = false; // אישור שמירה למרות חשד לכ
 const RECEIPT_DRAFT_KEY = 'tn_receipt_draft';
 let receivingDigitsMissTimer = null;
 let receivingDigitsMissNotified = '';
-const APP_VERSION = '94'; // סגירת תעודה בהסכמה: קיבלנו הכול לפי התעודה
+const APP_VERSION = '95'; // סגירת תעודה בהסכמה: קיבלנו הכול לפי התעודה
 // גרסה 73: מוצר בלי מחיר קופה — חלון הכמות מציג מיד את העלות ליח׳ (ללא מע״מ) ופותח שדה להקלדת המחיר שעובר בקופה, בלי לנדוד למסך המחירים
 // v40: תג גרסה קבוע בפינת המסך — לדעת בשנייה איזו גרסה באמת רצה על המכשיר
 // (עוזר במיוחד מול מטמון ה-PWA). pointer-events:none — לעולם לא חוסם מגע.
@@ -8243,7 +8243,16 @@ function aiDetectPaperRegion(img, sourceWidth, sourceHeight, report) {
     if (spanX && spanY) {
       const tight = { x: spanX.lo, y: spanY.lo, width: spanX.hi - spanX.lo + 1, height: spanY.hi - spanY.lo + 1 };
       const area = (tight.width * tight.height) / (pw * ph);
-      if (area >= 0.10 && (!box || area <= (box.width * box.height) / (pw * ph))) {
+      // ההידוק רשאי רק **להדק** את מה שמנוע האריחים מצא, לעולם לא להזיז
+      // את המסגרת למקום אחר. בלי הבדיקה הזו, בצילום על מחצלת כסופה הגרעין
+      // ננעל על אזור חלק ובהיר של המחצלת — ארוך יותר מהקבלה — והמסגרת
+      // יצאה בקצה הפריים עם אפס טקסט בתוכה. שער השטח לבדו לא תפס את זה,
+      // כי המסגרת השגויה הייתה קטנה וזה נראה לו כמו הידוק מוצלח.
+      const inside = box
+        && tight.x >= box.x - 2 && tight.y >= box.y - 2
+        && tight.x + tight.width <= box.x + box.width + 2
+        && tight.y + tight.height <= box.y + box.height + 2;
+      if (area >= 0.10 && inside) {
         box = tight;
         report.reason = 'cropped';
       }
