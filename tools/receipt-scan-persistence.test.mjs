@@ -63,6 +63,24 @@ for(const s of suppliers) {
     assert.notEqual(fp('data:image/jpeg;base64,AAAA',{amount:50,lines:3}),fp('data:image/jpeg;base64,BBBB',{amount:50,lines:3}));
     assert.notEqual(fp('data:image/jpeg;base64,AAAA',null),fp('data:image/jpeg;base64,AAAAA',null));
   });
+  // שער שמחזיר HTML של שגיאה (502, 429, 413) אינו נתק: אין מה לאסוף, ואסור
+  // להבטיח שהסריקה ממשיכה. הסטטוס עצמו נשמר ביומן במקום להימחק.
+  test(s+': HEALTHY an HTTP error page is reported as a service error, not as a cut connection',async()=>{
+    const a=runtime(s);const original=a.context.fetch;let sent=0;
+    a.context.fetch=async(url,options)=>{
+      if(!String(url).endsWith('/scan')) return original(url,options);
+      sent++;
+      const body='<html><body>Error 1101 Worker threw exception</body></html>';
+      return {ok:false,status:502,text:async()=>body,json:async()=>JSON.parse(body)};
+    };
+    await a.scan();
+    assert.equal(a.run('receiptPaperScanState'),'failed');
+    const last=a.run('receiptScanHistory[receiptScanHistory.length-1].code');
+    assert.equal(last,'http_502','\u05d4\u05e1\u05d8\u05d8\u05d5\u05e1 \u05e0\u05e9\u05de\u05e8');
+    assert.equal(sent,1,'תשובת שירות אינה גוררת ניסיון חוזר');
+    assert.doesNotMatch(a.run('receiptScanHistory[receiptScanHistory.length-1].error'),/\u05de\u05de\u05e9\u05d9\u05db\u05d4 \u05d1\u05e9\u05e8\u05ea/);
+    assert.equal(a.run('aiScanCutKeys.size'),0,'\u05d0\u05d9\u05df \u05de\u05e4\u05ea\u05d7 \u05dc\u05d0\u05e1\u05d5\u05e3');
+  });
   // מסך של סריקה שנכשלה אומר את הסיבה, לא שש שורות "לא נקרא" על תעודה שמעולם
   // לא חזרה. ב-17.9 הרשימה הזאת הסתירה את הסיבה היחידה שבאמת קרתה.
   test(s+': HEALTHY a document that never came back says why, instead of six derived complaints',async()=>{

@@ -12252,6 +12252,14 @@ async function aiScanSendOnce(token, body) {
   let payload = null;
   try { payload = JSON.parse(text); } catch (error) { payload = null; }
   if (!payload || typeof payload !== 'object') {
+    // גוף שאינו JSON בסטטוס תקין = תשובה שנקטעה באמצע, ויש מה לאסוף. גוף כזה
+    // בסטטוס שגיאה (502 של שער, 429, 413) הוא תשובת שירות ולא נתק: אין מה
+    // לאסוף, ואסור להבטיח שהסריקה ממשיכה. הסטטוס עצמו נשמר ביומן.
+    if (!response.ok) {
+      const refused = new Error('שירות הסריקה החזיר שגיאה (HTTP ' + response.status + ')');
+      refused.code = 'http_' + response.status;
+      throw refused;
+    }
     const cut = new Error('החיבור נקטע לפני שהתשובה הגיעה במלואה');
     cut.networkFailure = true;
     cut.truncated = true;
@@ -12295,15 +12303,17 @@ async function aiRequestSingleDocScan(token, pages, expected) {
       }
       break;
     } catch (error) {
-      if (!error || !error.networkFailure || attempt >= AI_SCAN_NETWORK_RETRIES) {
+      if (!error || !error.networkFailure) throw error; // השירות ענה — לא ניסיון חוזר, ואין מה לאסוף
+      if (attempt >= AI_SCAN_NETWORK_RETRIES) {
         aiScanCutKeys.set(fingerprint, { key: scanKey, at: Date.now() }); // כדי שסריקה חוזרת תאסוף במקום לשלם שוב
-        const failure = new Error(((error && error.message) || 'הרשת נכשלה')
+        const failure = new Error(error.message
           + ' (' + (attempt + 1) + ' ניסיונות). הסריקה עצמה ממשיכה בשרת — נסה שוב ונאסוף אותה בלי צילום חדש.');
         failure.networkFailure = true;
-        failure.code = error && error.truncated ? 'connection_cut' : 'network_error';
+        failure.code = error.truncated ? 'connection_cut' : 'network_error';
         throw failure;
       }
       aiScanProgressText = (aiScanProgressText || '').split(' · ')[0] + ' · החיבור נפל, מתחבר מחדש לסריקה שכבר רצה…';
+      refreshScanHost(); // מסך הצילום מתעדכן דרך המארח, לא דרך מסך ההשוואה
       if (currentView === 'reconcile') renderReconcile();
       await new Promise(resolve => setTimeout(resolve, AI_SCAN_NETWORK_RETRY_DELAY_MS * (attempt + 1)));
     }
@@ -12402,19 +12412,26 @@ async function aiScanSingleDocPipeline(token, docIndex, inputDoc = aiScanDocumen
   let attempts = 1;
   let rotationText = '';
   let best = await runAttempt(inputDoc.pages);
+  // v107: סיבוב הוא ניסיון לשפר קריאה שכבר בידינו. נפילת רשת בו אינה סיבה
+  // לאבד אותה — היא רק אומרת שאין שיפור. עד כאן היא הפילה את התעודה כולה,
+  // וגם את הקריאה המוצלחת שכבר שולמה עליה (ושמפתח האיסוף שלה כבר נמחק).
+  const rotationAttempt = async (pages) => {
+    try { return await runAttempt(pages); }
+    catch (error) { if (error && error.networkFailure) return null; throw error; }
+  };
   if (!background && looksDisoriented(best) && AI_SCAN_MAX_AUTO_ROTATION_RETRIES > 0) {
     const rotatedPlus = await aiBuildRotatedDocuments([{ noteIndex: 0, pages: inputDoc.pages }], [0], 1);
-    const second = await runAttempt(rotatedPlus[0].pages);
+    const second = await rotationAttempt(rotatedPlus[0].pages);
     attempts = 2;
-    if (aiSingleDocScoreBetter(second.score, best.score)) { best = second; rotationText = 'תעודה ' + (docIndex + 1) + ' יושרה אוטומטית ב־90°'; }
+    if (second && aiSingleDocScoreBetter(second.score, best.score)) { best = second; rotationText = 'תעודה ' + (docIndex + 1) + ' יושרה אוטומטית ב־90°'; }
     if (looksDisoriented(best) && AI_SCAN_MAX_AUTO_ROTATION_RETRIES > 1) {
       const bestIsOriginal = best.pages === inputDoc.pages;
       const thirdSource = bestIsOriginal ? inputDoc.pages : best.pages;
       const thirdTurns = bestIsOriginal ? 3 : 2;
       const rotatedThird = await aiBuildRotatedDocuments([{ noteIndex: 0, pages: thirdSource }], [0], thirdTurns);
-      const third = await runAttempt(rotatedThird[0].pages);
+      const third = await rotationAttempt(rotatedThird[0].pages);
       attempts = 3;
-      if (aiSingleDocScoreBetter(third.score, best.score)) { best = third; rotationText = 'תעודה ' + (docIndex + 1) + ' יושרה אוטומטית בכיוון ההפוך'; }
+      if (third && aiSingleDocScoreBetter(third.score, best.score)) { best = third; rotationText = 'תעודה ' + (docIndex + 1) + ' יושרה אוטומטית בכיוון ההפוך'; }
     }
   }
   if (!best.doc) {
