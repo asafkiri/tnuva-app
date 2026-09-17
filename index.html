@@ -702,7 +702,7 @@ let receiptDupConfirmed = false; // אישור שמירה למרות חשד לכ
 const RECEIPT_DRAFT_KEY = 'tn_receipt_draft';
 let receivingDigitsMissTimer = null;
 let receivingDigitsMissNotified = '';
-const APP_VERSION = '99'; // מבצע בלי שורת הנחה שנקראה הוא "לא ידוע", לא האשמה
+const APP_VERSION = '100'; // מחלוקת שהמאגר מכריע אינה שאלה למשתמש
 // גרסה 73: מוצר בלי מחיר קופה — חלון הכמות מציג מיד את העלות ליח׳ (ללא מע״מ) ופותח שדה להקלדת המחיר שעובר בקופה, בלי לנדוד למסך המחירים
 // v40: תג גרסה קבוע בפינת המסך — לדעת בשנייה איזו גרסה באמת רצה על המכשיר
 // (עוזר במיוחד מול מטמון ה-PWA). pointer-events:none — לעולם לא חוסם מגע.
@@ -10056,6 +10056,29 @@ function receiptConsensusDisputes() {
   });
   return out;
 }
+// v100: לא כל מחלוקת בין שתי הקריאות היא שאלה למשתמש. מחלוקת על הקוד נפתרת
+// מאליה כששני תנאים מתקיימים יחד: הקוד שנבחר קיים במאגר והמחיר המודפס תואם
+// לו, והקוד השני אינו קיים במאגר כלל (או שהמחיר שולל אותו). צירוף כזה אינו
+// מקרי — קוד שגוי כמעט לעולם לא ייפול על מוצר שהמחיר המודפס מתאים לו בדיוק.
+// מחלוקת על סימון הכוכבית אינה נוגעת בזהות, בכמות או בכסף: הכוכבית מייצרת
+// ממצא מידע בלבד. ב-17.9 ארבע מחלוקות כאלה נשלחו למשתמש להכרעה — וכולן היו
+// כבר מוכרעות מול המאגר. מה שנשאר באמת פתוח, ורק הוא, עולה לאישור ידני.
+const RECEIPT_DISPUTE_INFORMATIONAL_FIELDS = new Set(['promoStar', 'sourcePage']);
+function receiptDisputeOpenFields(row, dispute) {
+  if (!dispute || !Array.isArray(dispute.fields)) return [];
+  const built = tnuvaBuildCodeIndex();
+  return dispute.fields.filter(item => {
+    const field = String((item && item.field) || '');
+    if (RECEIPT_DISPUTE_INFORMATIONAL_FIELDS.has(field)) return false;
+    if (field !== 'code') return true;
+    // הקוד שנבחר חייב להיות מזוהה, והמחיר המודפס חייב לאשר אותו.
+    if (!row || !row.productId || !row.printedVsCatalog || row.printedVsCatalog.off) return true;
+    // אם גם הקוד השני מוביל למוצר שהמחיר המודפס מתאים לו — הכסף אינו מכריע.
+    const other = tnuvaCodeOf(item.other) || String(item.other == null ? '' : item.other).replace(/\D/g, '').replace(/^0+/, '');
+    const rival = other && !built.ambiguous.has(other) ? built.map.get(other) : null;
+    return !!(rival && Math.abs(Number(rival.price) - Number(row.originalUnitPrice)) <= PRICE_AUDIT_UNIT_TOLERANCE);
+  });
+}
 function receiptScanDoc(documentIndex) {
   return ((aiScanResponse && aiScanResponse.scan && aiScanResponse.scan.documents) || [])
     .find(doc => Number(doc && doc.noteIndex) === Number(documentIndex)) || null;
@@ -10067,15 +10090,18 @@ function receiptFindAuditRow(documentIndex, sourceIndex) {
 }
 function receiptRowActions(report) {
   const a = report || receiptPriceAudit();
-  const out = { state: a.state, unidentified: [], disputed: [], priced: [], decided: 0, total: 0 };
+  const out = { state: a.state, unidentified: [], disputed: [], priced: [], decided: 0, settled: 0, total: 0 };
   if (a.state !== 'ready') return out;
   const disputes = receiptConsensusDisputes();
   a.rows.forEach(row => {
     const dispute = disputes.get(Number(row.documentIndex) + ':' + Number(row.sourceIndex)) || null;
+    const openFields = receiptDisputeOpenFields(row, dispute);
+    const open = dispute && openFields.length ? Object.assign({}, dispute, { fields: openFields }) : null;
+    if (dispute && !open) out.settled += 1; // המאגר הכריע; נאמר, לא נשאל
     if (receiptRowDecision(row)) { out.decided += 1; return; }
     if (row.capability === 'unidentified') out.unidentified.push({ row, dispute });
     else if (row.result === 'difference' || (row.printedVsCatalog && row.printedVsCatalog.off)) out.priced.push({ row, dispute });
-    else if (dispute) out.disputed.push({ row, dispute });
+    else if (open) out.disputed.push({ row, dispute: open });
   });
   out.total = out.unidentified.length + out.disputed.length + out.priced.length;
   return out;
@@ -10106,9 +10132,11 @@ function receiptRowHeadHtml(row) {
 }
 function receiptRowActionsHtml(report) {
   const actions = receiptRowActions(report);
+  const settledLine = actions.settled ? actions.settled + ' מחלוקות בין שתי הקריאות הוכרעו מול המאגר' : '';
   if (!actions.total) {
-    return actions.decided ? '<section class="rounded-xl border border-emerald-200 bg-emerald-50 p-2.5 mb-2 text-sm font-bold text-emerald-900" dir="rtl">' +
-      actions.decided + ' שורות אושרו ידנית בתעודה הזאת.</section>' : '';
+    const parts = [actions.decided ? actions.decided + ' שורות אושרו ידנית בתעודה הזאת' : '', settledLine].filter(Boolean);
+    return parts.length ? '<section class="rounded-xl border border-emerald-200 bg-emerald-50 p-2.5 mb-2 text-sm font-bold text-emerald-900" dir="rtl">' +
+      htmlEscape(parts.join(' · ')) + '.</section>' : '';
   }
   const newCards = actions.unidentified.map(({ row, dispute }) =>
     '<article class="rounded-xl border border-violet-200 bg-white p-3 mt-2">' +
@@ -10155,7 +10183,8 @@ function receiptRowActionsHtml(report) {
   return '<section data-row-actions class="rounded-xl border-2 border-violet-300 bg-white p-2.5 mb-2 text-sm" dir="rtl" aria-label="שורות שדורשות החלטה">' +
     '<div class="font-black text-violet-900" role="status">' + actions.total + ' שורות דורשות החלטה לפני הקליטה' +
     (actions.decided ? ' · ' + actions.decided + ' שורות אושרו ידנית' : '') + '</div>' +
-    '<div class="text-[11px] font-bold text-slate-500 mt-0.5">כל החלטה נשמרת בטיוטה ואינה משנה את מה שנקרא מהנייר.</div>' +
+    '<div class="text-[11px] font-bold text-slate-500 mt-0.5">כל החלטה נשמרת בטיוטה ואינה משנה את מה שנקרא מהנייר.' +
+      (settledLine ? ' ' + htmlEscape(settledLine) + ' ולא נשאלו כאן.' : '') + '</div>' +
     newCards + disputedCards + priceCards + '</section>';
 }
 function receiptConfirmDisputedRow(documentIndex, sourceIndex) {

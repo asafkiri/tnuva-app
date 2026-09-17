@@ -54,11 +54,55 @@ const actions = c => JSON.parse(c.run(`JSON.stringify((function(){ const a = rec
   return { state: a.state, decided: a.decided, total: a.total,
     unidentified: a.unidentified.map(x => ({ line: x.row.line, code: x.row.code, doc: x.row.documentIndex, source: x.row.sourceIndex })),
     priced: a.priced.map(x => ({ line: x.row.line, name: x.row.name, printed: x.row.originalUnitPrice, catalog: x.row.catalogBasePrice, doc: x.row.documentIndex, source: x.row.sourceIndex })),
-    disputed: a.disputed.map(x => ({ line: x.row.line, fields: x.dispute.fields })) };
+    settled: a.settled, disputed: a.disputed.map(x => ({ line: x.row.line, fields: x.dispute.fields })) };
 })())`));
 const html = c => { c.run('renderReceiving()'); return c.node('app').innerHTML; };
 const paperWith = changes => ({ paper: { ...data.paper, scan: { warnings: [], documents: [{ ...document, ...changes }] } } });
 const today = new Date().toLocaleDateString('en-CA');
+// מחלוקת על שורה 1 (קוד 14761056, מודפס ₪3.47 — בדיוק מחיר המאגר).
+const disputeOnFirstRow = fields => ({ paper: { ...data.paper,
+  consensus: { ...consensus, disputedRows: [{ noteIndex: 0, rowIndex: 0, lineNumber: 1, code: '14761056', description: 'מעדן שוקולד חלב YOLO', fields }] },
+  scan: { warnings: [], documents: [document] } } });
+
+test('a code disagreement the catalog can settle by itself is not a question for the user', async () => {
+  // הקוד השני אינו קיים במאגר, והמחיר המודפס מאשר את הקוד שנבחר.
+  const c = await scanned(disputeOnFirstRow([{ field: 'code', selected: '14761056', other: '99999999' }]));
+  const list = actions(c);
+  assert.deepEqual(list.disputed, [], 'nothing to decide');
+  assert.equal(list.settled, 1);
+  // שאר השורות של התעודה הזאת (שני קודים שאינם במאגר ושורת מחיר) אינן קשורות.
+  assert.equal(list.total, 3);
+  // מה שהוכרע נאמר, ולא נעלם בשקט.
+  assert.match(html(c), /1 מחלוקות בין שתי הקריאות הוכרעו מול המאגר/);
+});
+
+test('a code disagreement where both codes fit the printed price stays a question', async () => {
+  // שני מוצרי YOLO במחיר זהה: הכסף אינו מכריע ביניהם, ולכן המשתמש כן נשאל.
+  const c = await scanned(disputeOnFirstRow([{ field: 'code', selected: '14761056', other: '14761414' }]));
+  const list = actions(c);
+  assert.deepEqual(list.disputed.map(item => item.line), [1]);
+  assert.equal(list.settled, 0);
+  assert.match(html(c), /הסריקות נחלקו על השורה/);
+});
+
+test('a promotion star disagreement never blocks a receipt, and a quantity disagreement always does', async () => {
+  const star = actions(await scanned(disputeOnFirstRow([{ field: 'promoStar', selected: true, other: false }])));
+  assert.deepEqual(star.disputed, [], 'the star only produces an informational finding');
+  assert.equal(star.settled, 1);
+  const qty = actions(await scanned(disputeOnFirstRow([{ field: 'quantity', selected: 10, other: 16 }])));
+  assert.deepEqual(qty.disputed.map(item => item.line), [1], 'a quantity is money');
+  assert.equal(qty.settled, 0);
+});
+
+test('a code disagreement on a row whose printed price contradicts the catalog stays open', async () => {
+  const c = await scanned();
+  // שורה 4: מודפס ₪6.77 מול ₪2.58 במאגר — הכסף אינו מאשר את הקוד שנבחר.
+  const open = c.run(`JSON.stringify((function(){
+    const row = receiptPriceAudit().rows.find(r => r.line === 4);
+    return receiptDisputeOpenFields(row, { fields: [{ field: 'code', selected: '72961506', other: '99999999' }] });
+  })())`);
+  assert.equal(JSON.parse(open).length, 1, 'an unconfirmed price cannot settle an identity');
+});
 
 test('a date the photo did not carry falls back to today, says so, and stays editable', async () => {
   const c = await scanned(paperWith({ docDate: null }));
