@@ -97,16 +97,42 @@ test('a row-count disagreement between the reads is never a question on every ro
   assert.equal(list.settled, 0, 'and nothing is announced as settled against the catalog — there was no dispute');
   assert.equal(list.total, 2, 'the unrelated open rows of this paper (unread code, price difference) stay');
   assert.doesNotMatch(html(c), /מספר שורות: 4 מול 5/);
-  // שדה אמיתי על אותה שורה עדיין נשאל — בלי שורת "מספר שורות" לצידו.
+  // שדה נוסף לצד "מספר שורות" הוא השוואה של שורה מול שכנתה — חתימת השרת הישן —
+  // ולכן המחלוקת כולה נזרקת, לא רק השורה של מספר השורות.
   const mixed = await scanned(disputeOnFirstRow([{ field: 'rowCount', selected: 4, other: 5 }, { field: 'quantity', selected: 10, other: 16 }]));
-  assert.deepEqual(actions(mixed).disputed.map(item => [item.line, item.fields.map(field => field.field)]), [[1, ['quantity']]]);
+  assert.deepEqual(actions(mixed).disputed, []);
+  assert.equal(actions(mixed).settled, 0);
   assert.doesNotMatch(html(mixed), /מספר שורות: 4 מול 5/);
 });
 
 test('a row only the winning read saw is raised as a question about the row itself', async () => {
-  const c = await scanned(disputeOnFirstRow([{ field: 'row', selected: 'נקראה', other: null }]));
+  const c = await scanned(disputeOnFirstRow([{ field: 'row', selected: 'נקראה', other: null, confirmed: 0 }]));
   assert.deepEqual(actions(c).disputed.map(item => item.line), [1]);
-  assert.match(html(c), /השורה עצמה: נקראה מול לא נקרא/);
+  assert.match(html(c), /רק הקריאה שנבחרה ראתה את השורה הזאת/);
+});
+
+test('a code another read confirms is settled by the catalog even when the rival fits the price too', async () => {
+  // שני מוצרי YOLO במחיר זהה: בלי אישור מקריאה נוספת המשתמש נשאל (הבדיקה
+  // הקודמת); כשהמודל היקר וקריאה זולה קראו אותו דבר — המאגר והמחיר סוגרים.
+  const c = await scanned(disputeOnFirstRow([{ field: 'code', selected: '14761056', other: '14761414', confirmed: 1 }]));
+  const list = actions(c);
+  assert.deepEqual(list.disputed, []);
+  assert.equal(list.settled, 1);
+  // קוד שנבחר שאינו במאגר אינו הופך לזהות רק כי קריאה נוספת קראה אותו: הקוד
+  // היריב, שכן במאגר ומחירו מאשר, הוא שמשייך את השורה — ולכן השרת חייב למסור
+  // אותו גם כשהקוד שנבחר מאושר (12:29, "שוקו 1.5%": שתי קריאות טעו יחד).
+  const withCode = (code, other) => ({ paper: { ...data.paper,
+    consensus: { ...consensus, disputedRows: [{ noteIndex: 0, rowIndex: 0, lineNumber: 1, code, description: rows[0].description,
+      fields: [{ field: 'code', selected: code, other, confirmed: 1 }] }] },
+    scan: { warnings: [], documents: [{ ...document, rows: rows.map((row, index) => index === 0 ? { ...row, code } : row) }] } } });
+  const rival = await scanned(withCode('99999999', '14761414'));
+  assert.ok(!actions(rival).unidentified.some(item => item.line === 1), 'the rival code the catalog knows matches the row although another read confirmed the unknown one');
+  const matched = JSON.parse(rival.run("JSON.stringify(aiScanResponse.scan.documents[0].rows[0])"));
+  assert.equal(matched.__tnuvaProductId, 'p_yolo_layers');
+  assert.equal(matched.barcodeMatchMethod, 'tnuva_code_second_read');
+  // ובלי יריב שהמאגר מכיר — השורה נשארת שאלה, לא מוצר.
+  const unknown = await scanned(withCode('99999999', '88888888'));
+  assert.deepEqual(actions(unknown).unidentified.map(item => item.line), [1, 3]);
 });
 
 test('a promotion star disagreement never blocks a receipt, and a quantity disagreement always does', async () => {
