@@ -57,6 +57,59 @@ const actions = c => JSON.parse(c.run(`JSON.stringify((function(){ const a = rec
     disputed: a.disputed.map(x => ({ line: x.row.line, fields: x.dispute.fields })) };
 })())`));
 const html = c => { c.run('renderReceiving()'); return c.node('app').innerHTML; };
+const paperWith = changes => ({ paper: { ...data.paper, scan: { warnings: [], documents: [{ ...document, ...changes }] } } });
+const today = new Date().toLocaleDateString('en-CA');
+
+test('a date the photo did not carry falls back to today, says so, and stays editable', async () => {
+  const c = await scanned(paperWith({ docDate: null }));
+  const doc = JSON.parse(c.run('JSON.stringify(receiptPriceAudit().documents[0])'));
+  assert.equal(doc.date, today);
+  assert.equal(doc.dateAssumed, true);
+  // התאריך המונח אינו חוסם שורות: המחירים נבדקים, והמבצעים נשפטים לפי היום.
+  assert.equal(c.run("JSON.stringify(receiptPriceAudit().rows.filter(r => r.reason === 'חסר תאריך תעודה לבדיקת תוקף המבצע').length)"), '0');
+  const view = html(c);
+  assert.match(view, /התאריך לא נקרא מהנייר. הבדיקה מניחה את היום/);
+  assert.match(view, /data-role="price-doc-date"/);
+  // שינוי ידני מפסיק להיות הנחה ומחושב מחדש מיד.
+  c.run("priceAuditSetDate(0, '2026-09-10')");
+  const fixed = JSON.parse(c.run('JSON.stringify(receiptPriceAudit().documents[0])'));
+  assert.equal(fixed.date, '2026-09-10');
+  assert.equal(fixed.dateAssumed, false);
+  assert.doesNotMatch(html(c), /הבדיקה מניחה את היום/);
+});
+
+test('a date that was read from the paper is not replaced by today', async () => {
+  const c = await scanned();
+  const doc = JSON.parse(c.run('JSON.stringify(receiptPriceAudit().documents[0])'));
+  assert.equal(doc.date, '2026-09-17');
+  assert.equal(doc.dateAssumed, false);
+});
+
+test('a summary that does not close shows the arithmetic instead of asking for a number out of thin air', async () => {
+  // שורת הסיכום נקראה בפחות 60 ₪ — בדיוק הכשל של 17.9, ספרה אחת בסכום.
+  const printed = r => Math.round((r - 60) * 100) / 100;
+  const c = await scanned(paperWith({ subtotalExVat: printed(sum), netToChargeExVat: printed(sum) }));
+  assert.equal(c.run('receiptPaperScanState'), 'failed');
+  const banner = c.run('tnuvaPaperStatusHtml()');
+  assert.match(banner, /החשבון שנקרא מהנייר/);
+  assert.match(banner, new RegExp('שורות הפריטים \\(4\\): ₪' + sum.toFixed(2)));
+  assert.match(banner, new RegExp('לפי החשבון הזה הסיכום הוא ₪' + sum.toFixed(2)));
+  assert.match(banner, new RegExp('מה שנקרא בשורת "סהכ חייב מעמ": ₪' + printed(sum).toFixed(2)));
+  assert.match(banner, /הפרש ₪60\.00 — אחד משני המספרים נקרא שגוי/);
+  assert.match(banner, /הקלד עם הסיכום המחושב/);
+  assert.match(banner, /הקלד עם המספר שנקרא/);
+});
+
+test('choosing one of the two numbers fills the manual entry instead of leaving it blank', async () => {
+  const c = await scanned(paperWith({ subtotalExVat: Math.round((sum - 60) * 100) / 100 }));
+  c.click('rc-anchor-entry', null, { doc: '0', basis: 'computed' });
+  assert.equal(c.run('receiptEntryMode'), 'manual');
+  // הסכום נכנס לשדה מעוגל לאגורה, ולא כזנב הצף של חיבור השורות.
+  assert.equal(c.run('JSON.stringify(receiptManualInput)'), JSON.stringify({ amount: '248.96', count: '4' }));
+  assert.match(html(c), /id="rcNoteInput" value="248\.96"/, 'the number is in the field, not in the user head');
+  // הבחירה אינה הופכת את הנייר למאומת.
+  assert.notEqual(c.run('receiptAnchorSource'), 'paper');
+});
 
 test('a code the catalog does not know reaches the receiving screen as a decision, not as silence', async () => {
   const c = await scanned();

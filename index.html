@@ -702,7 +702,7 @@ let receiptDupConfirmed = false; // אישור שמירה למרות חשד לכ
 const RECEIPT_DRAFT_KEY = 'tn_receipt_draft';
 let receivingDigitsMissTimer = null;
 let receivingDigitsMissNotified = '';
-const APP_VERSION = '97'; // סריקה כפולה, מוצר חדש מהקליטה ואישור מחיר וברקוד בשורה
+const APP_VERSION = '98'; // תאריך שלא נקרא מונח כהיום, וסיכום שלא נסגר מציג את החשבון
 // גרסה 73: מוצר בלי מחיר קופה — חלון הכמות מציג מיד את העלות ליח׳ (ללא מע״מ) ופותח שדה להקלדת המחיר שעובר בקופה, בלי לנדוד למסך המחירים
 // v40: תג גרסה קבוע בפינת המסך — לדעת בשנייה איזו גרסה באמת רצה על המכשיר
 // (עוזר במיוחד מול מטמון ה-PWA). pointer-events:none — לעולם לא חוסם מגע.
@@ -1019,7 +1019,8 @@ function tnuvaPaperCheck(input, pageCount) {
   return { ok: problems.length === 0, receivable: !problems.length && !review.length,
     problems, review, missingSummary, retryable: problems.length > 0 && !missingSummary,
     amount: subtotal == null ? null : subtotal / 100, lines: printedLines == null ? null : printedLines,
-    units, rowAmount: net / 100, rowLines: itemLines, returnLines, promo: promo / 100 };
+    units, rowAmount: net / 100, rowLines: itemLines, returnLines, promo: promo / 100,
+    itemsAmount: itemsCents / 100, returnsAmount: returnsCents / 100 };
 }
 
 function tnuvaResetPhotoReceipt() {
@@ -1096,9 +1097,59 @@ function tnuvaPaperStatusHtml() {
   if (receiptPaperScanState === 'ok') return '<div class="rounded-xl bg-emerald-50 border border-emerald-200 p-2 mb-2 text-[11px] font-black text-emerald-800"><i class="fa-solid fa-file-circle-check"></i> התעודה נקראה ואומתה · השוואת הכמויות בסיום הקליטה</div>';
   if (receiptPaperScanState === 'failed' || receiptPaperScanState === 'interrupted') return '<div class="rounded-xl bg-amber-50 border border-amber-300 p-3 mb-3 text-sm font-bold text-amber-900">אפשר להמשיך בספירה. לפני הסיום צריך להשלים את נתוני התעודה.' +
     '<div class="mt-1 text-xs">' + receiptPaperScanProblems.map(htmlEscape).join('<br>') + '</div>' +
+    tnuvaAnchorRepairHtml() +
     '<button data-role="rc-photo-repair" class="btn-tap w-full bg-white border border-amber-300 rounded-xl py-2 mt-2">בדוק צילומים / הוסף עמוד חסר</button>' +
     '<button data-role="rc-photo-manual" class="btn-tap w-full py-2 text-xs underline">או הקלד סכום ומספר פריטים</button></div>';
   return '';
+}
+// v98: כשחשבון הנייר אינו נסגר, עד כאן נמחק כל מה שנקרא והמשתמש התבקש להקליד
+// סכום מאפס — בלי שום מספר להשוות אליו. כך נכנס ב-17.9 סכום שנפל ב-60 ₪ משורת
+// הסיכום המודפסת, ואיש לא ראה. כאן מוצג החשבון עצמו: סכום השורות, סד ההנחה,
+// הסיכום שנגזר מהם, ומה שנקרא בשורת הסיכום — עם ההפרש ביניהם. הנייר מכריע,
+// והמשתמש בוחר איזה מספר להקליד במקום לנחש.
+function tnuvaAnchorRepairHtml() {
+  const documents = (aiScanResponse && aiScanResponse.scan && aiScanResponse.scan.documents) || [];
+  const money = value => '₪' + fmtMoney(value);
+  return aiScanDocuments.map((input, index) => {
+    const doc = documents.find(item => Number(item && item.noteIndex) === index);
+    if (!doc) return '';
+    const check = tnuvaPaperCheck(doc, input.pages.length || input.restoredPageCount || 0);
+    if (check.receivable) return '';
+    const computed = Number(check.rowAmount), printed = check.amount == null ? null : Number(check.amount);
+    if (!(computed > 0) && printed == null) return '';
+    const gap = printed == null ? null : r2(computed - printed);
+    const label = aiScanDocuments.length > 1 ? 'תעודה ' + (index + 1) + ' · ' : '';
+    return '<div class="rounded-xl bg-white border border-amber-300 p-2.5 mt-2 text-xs font-bold text-slate-700" dir="rtl">' +
+      '<div class="font-black text-slate-800 mb-1">' + htmlEscape(label) + 'החשבון שנקרא מהנייר</div>' +
+      '<div>שורות הפריטים (' + check.rowLines + '): ' + money(check.itemsAmount) + '</div>' +
+      (check.promo ? '<div>סד הנחה בגין מבצעים: ' + money(-check.promo) + '</div>' : '') +
+      (check.returnsAmount ? '<div>מקטע החזרות: ' + money(-check.returnsAmount) + '</div>' : '') +
+      '<div class="font-black text-slate-800">לפי החשבון הזה הסיכום הוא ' + money(computed) + '</div>' +
+      '<div class="mt-1">מה שנקרא בשורת "סהכ חייב מעמ": ' + (printed == null ? 'לא נקרא' : money(printed)) + '</div>' +
+      (gap ? '<div class="text-rose-700 font-black mt-1">הפרש ' + money(Math.abs(gap)) + ' — אחד משני המספרים נקרא שגוי. מה שמודפס על הנייר מכריע.</div>' : '') +
+      '<div class="grid gap-2 mt-2">' +
+        (computed > 0 ? '<button data-role="rc-anchor-entry" data-doc="' + index + '" data-basis="computed" class="btn-tap w-full rounded-lg bg-amber-600 text-white py-2.5 font-black">הקלד עם הסיכום המחושב ' + money(computed) + '</button>' : '') +
+        (printed != null && printed > 0 && gap ? '<button data-role="rc-anchor-entry" data-doc="' + index + '" data-basis="printed" class="btn-tap w-full rounded-lg bg-white border border-amber-300 text-amber-900 py-2.5 font-black">הקלד עם המספר שנקרא ' + money(printed) + '</button>' : '') +
+      '</div></div>';
+  }).join('');
+}
+// הבחירה אינה הופכת את הנייר למאומת: היא ממלאת מראש את אותה הזנה ידנית,
+// כדי שהמשתמש יראה את המספר ויאשר אותו במקום להקליד אותו בעיניים עצומות.
+function tnuvaStartAnchorEntry(index, basis) {
+  const documents = (aiScanResponse && aiScanResponse.scan && aiScanResponse.scan.documents) || [];
+  const input = aiScanDocuments[Number(index)];
+  const doc = documents.find(item => Number(item && item.noteIndex) === Number(index));
+  if (!input || !doc) { showToast('התעודה כבר אינה בפענוח — רענן את המסך', null, null, 3200); return false; }
+  const check = tnuvaPaperCheck(doc, input.pages.length || input.restoredPageCount || 0);
+  const amount = basis === 'printed' ? check.amount : check.rowAmount;
+  const lines = basis === 'printed' ? check.lines : check.rowLines;
+  if (!(Number(amount) > 0)) { showToast('אין מספר תקין לאמץ — הקלד ידנית', null, null, 3200); return false; }
+  switchReceiptEntryMode('manual');
+  receiptManualInput = { amount: String(r2(amount)), count: Number(lines) > 0 ? String(lines) : '' };
+  editingNotes = true;
+  saveReceiptDraft(); renderReceiving();
+  showToast('המספר מולא — בדוק אותו מול הנייר ולחץ "הוסף"', null, null, 4200);
+  return true;
 }
 function tnuvaAdoptPaperAnchors() {
   const returned = aiScanResponse && aiScanResponse.scan && aiScanResponse.scan.documents || [];
@@ -9630,12 +9681,19 @@ function priceAuditDocumentDay(doc, source) {
   const paper = source === undefined ? (doc && Array.isArray(doc.rows) ? priceAuditSource(doc) : null) : source;
   return priceAuditDate((doc && doc.__priceConfirmedDate) || (paper && paper.docDate) || (typeof receiptDocDate !== 'undefined' && receiptDocDate));
 }
+// v98: תאריך שלא נקרא מהנייר עצר עד כאן את כל בדיקת המחירים וביקש הקלדה.
+// תעודה נקלטת ביום שהיא מגיעה, ולכן ההנחה היא היום — אבל היא נאמרת כהנחה,
+// מוצגת פתוחה לעריכה, ולעולם אינה מתחזה לתאריך שנקרא מהנייר.
+function priceAuditEffectiveDay(doc, source) {
+  const read = priceAuditDocumentDay(doc, source);
+  return { day: read || priceAuditDate(todayStr()), assumed: !read };
+}
 // Documents that disagree keep the previous behaviour rather than letting one
 // document's date speak for the rest of the receipt.
 function priceAuditPromoDay() {
   const docs = (aiScanResponse && aiScanResponse.scan && aiScanResponse.scan.documents) || [];
   const days = new Set();
-  docs.forEach(doc => { const day = priceAuditDocumentDay(doc); if (day) days.add(day); });
+  docs.forEach(doc => { const day = priceAuditEffectiveDay(doc).day; if (day) days.add(day); });
   return days.size === 1 ? days.values().next().value : activeReceiptDate();
 }
 // תנובה מדפיסה כל שורה בברוטו ומרכזת את כל הנחות המבצע בשורת סיכום אחת
@@ -9734,9 +9792,9 @@ function receiptPriceAudit() {
   docs.forEach((doc, di) => {
     const source = sources[di], rawRows = source && source.rows || doc.rows || [];
     const relevant = rawRows.map((raw, sourceIndex) => ({ raw, sourceIndex })).filter(x => x.raw.section !== 'returns');
-    const day = priceAuditDocumentDay(doc, source);
+    const { day, assumed: dateAssumed } = priceAuditEffectiveDay(doc, source);
     const docId = doc.__priceSourceId || (aiScanDocuments[doc.noteIndex] || {}).scanId || String(receiptDraftId) + ':' + doc.noteIndex;
-    const info = { id: docId, index: doc.noteIndex, number: (source && (source.docNumber || source.invoiceNumber)) || doc.invoiceNumber || null, date: day, complete: allComplete, summaryDiscount: 0, summaryStatus: '' };
+    const info = { id: docId, index: doc.noteIndex, number: (source && (source.docNumber || source.invoiceNumber)) || doc.invoiceNumber || null, date: day, dateAssumed, complete: allComplete, summaryDiscount: 0, summaryStatus: '' };
     out.documents.push(info);
     const entries = relevant.map(({ raw, sourceIndex }, index) => {
       const mapped = (doc.rows || [])[index], product = source ? priceAuditIdentity(mapped, raw) : null;
@@ -9899,7 +9957,11 @@ function receiptPriceAuditHtml(report, options) {
     '<span role="status">' + title + ' · ' + badge + '</span><i class="fa-solid fa-chevron-down hist-chevron shrink-0"></i></summary>' +
     '<div class="mt-1">' + differences.length + ' שורות עם פער · ' + missing.length + ' שורות שלא ניתן לבדוק</div>' +
     '<div class="text-xs text-slate-600 mt-1">ללא מע״מ · אותה יחידת מוצר · פיקדון בנפרד · לפי הכמות בנייר. הספירה אינה משפיעה על בדיקה זו.</div>' +
-    a.documents.map(d => ((!d.date ? '' : '<details><summary class="cursor-pointer mt-2">תאריך התעודה: ' + htmlEscape(d.date) + ' · עריכה</summary>') + '<label class="block mt-2 font-bold">השלם תאריך לתעודה ' + htmlEscape(d.number || String(d.index + 1)) + '<input type="date" data-role="price-doc-date" data-doc="' + d.index + '" value="' + htmlEscape(d.date || '') + '" class="block w-full border rounded-lg p-2 mt-1" aria-label="תאריך התעודה לבדיקת מחירים"></label>' + (d.date ? '</details>' : '')) +
+    // תאריך שנקרא מהנייר מקופל; תאריך שהונח פתוח, אומר שהוא הנחה, ומזמין שינוי.
+    a.documents.map(d => ((d.dateAssumed
+      ? '<div class="mt-2 rounded-lg bg-amber-50 border border-amber-200 p-2 text-xs font-bold text-amber-900">התאריך לא נקרא מהנייר. הבדיקה מניחה את היום, ' + htmlEscape(d.date) + ' — שנה אם התעודה מתאריך אחר.</div>'
+      : '<details><summary class="cursor-pointer mt-2">תאריך התעודה: ' + htmlEscape(d.date) + ' · עריכה</summary>') +
+      '<label class="block mt-2 font-bold">' + (d.dateAssumed ? 'תאריך התעודה ' : 'השלם תאריך לתעודה ') + htmlEscape(d.number || String(d.index + 1)) + '<input type="date" data-role="price-doc-date" data-doc="' + d.index + '" value="' + htmlEscape(d.date || '') + '" class="block w-full border rounded-lg p-2 mt-1" aria-label="תאריך התעודה לבדיקת מחירים"></label>' + (d.dateAssumed ? '' : '</details>')) +
       (d.summaryDiscount ? '<div class="mt-2 text-xs">הנחה בסיכום תעודה ' + htmlEscape(d.number || String(d.index + 1)) + ': ' + money(d.summaryDiscount) + ' · ' + htmlEscape(d.summaryStatus) + '</div>' : '')).join('') +
     '<details data-price-details><summary class="cursor-pointer font-black py-3">פתח פירוט מחירים ומצבים לבדיקה (' + a.rows.length + ')</summary>' + cards + '</details></details></section>';
 }
@@ -19853,6 +19915,7 @@ app.addEventListener('click', (e) => {
   if (role === 'an-copy') { anCopyText(t.dataset.what === 'product' ? anProductText(anSelectedKey) : anSummaryText()); return; }
   if (role === 'rc-draft-retry') { flushReceiptDraftToCloud(); return; }
   if (role === 'rc-draft-cloud' || role === 'rc-draft-local') { resolveReceiptDraftConflict(role === 'rc-draft-local'); return; }
+  if (role === 'rc-anchor-entry') { if (!aiScanBusy) tnuvaStartAnchorEntry(parseInt(t.dataset.doc, 10), t.dataset.basis); return; }
   if (role.startsWith('rc-photo-')) {
     if (aiScanBusy) return;
     const docIndex = Number(t.dataset.doc) || 0;
