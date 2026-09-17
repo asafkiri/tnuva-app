@@ -85,6 +85,30 @@ test('a code disagreement where both codes fit the printed price stays a questio
   assert.match(html(c), /הסריקות נחלקו על השורה/);
 });
 
+test('a row-count disagreement between the reads is never a question on every row', async () => {
+  // 17.9, 16:07: קריאה אחת ראתה 29 שורות בנייר של 28, ושירות 13 הדביק "מספר
+  // שורות: 28 מול 29" לכל שורה — 23 שורות "דורשות החלטה" על תעודה שנקראה נכון.
+  // שירות 14 כבר אינו שולח את זה; הלקוח אינו שואל גם מול תשובה של שרת ישן.
+  const flood = rows.map((row, index) => ({ noteIndex: 0, rowIndex: index, lineNumber: index + 1, code: row.code, description: row.description,
+    fields: [{ field: 'rowCount', selected: rows.length, other: rows.length + 1 }] }));
+  const c = await scanned({ paper: { ...data.paper, consensus: { ...consensus, disputedRows: flood }, scan: { warnings: [], documents: [document] } } });
+  const list = actions(c);
+  assert.deepEqual(list.disputed, [], 'the paper itself settles its row count');
+  assert.equal(list.settled, 0, 'and nothing is announced as settled against the catalog — there was no dispute');
+  assert.equal(list.total, 2, 'the unrelated open rows of this paper (unread code, price difference) stay');
+  assert.doesNotMatch(html(c), /מספר שורות: 4 מול 5/);
+  // שדה אמיתי על אותה שורה עדיין נשאל — בלי שורת "מספר שורות" לצידו.
+  const mixed = await scanned(disputeOnFirstRow([{ field: 'rowCount', selected: 4, other: 5 }, { field: 'quantity', selected: 10, other: 16 }]));
+  assert.deepEqual(actions(mixed).disputed.map(item => [item.line, item.fields.map(field => field.field)]), [[1, ['quantity']]]);
+  assert.doesNotMatch(html(mixed), /מספר שורות: 4 מול 5/);
+});
+
+test('a row only the winning read saw is raised as a question about the row itself', async () => {
+  const c = await scanned(disputeOnFirstRow([{ field: 'row', selected: 'נקראה', other: null }]));
+  assert.deepEqual(actions(c).disputed.map(item => item.line), [1]);
+  assert.match(html(c), /השורה עצמה: נקראה מול לא נקרא/);
+});
+
 test('a promotion star disagreement never blocks a receipt, and a quantity disagreement always does', async () => {
   const star = actions(await scanned(disputeOnFirstRow([{ field: 'promoStar', selected: true, other: false }])));
   assert.deepEqual(star.disputed, [], 'the star only produces an informational finding');
