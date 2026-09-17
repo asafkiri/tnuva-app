@@ -711,7 +711,7 @@ let receiptDupConfirmed = false; // אישור שמירה למרות חשד לכ
 const RECEIPT_DRAFT_KEY = 'tn_receipt_draft';
 let receivingDigitsMissTimer = null;
 let receivingDigitsMissNotified = '';
-const APP_VERSION = '107'; // סריקה ששרדה נתק נאספת מהשרת במקום להיזרק
+const APP_VERSION = '108'; // "מספר שורות" אינו שאלה על שורה, ושורה שקריאה נוספת מאשרת אינה נשאלת
 // גרסה 73: מוצר בלי מחיר קופה — חלון הכמות מציג מיד את העלות ליח׳ (ללא מע״מ) ופותח שדה להקלדת המחיר שעובר בקופה, בלי לנדוד למסך המחירים
 // v40: תג גרסה קבוע בפינת המסך — לדעת בשנייה איזו גרסה באמת רצה על המכשיר
 // (עוזר במיוחד מול מטמון ה-PWA). pointer-events:none — לעולם לא חוסם מגע.
@@ -10112,6 +10112,15 @@ function receiptSetRowDecision(row, type, extra) {
 // השורות ששתי הקריאות המקבילות נחלקו עליהן, לפי מה שהשרת החזיר. rowIndex
 // של השרת הוא מיקום השורה בנייר — אותו מספר שבדיקת המחירים קוראת לו
 // sourceIndex — ולכן השניים מתחברים ישירות.
+// v108: "מספר שורות" אינו שדה של שורה אלא עובדה על המסמך כולו. עד שירות 13
+// השרת השווה שורה i מול שורה i, וכשקריאה אחת ראתה שורה עודפת הדביק לכל שורה
+// "מספר שורות" — ולשורות שאחרי השורה העודפת גם הבדלי קוד וכמות שאינם אלא
+// השוואה של שורה מול שכנתה. ב-17.9, 16:07, כל 28 השורות של תעודה שנקראה
+// נכון עלו כך לאישור ידני עם "28 מול 29". מספר השורות מוכרע מול הנייר עצמו
+// (מונה "פריטים" המודפס, בבדיקת הסיכום), ולכן מחלוקת שנושאת אותו — חתימת
+// ההשוואה הישנה — נזרקת כולה, גם כשהתשובה הגיעה משרת ישן. שירות 14 מיישר
+// שורות לפי תוכן ואינו שולח את השדה הזה.
+const RECEIPT_DISPUTE_DOCUMENT_FIELDS = new Set(['rowCount']);
 function receiptConsensusDisputes() {
   const out = new Map();
   ((aiScanResponse && aiScanResponse.perDocument) || []).forEach(meta => {
@@ -10120,6 +10129,8 @@ function receiptConsensusDisputes() {
     consensus.disputedRows.forEach(item => {
       const rowIndex = Number(item && item.rowIndex);
       if (!Number.isInteger(rowIndex)) return;
+      const fields = Array.isArray(item.fields) ? item.fields : [];
+      if (!fields.length || fields.some(field => RECEIPT_DISPUTE_DOCUMENT_FIELDS.has(String((field && field.field) || '')))) return;
       out.set(Number(meta.docIndex) + ':' + rowIndex, Object.assign({}, item, { docIndex: Number(meta.docIndex),
         escalated: consensus.escalated === true, escalationModel: consensus.escalationModel || null }));
     });
@@ -10147,6 +10158,10 @@ function receiptDisputeOpenFields(row, dispute) {
     if (mapped && String(mapped.barcodeMatchMethod || '') === 'user_confirmed') return false;
     // הקוד שנבחר חייב להיות מזוהה, והמחיר המודפס חייב לאשר אותו.
     if (!row || !row.productId || !row.printedVsCatalog || row.printedVsCatalog.off) return true;
+    // v108: קוד מזוהה שהמחיר מאשר וגם קריאה נוספת של הצילום קראה כך (שירות 14
+    // מוסר confirmed) — שתיים מתוך שלוש קריאות והמאגר מסכימים, ואין מה לשאול
+    // גם כשהקוד היריב מוביל למוצר באותו מחיר.
+    if (Number(item.confirmed) > 0) return false;
     // אם גם הקוד השני מוביל למוצר שהמחיר המודפס מתאים לו — הכסף אינו מכריע.
     const other = tnuvaCodeOf(item.other) || String(item.other == null ? '' : item.other).replace(/\D/g, '').replace(/^0+/, '');
     const rival = other && !built.ambiguous.has(other) ? built.map.get(other) : null;
@@ -10280,12 +10295,14 @@ function receiptRowActionButton(role, row, label, classes) {
 function receiptRowDisputeHtml(dispute) {
   if (!dispute || !Array.isArray(dispute.fields) || !dispute.fields.length) return '';
   const names = { code: 'קוד', quantity: 'כמות', unitPriceExVat: 'מחיר יחידה', lineTotalExVat: 'סכום שורה',
-    promoStar: 'סימון מבצע', section: 'מקטע', sourcePage: 'עמוד', rowCount: 'מספר שורות' };
+    promoStar: 'סימון מבצע', section: 'מקטע', sourcePage: 'עמוד', rowCount: 'מספר שורות', row: 'השורה עצמה' };
   const show = value => value == null || value === '' ? 'לא נקרא' : String(value);
+  const line = item => item.field === 'row' ? 'רק הקריאה שנבחרה ראתה את השורה הזאת'
+    : htmlEscape(names[item.field] || item.field) + ': ' + htmlEscape(show(item.selected)) + ' מול ' + htmlEscape(show(item.other)) +
+      (Number(item.confirmed) > 0 ? ' · קריאה נוספת קראה כמו הקריאה שנבחרה' : '');
   return '<div class="mt-2 rounded-lg bg-amber-50 border border-amber-200 p-2 text-[11px] font-bold text-amber-900">' +
     '<div>שתי הסריקות של הצילום לא קראו את השורה אותו דבר:</div>' +
-    dispute.fields.map(item => '<div dir="rtl">' + htmlEscape(names[item.field] || item.field) + ': ' +
-      htmlEscape(show(item.selected)) + ' מול ' + htmlEscape(show(item.other)) + '</div>').join('') +
+    dispute.fields.map(item => '<div dir="rtl">' + line(item) + '</div>').join('') +
     (dispute.escalated ? '<div class="mt-1">הכריע ' + htmlEscape(dispute.escalationModel || 'המודל היקר') + ' בקריאה שלישית.</div>'
       : '<div class="mt-1">הקריאה השלישית לא הושלמה — ההכרעה כאן שלך.</div>') + '</div>';
 }
