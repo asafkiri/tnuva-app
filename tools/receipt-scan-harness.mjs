@@ -32,7 +32,11 @@ export function runtime(supplier, { storage = new Map(), data = fixture(supplier
       addEventListener(type, fn) { events.set(type, fn); }, visibilityState: 'visible' },
     window: { addEventListener() {}, scrollTo() {}, innerWidth: 400, innerHeight: 850 },
     navigator: { onLine: true }, history: { replaceState() {}, pushState() {} }, location: { href: 'http://localhost/test' },
-    setTimeout(fn) { callbacks.push(fn); return callbacks.length; }, clearTimeout() {}, setInterval() {}, clearInterval() {},
+    // המתנה ארוכה (השהיית ניסיון חוזר אחרי נפילת רשת) מתקדמת מיד, כדי שהבדיקה
+    // לא תמתין בזמן אמת ולא תיתקע; טיימרים קצרים (פוקוס, לולאת הסורק) נשארים
+    // בתור שהבדיקות שולטות בו.
+    setTimeout(fn, ms) { callbacks.push(fn); if (Number(ms) >= 1000) setImmediate(() => { try { fn(); } catch (error) {} }); return callbacks.length; },
+    clearTimeout() {}, setInterval() {}, clearInterval() {},
     requestAnimationFrame() {}, MutationObserver: class { observe() {} },
     initializeApp: () => ({}), getAuth: () => ({ currentUser }), initializeFirestore: () => ({}),
     getFirestore: () => ({}), persistentLocalCache: () => ({}), persistentMultipleTabManager: () => ({}),

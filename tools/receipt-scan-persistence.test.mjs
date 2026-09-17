@@ -15,6 +15,30 @@ for(const s of suppliers) {
     assert.equal(b.run('aiScanEvaluation.findings.some(f=>f.type==="shortage"&&f.productId==="milk"&&f.qty===1)'),true);
     assert.match(b.node('app').innerHTML,/חסר 1/);assert.equal(scanCount(b),0);
   });
+  // v102: נפילת רשת בחנות אינה מאפסת תעודה. שני הכשלים שנצפו ב-17.9 כאן:
+  // ניסיון יחיד שנשבר על העלאה שנקטעה, ועוגן מאומת שנמחק בגלל סריקה שנכשלה.
+  test(s+': HEALTHY a dropped upload is retried instead of failing the whole document',async()=>{
+    const a=runtime(s);let calls=0;const original=a.context.fetch;
+    a.context.fetch=async(...args)=>{if(args[0].endsWith('/scan')&&++calls===1)throw Error('Load failed');return original(...args)};
+    await a.scan();
+    assert.equal(calls,2,'the first attempt died on the network, the second answered');
+    assert.equal(scanCount(a),1,'only the answered attempt reached the service');
+    assert.equal(a.run('receiptPaperScanState'),'ok');
+    assert.equal(raw(a),1);
+  });
+  test(s+': HEALTHY a failed rescan keeps the anchor a previous read already verified',async()=>{
+    const a=runtime(s);await a.scan();
+    assert.equal(a.run('receiptNoteTotal'),50);
+    // צילום חדש (הישן כבר לא תקף למטמון) והרשת נופלת בכל הניסיונות.
+    const original=a.context.fetch;
+    a.context.fetch=async(...args)=>{if(args[0].endsWith('/scan'))throw Error('Load failed');return original(...args)};
+    a.run("aiScanDocuments[0].pages=[{dataUrl:'data:image/jpeg;base64,Yg==',orientationConfirmed:true}];aiScanDocuments[0].cachedPages=null;");
+    await a.run(s+'StartPaperScan()');
+    assert.equal(a.run('receiptPaperScanState'),'failed');
+    assert.equal(a.run('receiptNoteTotal'),50,'the verified money anchor is still on screen');
+    assert.equal(a.run('receiptNotes.length'),1);
+    assert.equal(a.run('receiptPaperScanProblems.some(p=>p.includes("מקריאה קודמת נשמרו"))'),true);
+  });
   test(s+': HEALTHY quantity changes recompute findings from same saved paper',async()=>{
     const a=runtime(s);await a.scan();const b=reload(s,a);
     b.run('receiptList[0].qty=11;saveReceiptDraft();finishReceipt()');
@@ -41,7 +65,8 @@ for(const s of suppliers) {
   });
   test(s+': HEALTHY partial two-document failure retains first result and retries only the missing document',async()=>{
     const a=runtime(s);let calls=0;const original=a.context.fetch;
-    a.context.fetch=async(...args)=>{if(args[0].endsWith('/scan')&&++calls===2)throw Error('network failure');return original(...args)};
+    // הרשת נופלת על המסמך השני ונשארת נופלת — גם אחרי הניסיונות החוזרים.
+    a.context.fetch=async(...args)=>{if(args[0].endsWith('/scan')&&++calls>=2)throw Error('network failure');return original(...args)};
     await a.scan(2);assert.equal(raw(a),1);assert.equal(a.run('receiptPaperScanState'),'failed');
     const b=reload(s,a);b.run("aiScanDocuments[1].pages=[{dataUrl:'data:image/jpeg;base64,YQ==',orientationConfirmed:true}]");
     await b.run(s+'StartPaperScan()');assert.equal(scanCount(b),1);assert.equal(raw(b),2);

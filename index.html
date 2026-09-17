@@ -702,7 +702,7 @@ let receiptDupConfirmed = false; // אישור שמירה למרות חשד לכ
 const RECEIPT_DRAFT_KEY = 'tn_receipt_draft';
 let receivingDigitsMissTimer = null;
 let receivingDigitsMissNotified = '';
-const APP_VERSION = '101'; // הקוד של הקריאה השנייה מוצע כלחיצה אחת
+const APP_VERSION = '102'; // נפילת רשת מנסה שוב, ועוגן מאומת לא נמחק
 // גרסה 73: מוצר בלי מחיר קופה — חלון הכמות מציג מיד את העלות ליח׳ (ללא מע״מ) ופותח שדה להקלדת המחיר שעובר בקופה, בלי לנדוד למסך המחירים
 // v40: תג גרסה קבוע בפינת המסך — לדעת בשנייה איזו גרסה באמת רצה על המכשיר
 // (עוזר במיוחד מול מטמון ה-PWA). pointer-events:none — לעולם לא חוסם מגע.
@@ -1167,7 +1167,22 @@ function tnuvaAdoptPaperAnchors() {
   });
   if (returned.length !== aiScanDocuments.length) problems.push('לא כל התעודות פוענחו');
   receiptPaperScanProblems = [...new Set((aiScanError ? [aiScanError] : []).concat(problems))].slice(0, 8);
-  if (problems.length) { receiptPaperScanState = 'failed'; saveReceiptDraft(); refreshScanHost(); return false; }
+  if (problems.length) {
+    receiptPaperScanState = 'failed';
+    // v102: סריקה שנכשלה אינה מוחקת עוגן שכבר אומת. תחילת כל סריקה מנקה את
+    // receiptNotes, וב-17.9 זה הותיר תעודה שנקראה ואומתה חמש פעמים בלי שום
+    // מספר על המסך — רק מפני שהניסיון השישי נפל ברשת. העוגן של כל מסמך שרד
+    // בשדות שלו, ולכן הוא חוזר לתצוגה ונאמר במפורש שהוא מקריאה קודמת.
+    const kept = aiScanDocuments.map(doc => (Number(doc.amount) > 0 && Number(doc.lines) > 0 ? doc : null));
+    if (!receiptNotes.length && kept.length && kept.every(Boolean)) {
+      receiptNotes = kept.map(doc => normNote({ amount: doc.amount, units: null, lines: doc.lines }));
+      recomputeNoteTotal();
+      receiptPaperScanProblems.unshift('נתוני התעודה מקריאה קודמת נשמרו: ₪' + fmtMoney(noteSum()) +
+        ' · ' + kept.reduce((sum, doc) => sum + Number(doc.lines), 0) + ' שורות. אם צילמת תעודה אחרת — תקן אותם לפני הסיום.');
+      receiptPaperScanProblems = receiptPaperScanProblems.slice(0, 8);
+    }
+    saveReceiptDraft(); refreshScanHost(); return false;
+  }
   receiptManualInput = null; // Verified paper replaces any unfinished manual entry.
   receiptNotes = notes.map(normNote); recomputeNoteTotal();
   receiptAnchorSource = 'paper'; receiptPaperScanState = 'ok';
@@ -12019,7 +12034,11 @@ async function aiRequestSingleDocScan(token, pages, expected) {
         expectedLines: expected && Number.isFinite(Number(expected.lines)) && Number(expected.lines) > 0 ? Math.round(Number(expected.lines)) : null
       }]
     })
-  }, 0);
+  // v102: עד כאן הסריקה לא ניסתה שוב אחרי נפילת רשת — ניסיון אחד, וזהו. בחנות
+  // זה אומר שהעלאה של 2.6MB שנקטעה מאפסת תעודה שלמה, וזה קרה כמה פעמים ב-17.9.
+  // המנגנון (2 ניסיונות, 2.5 ואז 5 שניות) כבר היה כתוב וכבוי. הוא חוזר רק
+  // לכשלי רשת אמיתיים: תשובה שהשרת כן החזיר, גם שגויה, אינה גוררת ניסיון נוסף.
+  }, AI_SCAN_NETWORK_RETRIES);
   const payload = await response.json().catch(() => ({}));
   if (!response.ok || !payload.ok) {
     const code = payload.error || '';
