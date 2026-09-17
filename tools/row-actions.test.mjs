@@ -94,6 +94,43 @@ test('a promotion star disagreement never blocks a receipt, and a quantity disag
   assert.equal(qty.settled, 0);
 });
 
+test('when the losing read holds the only code the catalog knows, it is offered as one tap', async () => {
+  // שורה 2: הקוד שנבחר (14761014) אינו במאגר; הקוד של הקריאה השנייה כן,
+  // ומחירו שווה למחיר המודפס — בדיוק המצב של 12:00 בתעודה האמיתית.
+  const c = await scanned({ paper: { ...data.paper,
+    consensus: { ...consensus, disputedRows: [{ noteIndex: 0, rowIndex: 1, lineNumber: 2, code: '14761014', description: 'מעדן שוקו דל חלב YOLO',
+      fields: [{ field: 'code', selected: '14761014', other: '14761056' }] }] },
+    scan: { warnings: [], documents: [document] } } });
+  const view = html(c);
+  assert.match(view, /הקוד של הקריאה השנייה, 14761056, כן קיים במאגר/);
+  assert.match(view, /YOLO שוקולד חלב מעולה 123 גרם/);
+  assert.match(view, /בדיוק המחיר שמודפס בשורה/);
+  assert.match(view, /זה המוצר — שייך את השורה/);
+  c.click('rowfix-rival', null, { doc: '0', row: '1' });
+  const row = JSON.parse(c.run("JSON.stringify(aiScanResponse.scan.documents[0].rows[1])"));
+  assert.equal(row.__tnuvaProductId, 'p_yolo_chocolate');
+  assert.equal(row.barcodeUserConfirmedFromMethod, 'second_read_code');
+  // הזהות עומדת בכללי הראיות של המתאם, ולא רק נכתבה לשורה.
+  assert.equal(JSON.parse(c.run("JSON.stringify(aiResolveInvoiceBarcode(aiScanResponse.scan.documents[0].rows[1]).product || null)")).id, 'p_yolo_chocolate');
+  // ואחרי הבחירה השורה אינה חוזרת לשאול על אותה מחלוקת.
+  assert.deepEqual(actions(c).unidentified.map(item => item.line), [3]);
+  assert.deepEqual(actions(c).disputed, []);
+});
+
+test('a rival code the catalog does not know, or one whose price disagrees, is not offered', async () => {
+  const unknown = await scanned({ paper: { ...data.paper,
+    consensus: { ...consensus, disputedRows: [{ noteIndex: 0, rowIndex: 1, lineNumber: 2, code: '14761014', description: 'YOLO',
+      fields: [{ field: 'code', selected: '14761014', other: '99999999' }] }] },
+    scan: { warnings: [], documents: [document] } } });
+  assert.doesNotMatch(html(unknown), /זה המוצר — שייך את השורה/);
+  // קוד שקיים במאגר אבל במחיר אחר אינו ראיה: פרילי ₪2.58 מול ₪3.47 בשורה.
+  const wrongPrice = await scanned({ paper: { ...data.paper,
+    consensus: { ...consensus, disputedRows: [{ noteIndex: 0, rowIndex: 1, lineNumber: 2, code: '14761014', description: 'YOLO',
+      fields: [{ field: 'code', selected: '14761014', other: '72961506' }] }] },
+    scan: { warnings: [], documents: [document] } } });
+  assert.doesNotMatch(html(wrongPrice), /זה המוצר — שייך את השורה/);
+});
+
 test('a code disagreement on a row whose printed price contradicts the catalog stays open', async () => {
   const c = await scanned();
   // שורה 4: מודפס ₪6.77 מול ₪2.58 במאגר — הכסף אינו מאשר את הקוד שנבחר.

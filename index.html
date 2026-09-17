@@ -702,7 +702,7 @@ let receiptDupConfirmed = false; // אישור שמירה למרות חשד לכ
 const RECEIPT_DRAFT_KEY = 'tn_receipt_draft';
 let receivingDigitsMissTimer = null;
 let receivingDigitsMissNotified = '';
-const APP_VERSION = '100'; // מחלוקת שהמאגר מכריע אינה שאלה למשתמש
+const APP_VERSION = '101'; // הקוד של הקריאה השנייה מוצע כלחיצה אחת
 // גרסה 73: מוצר בלי מחיר קופה — חלון הכמות מציג מיד את העלות ליח׳ (ללא מע״מ) ופותח שדה להקלדת המחיר שעובר בקופה, בלי לנדוד למסך המחירים
 // v40: תג גרסה קבוע בפינת המסך — לדעת בשנייה איזו גרסה באמת רצה על המכשיר
 // (עוזר במיוחד מול מטמון ה-PWA). pointer-events:none — לעולם לא חוסם מגע.
@@ -10071,13 +10071,45 @@ function receiptDisputeOpenFields(row, dispute) {
     const field = String((item && item.field) || '');
     if (RECEIPT_DISPUTE_INFORMATIONAL_FIELDS.has(field)) return false;
     if (field !== 'code') return true;
+    // זהות שהמשתמש כבר אישר במפורש סוגרת את שאלת הקוד, ואין לשאול אותה שוב.
+    const doc = receiptScanDoc(row && row.documentIndex);
+    const mapped = doc && Array.isArray(doc.rows) ? doc.rows[Number(row && row.rowIndex)] : null;
+    if (mapped && String(mapped.barcodeMatchMethod || '') === 'user_confirmed') return false;
     // הקוד שנבחר חייב להיות מזוהה, והמחיר המודפס חייב לאשר אותו.
     if (!row || !row.productId || !row.printedVsCatalog || row.printedVsCatalog.off) return true;
     // אם גם הקוד השני מוביל למוצר שהמחיר המודפס מתאים לו — הכסף אינו מכריע.
     const other = tnuvaCodeOf(item.other) || String(item.other == null ? '' : item.other).replace(/\D/g, '').replace(/^0+/, '');
     const rival = other && !built.ambiguous.has(other) ? built.map.get(other) : null;
+    if (rival && String(rival.id) === String(row.productId)) return false; // אותו מוצר — אין במה להכריע
     return !!(rival && Math.abs(Number(rival.price) - Number(row.originalUnitPrice)) <= PRICE_AUDIT_UNIT_TOLERANCE);
   });
+}
+// v101: המראה ההפוכה של אותה ראיה. כשהקוד שנבחר אינו במאגר אבל הקוד של
+// הקריאה השנייה כן — ומחיר המאגר שלו שווה למחיר המודפס בשורה — התשובה כבר
+// יושבת בתוך המחלוקת עצמה, ואין שום סיבה לשלוח את המשתמש לסרוק ברקוד מהארגז.
+// היא אינה מוחלת מאליה: זו החלפת זהות, ולכן היא נשארת לחיצה אחת מפורשת.
+function receiptRivalCandidate(row, dispute) {
+  if (!row || !dispute || !Array.isArray(dispute.fields)) return null;
+  const field = dispute.fields.find(item => String((item && item.field) || '') === 'code');
+  const code = field ? (tnuvaCodeOf(field.other) || String(field.other == null ? '' : field.other).replace(/\D/g, '').replace(/^0+/, '')) : '';
+  if (!code) return null;
+  const built = tnuvaBuildCodeIndex();
+  const product = built.ambiguous.has(code) ? null : built.map.get(code);
+  const printed = Number(row.originalUnitPrice);
+  if (!product || !(Number(product.price) > 0) || !isFinite(printed)) return null;
+  // המחיר המודפס הוא שמאשר את הקוד השני. בלעדיו זו סתם קריאה שנייה.
+  if (Math.abs(Number(product.price) - printed) > PRICE_AUDIT_UNIT_TOLERANCE) return null;
+  return { code, product };
+}
+function receiptAdoptRivalCode(documentIndex, sourceIndex) {
+  const row = receiptFindAuditRow(documentIndex, sourceIndex);
+  const disputes = receiptConsensusDisputes();
+  const dispute = row ? disputes.get(Number(documentIndex) + ':' + Number(sourceIndex)) : null;
+  const candidate = receiptRivalCandidate(row, dispute);
+  if (!candidate) { showToast('הקוד של הקריאה השנייה כבר אינו מאושר מול המאגר — רענן את המסך', null, null, 3600); return false; }
+  const ctx = { documentIndex: Number(documentIndex), sourceIndex: Number(sourceIndex), rowIndex: Number(row.rowIndex),
+    code: String(row.code || ''), name: String(row.name || ''), unitPrice: row.originalUnitPrice, quantity: row.quantity };
+  return receiptAssignRowProduct(ctx, candidate.product, candidate.product.barcode, 'second_read_code');
 }
 function receiptScanDoc(documentIndex) {
   return ((aiScanResponse && aiScanResponse.scan && aiScanResponse.scan.documents) || [])
@@ -10138,15 +10170,21 @@ function receiptRowActionsHtml(report) {
     return parts.length ? '<section class="rounded-xl border border-emerald-200 bg-emerald-50 p-2.5 mb-2 text-sm font-bold text-emerald-900" dir="rtl">' +
       htmlEscape(parts.join(' · ')) + '.</section>' : '';
   }
-  const newCards = actions.unidentified.map(({ row, dispute }) =>
-    '<article class="rounded-xl border border-violet-200 bg-white p-3 mt-2">' +
+  const newCards = actions.unidentified.map(({ row, dispute }) => {
+    const rival = receiptRivalCandidate(row, dispute);
+    return '<article class="rounded-xl border border-violet-200 bg-white p-3 mt-2">' +
       '<div class="text-[10px] font-black text-violet-700"><i class="fa-solid fa-circle-plus ml-1"></i>הקוד שבשורה אינו במאגר</div>' +
       receiptRowHeadHtml(row) + receiptRowDisputeHtml(dispute) +
-      '<div class="text-[11px] font-bold text-slate-500 mt-2">סרוק את הברקוד מהמוצר עצמו: אם הוא במאגר השורה תשויך אליו, ואם לא — ייפתח כרטיס מוצר חדש מלא עם השם והמחיר מהנייר.</div>' +
+      (rival ? '<div class="mt-2 rounded-lg bg-emerald-50 border border-emerald-200 p-2 text-[11px] font-bold text-emerald-900">' +
+        'הקוד של הקריאה השנייה, ' + htmlEscape(rival.code) + ', כן קיים במאגר: <b>' + htmlEscape(rival.product.name) + '</b> — ₪' +
+        fmtUnitPrice(rival.product.price, true) + ', בדיוק המחיר שמודפס בשורה.</div>' +
+        receiptRowActionButton('rowfix-rival', row, '<i class="fa-solid fa-check ml-1"></i>זה המוצר — שייך את השורה', 'bg-emerald-600 text-white w-full mt-2') : '') +
+      '<div class="text-[11px] font-bold text-slate-500 mt-2">' + (rival ? 'או ס' : 'ס') + 'רוק את הברקוד מהמוצר עצמו: אם הוא במאגר השורה תשויך אליו, ואם לא — ייפתח כרטיס מוצר חדש מלא עם השם והמחיר מהנייר.</div>' +
       '<div class="grid grid-cols-2 gap-2 mt-2">' +
-        receiptRowActionButton('rowfix-scan', row, '<i class="fa-solid fa-barcode ml-1"></i>סרוק ברקוד מהמוצר', 'bg-violet-600 text-white') +
+        receiptRowActionButton('rowfix-scan', row, '<i class="fa-solid fa-barcode ml-1"></i>סרוק ברקוד מהמוצר', rival ? 'bg-white border border-violet-300 text-violet-800' : 'bg-violet-600 text-white') +
         receiptRowActionButton('rowfix-new', row, '<i class="fa-solid fa-plus ml-1"></i>מוצר חדש בלי סריקה', 'bg-white border border-violet-300 text-violet-800') +
-      '</div></article>').join('');
+      '</div></article>';
+  }).join('');
   const disputedCards = actions.disputed.map(({ row, dispute }) =>
     '<article class="rounded-xl border border-amber-300 bg-white p-3 mt-2">' +
       '<div class="text-[10px] font-black text-amber-800"><i class="fa-solid fa-code-compare ml-1"></i>הסריקות נחלקו על השורה</div>' +
@@ -10274,7 +10312,7 @@ function receiptRowProductScanned(value) {
   apply();
   return true;
 }
-function receiptAssignRowProduct(ctx, product, barcode) {
+function receiptAssignRowProduct(ctx, product, barcode, method) {
   const doc = receiptScanDoc(ctx && ctx.documentIndex);
   const mapped = doc && Array.isArray(doc.rows) ? doc.rows[Number(ctx.rowIndex)] : null;
   const digits = normalizeBarcode(barcode || (product && product.barcode) || '');
@@ -10289,7 +10327,7 @@ function receiptAssignRowProduct(ctx, product, barcode) {
   mapped.barcodeMatchMethod = 'user_confirmed';
   mapped.barcodeUserConfirmedFromObserved = digits;
   mapped.barcodeUserConfirmedFromReadType = 'full';
-  mapped.barcodeUserConfirmedFromMethod = 'scanned_product';
+  mapped.barcodeUserConfirmedFromMethod = method === 'second_read_code' ? 'second_read_code' : 'scanned_product';
   mapped.barcodeUserConfirmedFromCatalogHintId = String(product.id);
   mapped.__tnuvaProductId = product.id;
   mapped.__tnuvaRepair = null;
@@ -10849,6 +10887,13 @@ function aiResolveInvoiceBarcode(row) {
       const retryConfidence = Number(row && row.barcodeRetryConfidence);
       if (sourceReadType !== 'full' || !aiIsValidEan13(sourceObserved) || resolved !== sourceObserved || row.barcodeRetryApplied !== true || row.barcodeRetryConflict === true || String(row.barcodeInitialReadType || '') !== 'full' || String(row.barcodeRetryReadType || '') !== 'full' || initial !== resolved || retry !== resolved || !Number.isFinite(retryConfidence) || retryConfidence < 0.78) {
         return { error: 'המוצר החדש אינו תואם לברקוד שאומת בשתי הקריאות' };
+      }
+    } else if (sourceMethod === 'second_read_code') {
+      // v101: הקוד שהקריאה השנייה של אותו צילום קראה, כשהוא מוביל למוצר יחיד
+      // במאגר והמשתמש אישר אותו במפורש. אישור המשתמש חייב להצביע בדיוק על
+      // אותו מוצר שהברקוד מוביל אליו — כמו בכל שאר מסלולי האישור.
+      if (String(row && row.barcodeUserConfirmedFromCatalogHintId || '') !== String(matches[0].product.id)) {
+        return { error: 'אישור המשתמש אינו תואם למוצר שהקוד של הקריאה השנייה מוביל אליו' };
       }
     } else if (sourceMethod === 'scanned_product') {
       // v97: הברקוד נסרק מהמוצר הפיזי במסך הקליטה, מול שורה שהקוד המודפס בה
@@ -20007,6 +20052,7 @@ app.addEventListener('click', (e) => {
   if (role === 'ai-confirm-name-candidate') { aiConfirmNameCandidate(parseInt(t.dataset.doc, 10), parseInt(t.dataset.row, 10), t.dataset.candidateId); return; }
   if (role === 'ai-add-unknown-product') { aiOpenUnknownProduct(parseInt(t.dataset.doc, 10), parseInt(t.dataset.row, 10)); return; }
   if (role === 'rowfix-scan') { receiptOpenRowProductScan(parseInt(t.dataset.doc, 10), parseInt(t.dataset.row, 10)); return; }
+  if (role === 'rowfix-rival') { receiptAdoptRivalCode(parseInt(t.dataset.doc, 10), parseInt(t.dataset.row, 10)); return; }
   if (role === 'rowfix-new') { receiptOpenRowNewProduct(parseInt(t.dataset.doc, 10), parseInt(t.dataset.row, 10)); return; }
   if (role === 'rowfix-confirm') { receiptConfirmDisputedRow(parseInt(t.dataset.doc, 10), parseInt(t.dataset.row, 10)); return; }
   if (role === 'rowfix-price-doc') { receiptConfirmRowPrice(parseInt(t.dataset.doc, 10), parseInt(t.dataset.row, 10), 'document'); return; }
