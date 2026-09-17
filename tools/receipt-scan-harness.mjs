@@ -16,7 +16,7 @@ export function runtime(supplier, { storage = new Map(), data = fixture(supplier
       classList: { add: (...vs) => vs.forEach(v => classes.add(v)), remove: (...vs) => vs.forEach(v => classes.delete(v)),
         contains: v => classes.has(v), toggle: v => classes.has(v) ? classes.delete(v) : classes.add(v) },
       addEventListener(type, fn) { events.set(id + ':' + type, fn); },
-      setAttribute() {}, removeAttribute() {}, getAttribute() { return null; },
+      setAttribute() {}, removeAttribute() {}, getAttribute() { return null; }, setCustomValidity() {},
       querySelector() { return null; }, querySelectorAll() { return []; }, insertAdjacentHTML() {},
       focus() {}, blur() {}, scrollIntoView() {}, appendChild() {}, remove() {},
       getContext() { return { clearRect() {} }; },
