@@ -1174,6 +1174,15 @@ function tnuvaAdoptPaperAnchors() {
   });
   aiScanDocuments.forEach((input, index) => {
     const doc = returned.find(d => d.noteIndex === index);
+    // v107: תעודה שלא חזרה כלל אינה "נקראה חלקית" — אין בה מה לבדוק. עד כאן היא
+    // ייצרה שש שורות "לא נקרא" (סיכום, מונה פריטים, עמודים, שורות, סוג התעודה),
+    // שהסתירו את הסיבה היחידה שבאמת קרתה: הקריאה עצמה לא הושלמה.
+    if (!doc) {
+      const failure = input && input.scanResult && input.scanResult.ok === false && input.scanResult.error;
+      problems.push('תעודה ' + (index + 1) + ': ' + (failure || 'הקריאה לא הושלמה — נסה לסרוק שוב או הקלד את הסכום'));
+      notes.push({ amount: null, units: null, lines: null });
+      return;
+    }
     const check = tnuvaPaperCheck(doc, input.pages.length || input.restoredPageCount || 0);
     if (!check.receivable) check.problems.concat(check.review).forEach(p => problems.push('תעודה ' + (index + 1) + ': ' + p));
     notes.push({ amount: check.amount, units: null, lines: check.lines });

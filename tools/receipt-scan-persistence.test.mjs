@@ -63,6 +63,17 @@ for(const s of suppliers) {
     assert.notEqual(fp('data:image/jpeg;base64,AAAA',{amount:50,lines:3}),fp('data:image/jpeg;base64,BBBB',{amount:50,lines:3}));
     assert.notEqual(fp('data:image/jpeg;base64,AAAA',null),fp('data:image/jpeg;base64,AAAAA',null));
   });
+  // מסך של סריקה שנכשלה אומר את הסיבה, לא שש שורות "לא נקרא" על תעודה שמעולם
+  // לא חזרה. ב-17.9 הרשימה הזאת הסתירה את הסיבה היחידה שבאמת קרתה.
+  test(s+': HEALTHY a document that never came back says why, instead of six derived complaints',async()=>{
+    const a=runtime(s);const original=a.context.fetch;
+    a.context.fetch=async(url,options)=>{if(String(url).endsWith('/scan'))throw Error('Load failed');return original(url,options)};
+    await a.scan();
+    const problems=a.run('JSON.stringify(receiptPaperScanProblems)');
+    assert.equal(a.run('receiptPaperScanState'),'failed');
+    assert.doesNotMatch(problems,/\u05dc\u05d0 \u05e0\u05e7\u05e8\u05d0 \u05e1\u05d4\u05db|\u05dc\u05d0 \u05e0\u05e7\u05e8\u05d0\u05d5 \u05e9\u05d5\u05e8\u05d5\u05ea \u05de\u05d5\u05e6\u05e8\u05d9\u05dd|\u05d0\u05d9\u05e0\u05d5 \u05ea\u05d5\u05d0\u05dd \u05dc\u05e6\u05d9\u05dc\u05d5\u05de\u05d9\u05dd/);
+    assert.match(problems,/\u05d4\u05d7\u05d9\u05d1\u05d5\u05e8 \u05e0\u05e4\u05dc|\u05d4\u05e7\u05e8\u05d9\u05d0\u05d4 \u05dc\u05d0 \u05d4\u05d5\u05e9\u05dc\u05de\u05d4/);
+  });
   // ואם גם האיסוף לא מצליח כי הרשת כולה מתה — הסריקה נכשלת, אבל המפתח נשמר,
   // ולחיצה נוספת על "סרוק" אוספת אותה במקום לצלם ולשלם מחדש.
   test(s+': HEALTHY a scan the line died on is collected by the next attempt, not paid for again',async()=>{
