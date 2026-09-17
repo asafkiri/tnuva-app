@@ -54,7 +54,7 @@ const actions = c => JSON.parse(c.run(`JSON.stringify((function(){ const a = rec
   return { state: a.state, decided: a.decided, total: a.total,
     unidentified: a.unidentified.map(x => ({ line: x.row.line, code: x.row.code, doc: x.row.documentIndex, source: x.row.sourceIndex })),
     priced: a.priced.map(x => ({ line: x.row.line, name: x.row.name, printed: x.row.originalUnitPrice, catalog: x.row.catalogBasePrice, doc: x.row.documentIndex, source: x.row.sourceIndex })),
-    settled: a.settled, disputed: a.disputed.map(x => ({ line: x.row.line, fields: x.dispute.fields })) };
+    settled: a.settled, autoMatched: a.autoMatched, disputed: a.disputed.map(x => ({ line: x.row.line, fields: x.dispute.fields })) };
 })())`));
 const html = c => { c.run('renderReceiving()'); return c.node('app').innerHTML; };
 const paperWith = changes => ({ paper: { ...data.paper, scan: { warnings: [], documents: [{ ...document, ...changes }] } } });
@@ -70,8 +70,8 @@ test('a code disagreement the catalog can settle by itself is not a question for
   const list = actions(c);
   assert.deepEqual(list.disputed, [], 'nothing to decide');
   assert.equal(list.settled, 1);
-  // שאר השורות של התעודה הזאת (שני קודים שאינם במאגר ושורת מחיר) אינן קשורות.
-  assert.equal(list.total, 3);
+  // שאר השורות של התעודה הזאת (קוד שלא נקרא ושורת מחיר) אינן קשורות.
+  assert.equal(list.total, 2);
   // מה שהוכרע נאמר, ולא נעלם בשקט.
   assert.match(html(c), /1 מחלוקות בין שתי הקריאות הוכרעו מול המאגר/);
 });
@@ -94,27 +94,58 @@ test('a promotion star disagreement never blocks a receipt, and a quantity disag
   assert.equal(qty.settled, 0);
 });
 
-test('when the losing read holds the only code the catalog knows, it is offered as one tap', async () => {
+// קוד שאין לו שום מועמד תיקון-ספרה במאגר הבדיקה, כדי לבודד את מסלול הקריאה
+// השנייה ממסלול תיקון הספרה הוותיק.
+const secondReadCase = (rowIndex, other, code = '88888888') => ({ paper: { ...data.paper,
+  consensus: { ...consensus, disputedRows: [{ noteIndex: 0, rowIndex, lineNumber: rowIndex + 1, code, description: rows[rowIndex].description,
+    fields: [{ field: 'code', selected: code, other }] }] },
+  scan: { warnings: [], documents: [{ ...document, rows: rows.map((row, index) => index === rowIndex ? { ...row, code } : row) }] } } });
+
+test('when the losing read holds the only code the catalog knows, the row is matched without asking', async () => {
   // שורה 2: הקוד שנבחר (14761014) אינו במאגר; הקוד של הקריאה השנייה כן,
-  // ומחירו שווה למחיר המודפס — בדיוק המצב של 12:00 בתעודה האמיתית.
-  const c = await scanned({ paper: { ...data.paper,
-    consensus: { ...consensus, disputedRows: [{ noteIndex: 0, rowIndex: 1, lineNumber: 2, code: '14761014', description: 'מעדן שוקו דל חלב YOLO',
-      fields: [{ field: 'code', selected: '14761014', other: '14761056' }] }] },
-    scan: { warnings: [], documents: [document] } } });
-  const view = html(c);
-  assert.match(view, /הקוד של הקריאה השנייה, 14761056, כן קיים במאגר/);
-  assert.match(view, /YOLO שוקולד חלב מעולה 123 גרם/);
-  assert.match(view, /בדיוק המחיר שמודפס בשורה/);
-  assert.match(view, /זה המוצר — שייך את השורה/);
-  c.click('rowfix-rival', null, { doc: '0', row: '1' });
+  // ומחירו שווה למחיר המודפס — בדיוק המצב של 12:29 בתעודה האמיתית.
+  const c = await scanned(secondReadCase(1, '14761056'));
   const row = JSON.parse(c.run("JSON.stringify(aiScanResponse.scan.documents[0].rows[1])"));
   assert.equal(row.__tnuvaProductId, 'p_yolo_chocolate');
-  assert.equal(row.barcodeUserConfirmedFromMethod, 'second_read_code');
+  assert.equal(row.barcodeMatchMethod, 'tnuva_code_second_read');
+  assert.deepEqual(row.__tnuvaRepair, { from: '88888888', to: '14761056', secondRead: true });
   // הזהות עומדת בכללי הראיות של המתאם, ולא רק נכתבה לשורה.
   assert.equal(JSON.parse(c.run("JSON.stringify(aiResolveInvoiceBarcode(aiScanResponse.scan.documents[0].rows[1]).product || null)")).id, 'p_yolo_chocolate');
-  // ואחרי הבחירה השורה אינה חוזרת לשאול על אותה מחלוקת.
+  // השורה כבר אינה שאלה, והשיוך נאמר במסך ובמסמך הביקורת.
+  const list = actions(c);
+  assert.deepEqual(list.unidentified.map(item => item.line), [3], 'only the row with no code at all is left');
+  assert.equal(list.autoMatched, 1);
+  assert.match(html(c), /1 שורות שויכו אוטומטית כשהמחיר אישר את הקוד/);
+  assert.equal(c.run("JSON.stringify((aiEvaluateInvoiceScan(aiScanResponse).autoResolutions||[]).map(x=>x.method))"), '["tnuva_code_second_read"]');
+  // אבל היא אינה ראיה למחיר: בדיקת המחירים לא תאשר מחיר על סמך זהות שהמחיר בחר.
+  assert.equal(JSON.parse(c.run("JSON.stringify(receiptPriceAudit().rows.find(r => r.line === 2).capability)")), 'unidentified');
+});
+
+test('a second-read code is adopted only when the catalog price confirms it', async () => {
+  // פרילי ₪2.58 מול ₪3.47 בשורה — הקוד קיים במאגר, המחיר שולל אותו.
+  const c = await scanned(secondReadCase(1, '72961506'));
+  const row = JSON.parse(c.run("JSON.stringify(aiScanResponse.scan.documents[0].rows[1])"));
+  assert.equal(row.__tnuvaProductId, null);
+  assert.deepEqual(actions(c).unidentified.map(item => item.line), [2, 3]);
+  assert.equal(actions(c).autoMatched, 0);
+  // וכך גם כשהקריאה השנייה לא קראה קוד כלל — המצב של "יופ. דנונה" ב-12:29.
+  const unread = await scanned(secondReadCase(1, null));
+  assert.deepEqual(actions(unread).unidentified.map(item => item.line), [2, 3]);
+});
+
+test('a product added to the catalog after the scan is still offered as one tap', async () => {
+  // בזמן הסריקה הקוד של הקריאה השנייה לא היה במאגר, ולכן לא שויך אוטומטית.
+  const c = await scanned(secondReadCase(1, '55503'));
+  assert.deepEqual(actions(c).unidentified.map(item => item.line), [2, 3]);
+  c.run("products.push({ id: 'p_added', name: 'מוצר שנוסף אחרי הסריקה', barcode: '7290000055503', price: 3.47 });");
+  const view = html(c);
+  assert.match(view, /הקוד של הקריאה השנייה, 55503, כן קיים במאגר/);
+  assert.match(view, /מוצר שנוסף אחרי הסריקה/);
+  c.click('rowfix-rival', null, { doc: '0', row: '1' });
+  const row = JSON.parse(c.run("JSON.stringify(aiScanResponse.scan.documents[0].rows[1])"));
+  assert.equal(row.__tnuvaProductId, 'p_added');
+  assert.equal(row.barcodeUserConfirmedFromMethod, 'second_read_code');
   assert.deepEqual(actions(c).unidentified.map(item => item.line), [3]);
-  assert.deepEqual(actions(c).disputed, []);
 });
 
 test('a rival code the catalog does not know, or one whose price disagrees, is not offered', async () => {
@@ -196,7 +227,10 @@ test('a code the catalog does not know reaches the receiving screen as a decisio
   const c = await scanned();
   const list = actions(c);
   assert.equal(list.state, 'ready');
-  assert.deepEqual(list.unidentified.map(row => row.line), [2, 3], 'the misread code and the unread code both surface');
+  // שורה 2 (14761014) משויכת מאליה בתיקון ספרה שהמחיר אישר; נשארת שורה 3,
+  // שבה לא נקרא קוד כלל ואין מה לתקן.
+  assert.deepEqual(list.unidentified.map(row => row.line), [3], 'only the row with no code at all is a question');
+  assert.equal(list.autoMatched, 1);
   const view = html(c);
   assert.match(view, /הקוד שבשורה אינו במאגר/);
   assert.match(view, /סרוק ברקוד מהמוצר/);
@@ -236,7 +270,9 @@ test('a barcode that is not in the catalog opens the full new product card, pref
   const row = JSON.parse(c.run("JSON.stringify(aiScanResponse.scan.documents[0].rows[2])"));
   assert.equal(row.__tnuvaProductId, 'p_new');
   assert.equal(row.barcodeUserConfirmedFromMethod, 'scanned_product');
-  assert.deepEqual(actions(c).unidentified.map(item => item.line), [2], 'only the row this test closed left the list');
+  // שורה 2 משויכת מאליה בתיקון ספרה (14761014 ← 14761414, המחיר אישר), ולכן
+  // אחרי סגירת שורה 3 לא נותרה שאלה.
+  assert.deepEqual(actions(c).unidentified, [], 'nothing left to ask');
 });
 
 test('a printed price that is neither the catalog price nor a promotion price becomes one decided row', async () => {

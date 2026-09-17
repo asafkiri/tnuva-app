@@ -702,7 +702,7 @@ let receiptDupConfirmed = false; // אישור שמירה למרות חשד לכ
 const RECEIPT_DRAFT_KEY = 'tn_receipt_draft';
 let receivingDigitsMissTimer = null;
 let receivingDigitsMissNotified = '';
-const APP_VERSION = '102'; // נפילת רשת מנסה שוב, ועוגן מאומת לא נמחק
+const APP_VERSION = '103'; // הקוד של הקריאה השנייה משויך מאליו כשהמחיר מאשר
 // גרסה 73: מוצר בלי מחיר קופה — חלון הכמות מציג מיד את העלות ליח׳ (ללא מע״מ) ופותח שדה להקלדת המחיר שעובר בקופה, בלי לנדוד למסך המחירים
 // v40: תג גרסה קבוע בפינת המסך — לדעת בשנייה איזו גרסה באמת רצה על המכשיר
 // (עוזר במיוחד מול מטמון ה-PWA). pointer-events:none — לעולם לא חוסם מגע.
@@ -9672,7 +9672,9 @@ function priceAuditSource(doc) {
 function priceAuditIdentity(mapped, raw) {
   if (!mapped) return null;
   // Price-assisted identity repairs cannot independently prove a price.
-  if (/repair|name_price/.test(String(mapped.barcodeMatchMethod || ''))) return null;
+  // v103: גם שיוך לפי הקוד של הקריאה השנייה נבחר בעזרת המחיר, ולכן אסור לו
+  // לשמש ראיה למחיר. הזהות תקפה לקליטה ולכמויות; בדיקת המחירים לא תאשר אותה.
+  if (/repair|name_price|second_read/.test(String(mapped.barcodeMatchMethod || ''))) return null;
   const resolved = aiResolveInvoiceBarcode(mapped);
   return resolved && resolved.product || null;
 }
@@ -10137,7 +10139,7 @@ function receiptFindAuditRow(documentIndex, sourceIndex) {
 }
 function receiptRowActions(report) {
   const a = report || receiptPriceAudit();
-  const out = { state: a.state, unidentified: [], disputed: [], priced: [], decided: 0, settled: 0, total: 0 };
+  const out = { state: a.state, unidentified: [], disputed: [], priced: [], decided: 0, settled: 0, autoMatched: 0, total: 0 };
   if (a.state !== 'ready') return out;
   const disputes = receiptConsensusDisputes();
   a.rows.forEach(row => {
@@ -10146,6 +10148,14 @@ function receiptRowActions(report) {
     const open = dispute && openFields.length ? Object.assign({}, dispute, { fields: openFields }) : null;
     if (dispute && !open) out.settled += 1; // המאגר הכריע; נאמר, לא נשאל
     if (receiptRowDecision(row)) { out.decided += 1; return; }
+    // v103: "לא זוהה" בבדיקת המחירים פירושו גם זהות שנבחרה בעזרת המחיר (תיקון
+    // ספרה, הקוד של הקריאה השנייה) — כזאת אינה יכולה לאשר מחיר, אבל היא כן
+    // מוצר שהשורה שויכה אליו. עד כאן היא הוצגה כ"הקוד שבשורה אינו במאגר"
+    // ושלחה את המשתמש לסרוק ארגז שכבר זוהה. שאלה נשאלת רק על שורה בלי מוצר.
+    const doc = receiptScanDoc(row.documentIndex);
+    const mapped = doc && Array.isArray(doc.rows) ? doc.rows[Number(row.rowIndex)] : null;
+    const matched = !!(mapped && mapped.__tnuvaProductId);
+    if (row.capability === 'unidentified' && matched) { out.autoMatched += 1; return; }
     if (row.capability === 'unidentified') out.unidentified.push({ row, dispute });
     else if (row.result === 'difference' || (row.printedVsCatalog && row.printedVsCatalog.off)) out.priced.push({ row, dispute });
     else if (open) out.disputed.push({ row, dispute: open });
@@ -10179,7 +10189,8 @@ function receiptRowHeadHtml(row) {
 }
 function receiptRowActionsHtml(report) {
   const actions = receiptRowActions(report);
-  const settledLine = actions.settled ? actions.settled + ' מחלוקות בין שתי הקריאות הוכרעו מול המאגר' : '';
+  const settledLine = [actions.settled ? actions.settled + ' מחלוקות בין שתי הקריאות הוכרעו מול המאגר' : '',
+    actions.autoMatched ? actions.autoMatched + ' שורות שויכו אוטומטית כשהמחיר אישר את הקוד' : ''].filter(Boolean).join(' · ');
   if (!actions.total) {
     const parts = [actions.decided ? actions.decided + ' שורות אושרו ידנית בתעודה הזאת' : '', settledLine].filter(Boolean);
     return parts.length ? '<section class="rounded-xl border border-emerald-200 bg-emerald-50 p-2.5 mb-2 text-sm font-bold text-emerald-900" dir="rtl">' +
@@ -10781,6 +10792,14 @@ function aiResolveInvoiceBarcode(row) {
   }
   // v47: קוד שתוקן בספרה אחת במתאם (מועמד יחיד + מחיר מאשר) — אותה זהות ודאית
   // של tnuva_code_exact, עם תיעוד הקוד המודפס המקורי כפי שנקרא בפועל.
+  // v103: הקוד שהקריאה השנייה של אותו צילום קראה, כשהקוד שנבחר אינו מוביל
+  // לשום מוצר, הקוד השני מוביל למוצר יחיד, והמחיר המודפס תואם לו. אותה
+  // רמת ראיה של תיקון ספרה — ומקור חזק ממנו, כי הוא נקרא מהנייר ולא נוחש.
+  if (String(row && row.barcodeMatchMethod || '') === 'tnuva_code_second_read') {
+    const p = (products || []).find(x => x.id === (row && row.__tnuvaProductId));
+    if (p) return { product: p, barcode: normalizeBarcode(p.barcode || ''), observed: String((row.__tnuvaRepair && row.__tnuvaRepair.from) || row.supplierItemCode || ''), method: 'tnuva_code_second_read' };
+    return { error: 'המוצר שהותאם לפי הקוד של הקריאה השנייה אינו קיים עוד במאגר' };
+  }
   if (String(row && row.barcodeMatchMethod || '') === 'tnuva_code_repair') {
     const p = (products || []).find(x => x.id === (row && row.__tnuvaProductId));
     if (p) return { product: p, barcode: normalizeBarcode(p.barcode || ''), observed: String((row.__tnuvaRepair && row.__tnuvaRepair.from) || row.supplierItemCode || ''), method: 'tnuva_code_repair' };
@@ -11077,6 +11096,7 @@ function aiAutoResolveMethodHe(method) {
   if (method === 'auto_local_name_same_price') return 'המועמדים באותו מחיר — נבחר השם הקרוב ביותר (זהה כספית)';
   if (method === 'auto_local_name_promo') return 'הכוכבית והמבצע הכריעו בין מועמדים באותו מחיר';
   if (method === 'tnuva_code_repair') return 'תיקון ספרה אחת בקוד — המחיר אישר';
+  if (method === 'tnuva_code_second_read') return 'הקוד של הקריאה השנייה — המחיר אישר';
   if (method.indexOf('_qty_price') !== -1) return 'התאמת כמות ומחיר';
   if (method.indexOf('_qty') !== -1) return 'התאמת כמות לספירה';
   if (method === 'auto_name_price_unique') return 'המחיר מבדיל בין השמות הדומים';
@@ -11458,10 +11478,13 @@ function aiEvaluateInvoiceScan(payload) {
       if (['verified_suffix_name', 'verified_pattern_name', 'verified_one_digit_name'].includes(barcodeMatch.method)) warnings.push(product.name + ': הותאם אוטומטית לפי ראיית ברקוד יחידה ורמז שם תואם');
       if (barcodeMatch.method === 'verified_name_price') warnings.push(product.name + ': הותאם לפי שם יחיד והצלבת מחיר/חשבון מקומית');
       // v47: תיקון ספרה בקוד — נספר ומתועד ביומן בדיוק כמו הכרעה אוטומטית.
-      if (barcodeMatch.method === 'tnuva_code_repair') {
+      // v103: וכך גם שיוך לפי הקוד של הקריאה השנייה — אותה רמת ראיה, מקור אחר.
+      if (barcodeMatch.method === 'tnuva_code_repair' || barcodeMatch.method === 'tnuva_code_second_read') {
         const rep = row.__tnuvaRepair || {};
-        warnings.push(product.name + ': הקוד המודפס נקרא ' + (rep.from || '?') + ' ותוקן ל־' + (rep.to || '?') + ' — ספרה אחת, מחיר הקטלוג אישר');
-        autoResolutions.push({ documentIndex: index, rowIndex, lineNumber: rowNumber, sourcePage: Number(row.sourcePage), productId: product.id, productName: String(product.name || '').slice(0, 160), barcode, method: 'tnuva_code_repair', printedDescription: String(row.description || '').slice(0, 160), observed: rep.from || null, quantity: qty, lineTotalExVat: cents == null ? null : r2(cents / 100), rowConfidence: isFinite(rowConfidence) ? rowConfidence : 0 });
+        warnings.push(product.name + (barcodeMatch.method === 'tnuva_code_second_read'
+          ? ': הקוד נקרא ' + (rep.from || '?') + ' בקריאה אחת ו־' + (rep.to || '?') + ' בשנייה — רק השני קיים במאגר ומחיר הקטלוג אישר אותו'
+          : ': הקוד המודפס נקרא ' + (rep.from || '?') + ' ותוקן ל־' + (rep.to || '?') + ' — ספרה אחת, מחיר הקטלוג אישר'));
+        autoResolutions.push({ documentIndex: index, rowIndex, lineNumber: rowNumber, sourcePage: Number(row.sourcePage), productId: product.id, productName: String(product.name || '').slice(0, 160), barcode, method: barcodeMatch.method, printedDescription: String(row.description || '').slice(0, 160), observed: rep.from || null, quantity: qty, lineTotalExVat: cents == null ? null : r2(cents / 100), rowConfidence: isFinite(rowConfidence) ? rowConfidence : 0 });
       }
       // v183: מועמד הפיקדון נאסף לפני שער החשבון. ב-v182 שורת ה-ICE עצמה
       // נתקעה, ולכן המוצר לא נרשם כמועמד והשלמת שורת הפיקדון לא יכלה לרוץ.
@@ -11916,6 +11939,31 @@ function tnuvaCodeRepairCandidates(code) {
   out.delete(code);
   return out;
 }
+// v103: הקוד שהקריאה השנייה של אותו צילום קראה לאותה שורה. הוא מאומץ רק
+// כשהקוד שנבחר אינו מוביל לשום מוצר, הקוד השני מוביל למוצר יחיד, והמחיר
+// המודפס בשורה מאשר אותו — אותה רמת ראיה בדיוק של תיקון ספרה אחת, ומקור
+// חזק ממנו: הוא נקרא מהנייר בקריאה עצמאית, לא נוחש מתוך המאגר.
+function tnuvaSecondReadCode(rawIndex, row, built, consensus) {
+  const disputed = consensus && Array.isArray(consensus.disputedRows) ? consensus.disputedRows : [];
+  const entry = disputed.find(item => Number(item && item.rowIndex) === Number(rawIndex));
+  const field = entry && Array.isArray(entry.fields) ? entry.fields.find(item => String((item && item.field) || '') === 'code') : null;
+  const candidate = field ? tnuvaCodeOf(field.other) : null;
+  if (!candidate || built.ambiguous.has(candidate)) return null;
+  const product = built.map.get(candidate);
+  if (!product) return null;
+  const unit = row && row.unitPriceExVat != null ? Number(row.unitPriceExVat) : null;
+  const qty = row && row.quantity != null ? Number(row.quantity) : null;
+  const total = row && row.lineTotalExVat != null ? Number(row.lineTotalExVat) : null;
+  const effective = unit != null && isFinite(unit) ? aiMoneyCents(unit)
+    : (qty != null && qty > 0 && total != null && isFinite(total) ? Math.round(aiMoneyCents(total) / qty) : null);
+  const base = Number(product.price);
+  if (effective == null || !isFinite(base) || base <= 0) return null;
+  const options = [aiMoneyCents(base)];
+  const pr = promoForProduct(product.id, todayStr());
+  if (promoActive(pr, todayStr())) options.push(aiMoneyCents(discountedUnitPrice(base, Number(pr.pct) || 0)));
+  if (!options.some(option => option != null && Math.abs(option - effective) <= 2)) return null;
+  return { code: candidate, product };
+}
 function tnuvaRepairCode(code, row, built) {
   if (!code || code.length < 4) return null; // קודים קצרצרים — אין מספיק ראיות לתיקון
   const hits = [];
@@ -11977,12 +12025,18 @@ function tnuvaAdaptScanPayload(payload) {
       scan.warnings.push('המע"מ המודפס על הנייר (' + r2(Number(doc.vatPct)) + '%) שונה מהמוגדר באפליקציה (' + appVat + '%) — בדוק את ההגדרה. כל החישובים משתמשים בהגדרת האפליקציה בלבד.');
     }
     const kept = isCredit ? [] : items;
+    const rawIndexOf = new Map(rows.map((row, index) => [row, index]));
     doc.rows = kept.map(row => {
       const code = tnuvaCodeOf(row && row.code);
       let product = code && !built.ambiguous.has(code) ? (built.map.get(code) || null) : null;
       // v47 (הכרעתו 8.8): קוד שלא נמצא — ניסיון תיקון של ספרה אחת. נרשם ביומן.
-      let repair = null;
+      let repair = null, secondRead = null;
       if (!product && code) { repair = tnuvaRepairCode(code, row, built); if (repair) product = repair.product; }
+      // v103: עדיין לא זוהה — הקוד שהקריאה השנייה של אותו צילום קראה לשורה הזאת.
+      if (!product) {
+        secondRead = tnuvaSecondReadCode(rawIndexOf.get(row), row, built, payload && payload.consensus);
+        if (secondRead) product = secondRead.product;
+      }
       const fullBarcode = product ? normalizeBarcode(product.barcode || '') : '';
       return {
         sourcePage: Number(row && row.sourcePage) || 1,
@@ -11994,10 +12048,10 @@ function tnuvaAdaptScanPayload(payload) {
         // הוותיקה מאמתת לפי barcodeMatchMethod+barcodeObserved; בלעדיהם כל
         // שורה נפלה לשגיאה הגנרית (הבאג שנמצא 7.8). ברקוד קצר (<6 ספרות —
         // ארגזים/פיקדון) לא עומד בכלל הראיות של exact_full ומקבל ענף ייעודי.
-        barcodeObserved: repair ? code : (fullBarcode || null),
-        barcodeMatchMethod: fullBarcode ? (repair ? 'tnuva_code_repair' : (fullBarcode.length < 6 ? 'tnuva_code_exact' : 'exact_full')) : null,
+        barcodeObserved: (repair || secondRead) ? code : (fullBarcode || null),
+        barcodeMatchMethod: fullBarcode ? (secondRead ? 'tnuva_code_second_read' : repair ? 'tnuva_code_repair' : (fullBarcode.length < 6 ? 'tnuva_code_exact' : 'exact_full')) : null,
         __tnuvaProductId: product ? product.id : null,
-        __tnuvaRepair: repair ? { from: code, to: repair.code } : null,
+        __tnuvaRepair: repair ? { from: code, to: repair.code } : (secondRead ? { from: code, to: secondRead.code, secondRead: true } : null),
         catalogHintId: null,
         catalogCandidateHintIds: [],
         supplierItemCode: row && row.code != null ? String(row.code) : null,
