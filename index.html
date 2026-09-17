@@ -702,7 +702,7 @@ let receiptDupConfirmed = false; // אישור שמירה למרות חשד לכ
 const RECEIPT_DRAFT_KEY = 'tn_receipt_draft';
 let receivingDigitsMissTimer = null;
 let receivingDigitsMissNotified = '';
-const APP_VERSION = '105'; // בדיקת גרסת שירות הסריקה מתוך ההגדרות
+const APP_VERSION = '106'; // רשימת מועמדים לשורה שאף קריאה לא זיהתה
 // גרסה 73: מוצר בלי מחיר קופה — חלון הכמות מציג מיד את העלות ליח׳ (ללא מע״מ) ופותח שדה להקלדת המחיר שעובר בקופה, בלי לנדוד למסך המחירים
 // v40: תג גרסה קבוע בפינת המסך — לדעת בשנייה איזו גרסה באמת רצה על המכשיר
 // (עוזר במיוחד מול מטמון ה-PWA). pointer-events:none — לעולם לא חוסם מגע.
@@ -10153,6 +10153,63 @@ function receiptRivalCandidate(row, dispute) {
   if (Math.abs(Number(product.price) - printed) > PRICE_AUDIT_UNIT_TOLERANCE) return null;
   return { code, product };
 }
+// v106: שורה שאף קריאה לא נתנה לה קוד שקיים במאגר אינה חידה סתומה. שלוש
+// ראיות חלקיות עדיין יושבות עליה: קוד שנקרא ובלע ספרות מהעמודה הסמוכה ולכן
+// מכיל בתוכו קוד קיים, המחיר המודפס שמצמצם את המאגר, והתיאור המקוצר. יחד הן
+// רשימת מועמדים קצרה שאפשר לבחור ממנה בלחיצה — במקום ללכת לארגז לסרוק ברקוד.
+function receiptNameScore(printed, name) {
+  const clean = value => String(value == null ? '' : value).replace(/["'׳״.,()\-\/]/g, ' ').split(/\s+/).filter(token => token.length >= 2);
+  const left = clean(printed), right = clean(name);
+  let score = 0;
+  left.forEach(token => right.forEach(other => {
+    if (token === other) score += 4;
+    else if (token.length >= 3 && other.startsWith(token)) score += 3;
+    else if (other.length >= 3 && token.startsWith(other)) score += 3;
+    else if (token.slice(0, 2) === other.slice(0, 2)) score += 1;
+  }));
+  return score;
+}
+function receiptRowCandidates(row, dispute) {
+  if (!row) return [];
+  const printed = Number(row.originalUnitPrice);
+  const built = tnuvaBuildCodeIndex();
+  const codes = [String(row.code == null ? '' : row.code)]
+    .concat((dispute && Array.isArray(dispute.fields) ? dispute.fields : [])
+      .filter(item => String((item && item.field) || '') === 'code')
+      .reduce((all, item) => all.concat([item.selected, item.other]), []))
+    .map(value => String(value == null ? '' : value).replace(/\D/g, '').replace(/^0+/, ''))
+    .filter(Boolean);
+  const out = new Map();
+  const add = (product, reason, weight) => {
+    if (!product || !product.id || out.has(product.id)) return;
+    out.set(product.id, { product, reason, weight });
+  };
+  // קוד שנקרא ומכיל בתוכו קוד קיים במאגר — ספרות שנדבקו מהעמודה הסמוכה —
+  // כשהמחיר המודפס מאשר את המוצר. זו הראיה החזקה מבין השלוש.
+  if (isFinite(printed)) codes.forEach(code => built.map.forEach((product, candidate) => {
+    if (candidate.length < 4 || candidate === code || !(code.startsWith(candidate) || code.endsWith(candidate))) return;
+    if (!(Number(product.price) > 0) || Math.abs(Number(product.price) - printed) > PRICE_AUDIT_UNIT_TOLERANCE) return;
+    add(product, 'הקוד שנקרא (' + code + ') מכיל את ' + candidate + ', והמחיר תואם', 100 + candidate.length);
+  }));
+  // מחיר מודפס תואם, מדורג לפי קרבת השם המודפס.
+  if (isFinite(printed) && printed > 0) {
+    (products || []).filter(product => !product.hidden && Number(product.price) > 0
+        && Math.abs(Number(product.price) - printed) <= PRICE_AUDIT_UNIT_TOLERANCE)
+      .map(product => ({ product, score: receiptNameScore(row.name, product.name) }))
+      .sort((left, right) => right.score - left.score)
+      .slice(0, 6)
+      .forEach(({ product, score }) => add(product, score > 0 ? 'מחיר תואם ושם קרוב למודפס' : 'מחיר תואם למודפס', score));
+  }
+  return [...out.values()].sort((left, right) => right.weight - left.weight).slice(0, 8);
+}
+function receiptPickRowProduct(documentIndex, sourceIndex, productId) {
+  const row = receiptFindAuditRow(documentIndex, sourceIndex);
+  const product = (products || []).find(item => String(item.id) === String(productId));
+  if (!row || !product) { showToast('המוצר או השורה כבר אינם זמינים — רענן את המסך', null, null, 3400); return false; }
+  const ctx = { documentIndex: Number(documentIndex), sourceIndex: Number(sourceIndex), rowIndex: Number(row.rowIndex),
+    code: String(row.code || ''), name: String(row.name || ''), unitPrice: row.originalUnitPrice, quantity: row.quantity };
+  return receiptAssignRowProduct(ctx, product, product.barcode, 'picked_from_catalog');
+}
 function receiptAdoptRivalCode(documentIndex, sourceIndex) {
   const row = receiptFindAuditRow(documentIndex, sourceIndex);
   const disputes = receiptConsensusDisputes();
@@ -10222,6 +10279,23 @@ function receiptRowHeadHtml(row) {
     (row.originalUnitPrice != null ? ' · ₪' + fmtUnitPrice(row.originalUnitPrice, true) + ' ליח׳' : '') +
     (row.quantity != null && row.originalUnitPrice != null ? ' · ₪' + fmtMoney(r2(row.quantity * row.originalUnitPrice)) : '') + '</div>';
 }
+// המועמד הראשון מוצג פתוח עם הראיה שמאחוריו; השאר מקופלים, כי הם ניחוש
+// מדורג ולא ראיה. בחירה היא לחיצה אחת, בלי ללכת לארגז ובלי להקים מוצר חדש.
+function receiptRowCandidatesHtml(row, dispute, hasRival) {
+  const candidates = receiptRowCandidates(row, dispute);
+  if (!candidates.length) return '';
+  const button = (item, classes) => '<button data-role="rowfix-pick" data-doc="' + Number(row.documentIndex) +
+    '" data-row="' + Number(row.sourceIndex) + '" data-product="' + htmlEscape(String(item.product.id)) +
+    '" class="btn-tap w-full text-right rounded-lg py-2.5 px-3 mt-2 text-sm font-black ' + classes + '">' +
+    htmlEscape(item.product.name) + '<span class="block text-[10px] font-bold opacity-80 mt-0.5">₪' +
+    fmtUnitPrice(item.product.price, true) + ' · ' + htmlEscape(item.reason) + '</span></button>';
+  const strong = candidates[0].weight >= 100 && !hasRival ? candidates[0] : null;
+  const rest = strong ? candidates.slice(1) : candidates;
+  return (strong ? button(strong, 'bg-emerald-600 text-white') : '') +
+    (rest.length ? '<details class="mt-2"><summary class="cursor-pointer text-[11px] font-black text-violet-800">' +
+      (strong ? 'מועמד אחר מהמאגר (' + rest.length + ')' : 'בחר מוצר מהמאגר · ' + rest.length + ' מועמדים לפי המחיר והשם') +
+      '</summary>' + rest.map(item => button(item, 'bg-white border border-violet-300 text-violet-900')).join('') + '</details>' : '');
+}
 function receiptRowActionsHtml(report) {
   const actions = receiptRowActions(report);
   const settledLine = [actions.settled ? actions.settled + ' מחלוקות בין שתי הקריאות הוכרעו מול המאגר' : '',
@@ -10240,6 +10314,7 @@ function receiptRowActionsHtml(report) {
         'הקוד של הקריאה השנייה, ' + htmlEscape(rival.code) + ', כן קיים במאגר: <b>' + htmlEscape(rival.product.name) + '</b> — ₪' +
         fmtUnitPrice(rival.product.price, true) + ', בדיוק המחיר שמודפס בשורה.</div>' +
         receiptRowActionButton('rowfix-rival', row, '<i class="fa-solid fa-check ml-1"></i>זה המוצר — שייך את השורה', 'bg-emerald-600 text-white w-full mt-2') : '') +
+      receiptRowCandidatesHtml(row, dispute, !!rival) +
       '<div class="text-[11px] font-bold text-slate-500 mt-2">' + (rival ? 'או ס' : 'ס') + 'רוק את הברקוד מהמוצר עצמו: אם הוא במאגר השורה תשויך אליו, ואם לא — ייפתח כרטיס מוצר חדש מלא עם השם והמחיר מהנייר.</div>' +
       '<div class="grid grid-cols-2 gap-2 mt-2">' +
         receiptRowActionButton('rowfix-scan', row, '<i class="fa-solid fa-barcode ml-1"></i>סרוק ברקוד מהמוצר', rival ? 'bg-white border border-violet-300 text-violet-800' : 'bg-violet-600 text-white') +
@@ -10388,7 +10463,7 @@ function receiptAssignRowProduct(ctx, product, barcode, method) {
   mapped.barcodeMatchMethod = 'user_confirmed';
   mapped.barcodeUserConfirmedFromObserved = digits;
   mapped.barcodeUserConfirmedFromReadType = 'full';
-  mapped.barcodeUserConfirmedFromMethod = method === 'second_read_code' ? 'second_read_code' : 'scanned_product';
+  mapped.barcodeUserConfirmedFromMethod = ['second_read_code', 'picked_from_catalog'].includes(method) ? method : 'scanned_product';
   mapped.barcodeUserConfirmedFromCatalogHintId = String(product.id);
   mapped.__tnuvaProductId = product.id;
   mapped.__tnuvaRepair = null;
@@ -10956,6 +11031,12 @@ function aiResolveInvoiceBarcode(row) {
       const retryConfidence = Number(row && row.barcodeRetryConfidence);
       if (sourceReadType !== 'full' || !aiIsValidEan13(sourceObserved) || resolved !== sourceObserved || row.barcodeRetryApplied !== true || row.barcodeRetryConflict === true || String(row.barcodeInitialReadType || '') !== 'full' || String(row.barcodeRetryReadType || '') !== 'full' || initial !== resolved || retry !== resolved || !Number.isFinite(retryConfidence) || retryConfidence < 0.78) {
         return { error: 'המוצר החדש אינו תואם לברקוד שאומת בשתי הקריאות' };
+      }
+    } else if (sourceMethod === 'picked_from_catalog') {
+      // v106: המשתמש בחר את המוצר מרשימת המועמדים שהוצגה לשורה. הראיה היא
+      // הבחירה עצמה, ולכן היא חייבת להצביע בדיוק על המוצר שהברקוד מוביל אליו.
+      if (String(row && row.barcodeUserConfirmedFromCatalogHintId || '') !== String(matches[0].product.id)) {
+        return { error: 'הבחירה אינה תואמת למוצר שהברקוד מוביל אליו' };
       }
     } else if (sourceMethod === 'second_read_code') {
       // v101: הקוד שהקריאה השנייה של אותו צילום קראה, כשהוא מוביל למוצר יחיד
@@ -20171,6 +20252,7 @@ app.addEventListener('click', (e) => {
   if (role === 'ai-add-unknown-product') { aiOpenUnknownProduct(parseInt(t.dataset.doc, 10), parseInt(t.dataset.row, 10)); return; }
   if (role === 'rowfix-scan') { receiptOpenRowProductScan(parseInt(t.dataset.doc, 10), parseInt(t.dataset.row, 10)); return; }
   if (role === 'rowfix-rival') { receiptAdoptRivalCode(parseInt(t.dataset.doc, 10), parseInt(t.dataset.row, 10)); return; }
+  if (role === 'rowfix-pick') { receiptPickRowProduct(parseInt(t.dataset.doc, 10), parseInt(t.dataset.row, 10), t.dataset.product); return; }
   if (role === 'rowfix-new') { receiptOpenRowNewProduct(parseInt(t.dataset.doc, 10), parseInt(t.dataset.row, 10)); return; }
   if (role === 'rowfix-confirm') { receiptConfirmDisputedRow(parseInt(t.dataset.doc, 10), parseInt(t.dataset.row, 10)); return; }
   if (role === 'rowfix-price-doc') { receiptConfirmRowPrice(parseInt(t.dataset.doc, 10), parseInt(t.dataset.row, 10), 'document'); return; }

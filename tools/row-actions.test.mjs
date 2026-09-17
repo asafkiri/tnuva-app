@@ -133,6 +133,27 @@ test('a second-read code is adopted only when the catalog price confirms it', as
   assert.deepEqual(actions(unread).unidentified.map(item => item.line), [2, 3]);
 });
 
+test('a code that swallowed digits from the next column still points at one product', async () => {
+  // שורה 3: הקוד לא נקרא כלל, הקריאה השנייה נתנה 7296150612 — שמתחיל ב-72961506
+  // (פרילי תות, ₪2.58, בדיוק המחיר בשורה). זה המצב של שורה 18 ב-13:50.
+  const c = await scanned(secondReadCase(2, '7296150612', null));
+  const view = html(c);
+  assert.match(view, /פרילי תות 125 גרם/);
+  assert.match(view, /הקוד שנקרא \(7296150612\) מכיל את 72961506, והמחיר תואם/);
+  c.click('rowfix-pick', null, { doc: '0', row: '2', product: 'p_prili' });
+  const row = JSON.parse(c.run("JSON.stringify(aiScanResponse.scan.documents[0].rows[2])"));
+  assert.equal(row.__tnuvaProductId, 'p_prili');
+  assert.equal(row.barcodeUserConfirmedFromMethod, 'picked_from_catalog');
+  assert.equal(JSON.parse(c.run("JSON.stringify(aiResolveInvoiceBarcode(aiScanResponse.scan.documents[0].rows[2]).product || null)")).id, 'p_prili');
+  assert.deepEqual(actions(c).unidentified, [], 'the last open row closed with one tap');
+});
+
+test('a row with no readable price offers no candidates rather than a guess', async () => {
+  const c = await scanned(paperWith({ rows: rows.map((row, index) => index === 2 ? { ...row, unitPriceExVat: null, lineTotalExVat: null } : row) }));
+  const candidates = c.run(`JSON.stringify(receiptRowCandidates(receiptPriceAudit().rows.find(r => r.line === 3), null))`);
+  assert.deepEqual(JSON.parse(candidates), [], 'no price, no shortlist');
+});
+
 test('a product added to the catalog after the scan is still offered as one tap', async () => {
   // בזמן הסריקה הקוד של הקריאה השנייה לא היה במאגר, ולכן לא שויך אוטומטית.
   const c = await scanned(secondReadCase(1, '55503'));
