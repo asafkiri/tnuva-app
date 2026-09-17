@@ -702,7 +702,7 @@ let receiptDupConfirmed = false; // אישור שמירה למרות חשד לכ
 const RECEIPT_DRAFT_KEY = 'tn_receipt_draft';
 let receivingDigitsMissTimer = null;
 let receivingDigitsMissNotified = '';
-const APP_VERSION = '104'; // סריקה שנכשלה אינה מוחקת קריאה מאומתת
+const APP_VERSION = '105'; // בדיקת גרסת שירות הסריקה מתוך ההגדרות
 // גרסה 73: מוצר בלי מחיר קופה — חלון הכמות מציג מיד את העלות ליח׳ (ללא מע״מ) ופותח שדה להקלדת המחיר שעובר בקופה, בלי לנדוד למסך המחירים
 // v40: תג גרסה קבוע בפינת המסך — לדעת בשנייה איזו גרסה באמת רצה על המכשיר
 // (עוזר במיוחד מול מטמון ה-PWA). pointer-events:none — לעולם לא חוסם מגע.
@@ -1201,6 +1201,25 @@ async function tnuvaEnsurePhotoService() {
     const status = await response.json();
     if (!response.ok || !status.ok || !status.keyConfigured) throw new Error('שירות הפענוח אינו זמין כרגע. אפשר להמשיך בספירה ולהזין את הסיכום ידנית.');
     if (Number(status.serviceVersion) < 10 || status.photoFirst !== true) throw new Error('שירות הצילום בתחילת הקליטה עדיין לא עודכן. אפשר להזין את הסיכום ידנית.');
+  } finally { clearTimeout(timer); }
+}
+// v105: מה בדיוק רץ עכשיו בשירות הסריקה — גרסה, המודל הזול, ומודל ההסלמה.
+// בלי זה הדרך היחידה לדעת אם פריסה עלתה הייתה לפתוח כתובת ידנית בדפדפן.
+async function tnuvaShowServiceVersion() {
+  const line = $('cfgServiceLine');
+  if (line) line.innerHTML = 'שירות הסריקה: בודק…';
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 15000);
+  try {
+    const response = await fetch(AI_SCAN_WORKER_URL.replace(/\/scan$/, '/health'), { cache: 'no-store', signal: controller.signal });
+    const status = await response.json();
+    const text = 'שירות הסריקה: גרסה ' + htmlEscape(String(status.serviceVersion == null ? 'לא ידועה' : status.serviceVersion)) +
+      ' · ' + htmlEscape(String(status.model || 'ללא מודל')) +
+      (status.retryModel ? ' · הסלמה: ' + htmlEscape(String(status.retryModel)) : ' · ללא מודל הסלמה') +
+      (status.keyConfigured ? '' : ' · חסר מפתח');
+    if (line) line.textContent = text;
+  } catch (error) {
+    if (line) line.textContent = 'שירות הסריקה: לא נענה (' + ((error && error.name === 'AbortError') ? 'לא ענה תוך 15 שניות' : 'שגיאת רשת') + ')';
   } finally { clearTimeout(timer); }
 }
 async function tnuvaStartPaperScan(opts = {}) {
@@ -2244,7 +2263,10 @@ function renderSettings() {
   app.innerHTML =
     '<div class="bg-white rounded-2xl shadow-sm border border-slate-200 p-4 mb-4">' +
       '<div class="flex items-center gap-2 mb-2"><i class="fa-solid fa-sliders text-blue-600"></i><h2 class="font-black text-lg text-slate-800">הגדרות מערכת</h2></div>' +
-      '<div class="text-[11px] text-slate-400 font-bold mb-3">נשמר בענן — מתעדכן בכל המכשירים · גרסת אפליקציה: ' + APP_VERSION + '</div>' +
+      '<div class="text-[11px] text-slate-400 font-bold mb-1">נשמר בענן — מתעדכן בכל המכשירים · גרסת אפליקציה: ' + APP_VERSION + '</div>' +
+      // v105: גרסת שירות הסריקה נבדקה עד כה רק בפתיחת כתובת ידנית בדפדפן.
+      // כאן היא נשאלת מהשירות עצמו בלחיצה, עם המודלים שהוא מוגדר להריץ.
+      '<div id="cfgServiceLine" class="text-[11px] font-bold text-slate-400 mb-3">שירות הסריקה: <button data-role="cfg-service-check" class="underline text-blue-600 font-black">בדוק גרסה</button></div>' +
       '<div class="mb-2"><label class="block text-xs font-bold text-slate-500 mb-1">שם החנות (מופיע על השלטים)</label><input id="cfgStore" type="text" value="' + storeName.replace(/"/g, '&quot;') + '" class="w-full p-2.5 rounded-lg border-2 border-slate-200 outline-none font-black focus:border-blue-500"></div>' +
       '<div class="flex gap-2 items-end">' +
         '<div class="flex-1"><label class="block text-xs font-bold text-slate-500 mb-1">מע״מ (%)</label><input id="cfgVat" type="text" inputmode="decimal" value="' + r2(VAT * 100) + '" class="w-full p-2.5 rounded-lg border-2 border-slate-200 outline-none text-center font-black focus:border-blue-500"></div>' +
@@ -20110,6 +20132,7 @@ app.addEventListener('click', (e) => {
   if (role === 'rc-draft-retry') { flushReceiptDraftToCloud(); return; }
   if (role === 'rc-draft-cloud' || role === 'rc-draft-local') { resolveReceiptDraftConflict(role === 'rc-draft-local'); return; }
   if (role === 'rc-anchor-entry') { if (!aiScanBusy) tnuvaStartAnchorEntry(parseInt(t.dataset.doc, 10), t.dataset.basis); return; }
+  if (role === 'cfg-service-check') { tnuvaShowServiceVersion(); return; }
   if (role.startsWith('rc-photo-')) {
     if (aiScanBusy) return;
     const docIndex = Number(t.dataset.doc) || 0;
