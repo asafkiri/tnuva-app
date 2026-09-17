@@ -225,7 +225,7 @@ test(supplier+': accepted identity correction rechecks saved original paper loca
 });
 test(supplier+': each document retains its own promotion date within one receipt',async()=>{
  const data=fixture({unit:4,promo:supplier==='berman'?{fixedPrice:4}:{}}),c=create(data);let calls=0;const original=c.context.fetch;
- c.context.fetch=async(url,options)=>{const response=await original(url,options);if(String(url).endsWith('/scan')){const payload=await response.json();payload.scan.documents[0].docDate=++calls===1?'2026-09-09':'2026-08-31';return {...response,json:async()=>payload};}return response;};
+ c.context.fetch=async(url,options)=>{const response=await original(url,options);if(String(url).endsWith('/scan')){const payload=await response.json();payload.scan.documents[0].docDate=++calls===1?'2026-09-09':'2026-08-31';const body=JSON.stringify(payload);return {...response,text:async()=>body,json:async()=>JSON.parse(body)};}return response;};
  await scan(c,data,{documents:2,completeDate:false});const rows=report(c).rows;
  assert.equal(rows[0].date,'2026-09-09');assert.equal(rows[0].result,'match');assert.equal(rows[1].date,'2026-08-31');assert.equal(rows[1].result,'difference');assert.equal(requests(c),2);
 });
