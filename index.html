@@ -702,7 +702,7 @@ let receiptDupConfirmed = false; // אישור שמירה למרות חשד לכ
 const RECEIPT_DRAFT_KEY = 'tn_receipt_draft';
 let receivingDigitsMissTimer = null;
 let receivingDigitsMissNotified = '';
-const APP_VERSION = '98'; // תאריך שלא נקרא מונח כהיום, וסיכום שלא נסגר מציג את החשבון
+const APP_VERSION = '99'; // מבצע בלי שורת הנחה שנקראה הוא "לא ידוע", לא האשמה
 // גרסה 73: מוצר בלי מחיר קופה — חלון הכמות מציג מיד את העלות ליח׳ (ללא מע״מ) ופותח שדה להקלדת המחיר שעובר בקופה, בלי לנדוד למסך המחירים
 // v40: תג גרסה קבוע בפינת המסך — לדעת בשנייה איזו גרסה באמת רצה על המכשיר
 // (עוזר במיוחד מול מטמון ה-PWA). pointer-events:none — לעולם לא חוסם מגע.
@@ -9979,7 +9979,7 @@ function priceAuditSetDate(index, value) {
 // Rendering the review replaces price alerts only in the presentation layer.
 // Original financial findings remain untouched for the existing closure math.
 function priceAuditLegacyVisible(f) {
-  if (!f || !['price', 'promo_missing'].includes(f.type)) return true;
+  if (!f || !['price', 'promo_missing', 'promo_unread'].includes(f.type)) return true;
   const a = receiptPriceAudit();
   // Only a row the review actually judged replaces the old alert. A row it could
   // not check is not an answer, and hiding a finding behind it drops a real
@@ -11259,7 +11259,7 @@ function aiEvaluateInvoiceScan(payload) {
     if (!Number.isInteger(idx) || returned.has(idx)) errors.push('מספור המסמכים שחזר מה-AI אינו תקין');
     else returned.set(idx, doc);
   });
-  let extractedTotalCents = 0, extractedUnits = 0, rowTotalCents = 0, verifiedDocumentDiscountCents = 0;
+  let extractedTotalCents = 0, extractedUnits = 0, rowTotalCents = 0, verifiedDocumentDiscountCents = 0, documentDiscountUnread = false;
   // v178: תעודה שלא חזר עבורה פענוח — או שחזרה בלי שורות מוצר — נספרת במפורש.
   // בלי הספירה הזאת אין לה שורות "שלא שויכו" ואין לה שורות פגומות, ולכן
   // basketComplete נשאר אמת והמערכת הכריזה "עודף" על כל מה שנסרק מהתעודה החסרה.
@@ -11289,6 +11289,11 @@ function aiEvaluateInvoiceScan(payload) {
     if (Number(doc.pageCount) !== capturedPages) errors.push('תעודה ' + (index + 1) + ': מספר העמודים שפוענחו אינו זהה למספר התמונות שצולמו');
     const subtotalCents = aiMoneyCents(doc.subtotalExVat);
     const expectedCents = aiMoneyCents(inputDoc.amount);
+    // v99: בלי "סהכ חייב מעמ" אי אפשר לאמת את הנחת המסמך, ולכן גם אי אפשר
+    // לדעת אם מבצע ירד. נזכר כאן כדי שההסקה על המבצעים תבדיל בין "הנייר נסגר
+    // בלי הנחה" לבין "בלוק הסיכום לא היה בתוך הצילום". רק היעדר הסיכום נחשב:
+    // מסמך שנסגר בדיוק בלי שורת הנחה כן מוכיח שהמבצע לא ירד.
+    if (subtotalCents == null) documentDiscountUnread = true;
     if (subtotalCents == null) errors.push('הסכום ללא מע״מ לא נקרא בתעודה ' + (index + 1));
     else {
       extractedTotalCents += subtotalCents;
@@ -11601,6 +11606,18 @@ function aiEvaluateInvoiceScan(payload) {
       }
       findings.push(Object.assign({ type: 'promo_missing_catalog' }, catalogPromoGap));
       errors.push('חסר מבצע במאגר: ' + catalogPromoGap.name + ' ' + catalogPromoGap.pct + '% (₪' + fmtMoney(catalogPromoGap.amount) + '). הנייר נתן הנחה שהמערכת אינה מכירה, ולכן החשבון אינו נסגר.');
+    } else if (promoCandidates.length && documentDiscountUnread) {
+      // v99: אצל תנובה כל שורת מבצע מודפסת במחיר מלא, וההנחה כולה יושבת
+      // בשורה אחת בתחתית ("סד הנחה בגין מבצעים"). כשבלוק הסיכום לא היה בתוך
+      // הצילום, שורה במחיר מלא אינה ראיה שהמבצע לא ירד — היא בדיוק מה שהנייר
+      // אמור להראות. עד כאן נכתב מזה "המבצע לא מופיע אצל הספק": האשמה על
+      // סמך מספר שלא נקרא. מעכשיו זה נאמר כמה שהוא — לא ידוע — ובלי כסף.
+      promoCandidates.forEach(candidate => findings.push(Object.assign({}, candidate, {
+        type: 'promo_unread', amount: 0,
+        text: 'לא ידוע אם המבצע ירד: ' + candidate.name + ' — במערכת ₪' + fmtMoney(candidate.expectedPrice) + ', בנייר ₪' + fmtMoney(candidate.paperPrice)
+      })));
+      errors.push('שורת "סד הנחה בגין מבצעים" לא נקראה מהצילום, ולכן אי אפשר לדעת אם ' + promoCandidates.length +
+        ' המבצעים ירדו בתעודה. צלם שוב וכלול את תחתית התעודה לפני שתתבע משהו מהספק.');
     } else {
       findings.push(...promoCandidates);
       if (promoResidualCents > 0 && verifiedDocumentDiscountCents > 0) {
@@ -12441,7 +12458,9 @@ function aiScanAllGood(ev) {
   return findings.length === 0 && residuals.length === 0 && unknown.length === 0;
 }
 function aiIsActionableFinding(finding) {
-  return !!finding && ['shortage', 'surplus', 'price', 'promo_missing'].includes(String(finding.type || ''));
+  // promo_unread אינו טענה נגד הספק אלא צילום חסר — ולכן הוא מוצג כפעולה
+  // שצריך לעשות (לצלם שוב), אבל לעולם אינו נכנס לכסף ולא לתביעה.
+  return !!finding && ['shortage', 'surplus', 'price', 'promo_missing', 'promo_unread'].includes(String(finding.type || ''));
 }
 function aiIsPendingBarcodeChoice(suggestion) {
   if (!suggestion) return false;
@@ -12465,7 +12484,9 @@ function aiCompactFindingGroupHtml(type, title, findings, extraRowsHtml, extraCo
       ? { box: 'bg-amber-50 border-amber-200', head: 'text-amber-800', badge: 'bg-amber-100 text-amber-800', icon: 'fa-circle-plus' }
       : (type === 'promo_missing'
         ? { box: 'bg-orange-50 border-orange-200', head: 'text-orange-900', badge: 'bg-orange-100 text-orange-900', icon: 'fa-tags' }
-        : { box: 'bg-blue-50 border-blue-200', head: 'text-blue-900', badge: 'bg-blue-100 text-blue-900', icon: 'fa-shekel-sign' }));
+        : (type === 'promo_unread'
+          ? { box: 'bg-slate-50 border-slate-300', head: 'text-slate-700', badge: 'bg-slate-200 text-slate-700', icon: 'fa-circle-question' }
+          : { box: 'bg-blue-50 border-blue-200', head: 'text-blue-900', badge: 'bg-blue-100 text-blue-900', icon: 'fa-shekel-sign' })));
   const compactRows = rows.map(finding => {
     if (type === 'shortage' || type === 'surplus') {
       const label = type === 'shortage' ? 'חסר' : 'עודף';
@@ -12567,6 +12588,10 @@ function aiActionableFindingsHtml(findings) {
     aiCompactFindingGroupHtml('surplus', 'עודפים', actionable) +
     aiCompactFindingGroupHtml('price', 'בעיות מחיר', actionable) +
     aiCompactFindingGroupHtml('promo_missing', 'מבצע קיים במערכת אך לא בתעודה', actionable) +
+    aiCompactFindingGroupHtml('promo_unread', 'מבצע שאי אפשר לאמת — תחתית התעודה לא בצילום', actionable,
+      actionable.some(finding => finding && finding.type === 'promo_unread')
+        ? '<div class="py-2 border-t border-black/5 text-[11px] font-bold text-slate-600">אצל תנובה כל שורת מבצע מודפסת במחיר מלא, וההנחה כולה יושבת בשורת "סד הנחה בגין מבצעים" שבתחתית. היא לא נקראה מהצילום, ולכן אי אפשר לדעת אם המבצע ירד. צלם שוב וכלול את תחתית התעודה.</div>'
+        : '') +
   '</div></div>';
 }
 function aiInformationalFindingsHtml(findings) {
