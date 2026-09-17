@@ -17,12 +17,81 @@ for(const s of suppliers) {
   });
   // v102: נפילת רשת בחנות אינה מאפסת תעודה. שני הכשלים שנצפו ב-17.9 כאן:
   // ניסיון יחיד שנשבר על העלאה שנקטעה, ועוגן מאומת שנמחק בגלל סריקה שנכשלה.
+  // v107: הניסיון החוזר מבקש קודם לאסוף את הסריקה שכבר רצה (בקשה זעירה עם אותו
+  // מפתח), ורק שרת שאינו מכיר את המפתח גורר העלאה מלאה מחדש. בשטח זה ההבדל בין
+  // "צלם הכול שוב" לבין לאסוף סריקה בת שתי דקות ששולמה כבר במלואה.
   test(s+': HEALTHY a dropped upload is retried instead of failing the whole document',async()=>{
     const a=runtime(s);let calls=0;const original=a.context.fetch;
     a.context.fetch=async(...args)=>{if(args[0].endsWith('/scan')&&++calls===1)throw Error('Load failed');return original(...args)};
     await a.scan();
-    assert.equal(calls,2,'the first attempt died on the network, the second answered');
-    assert.equal(scanCount(a),1,'only the answered attempt reached the service');
+    assert.equal(calls,3,'the upload died, the collect attempt found nothing, and the photos were sent again');
+    const bodies=a.requests.filter(r=>r.url.endsWith('/scan')).map(r=>JSON.parse(r.body));
+    assert.equal(bodies.length,2,'only the attempts that reached the service are counted');
+    assert.equal(bodies[0].resume,true,'the retry asks to collect before it re-uploads anything');
+    assert.equal(bodies[0].documents,undefined,'and it carries no photos');
+    assert.equal(bodies[1].scanKey,bodies[0].scanKey,'the full send keeps the same key, so it stays collectable');
+    assert.equal(a.run('receiptPaperScanState'),'ok');
+    assert.equal(raw(a),1);
+  });
+  // זה בדיוק מה שקרה בחנות ב-17.9: הצילומים הגיעו, השירות קרא ושילם דקה וחצי,
+  // והקו של הטלפון מת לפני שהתשובה חזרה. עד v106 זה היה "הסריקה לא הצליחה"
+  // והכול נזרק; מעכשיו הניסיון החוזר אוסף את אותה סריקה עצמה.
+  test(s+': HEALTHY the photos arrived and the answer did not: the scan is collected, not repaid',async()=>{
+    const a=runtime(s);const original=a.context.fetch;let dead=true;
+    a.context.fetch=async(url,options)=>{
+      if(!String(url).endsWith('/scan')) return original(url,options);
+      const answer=await original(url,options);              // ההעלאה הגיעה והשירות קרא
+      if(dead&&!JSON.parse(options.body).resume){dead=false;throw Error('Load failed');} // ורק התשובה מתה על קו סגור
+      return answer;
+    };
+    await a.scan();
+    const bodies=a.requests.filter(r=>r.url.endsWith('/scan')).map(r=>JSON.parse(r.body));
+    assert.equal(bodies.length,2,'שתי בקשות: הצילומים פעם אחת, ואחריהם איסוף');
+    assert.equal(bodies[1].resume,true);
+    assert.equal(bodies[1].scanKey,bodies[0].scanKey);
+    assert.equal(a.run('receiptPaperScanState'),'ok');
+    assert.equal(raw(a),1);
+  });
+  // המפתח שייך לבקשה המדויקת: אותם צילומים ואותם עוגנים. עוגן שהוקלד מחדש הוא
+  // בקשה לקריאה חדשה, ולא איסוף של קריאה שרצה על סכום אחר.
+  test(s+': HEALTHY the collect key belongs to the exact request, photos and typed anchors alike',()=>{
+    const a=runtime(s);
+    const fp=(url,expected)=>a.run(`aiScanPagesFingerprint([{dataUrl:${JSON.stringify(url)}}],${JSON.stringify(expected)})`);
+    assert.equal(fp('data:image/jpeg;base64,AAAA',{amount:50,lines:3}),fp('data:image/jpeg;base64,AAAA',{amount:50,lines:3}));
+    assert.notEqual(fp('data:image/jpeg;base64,AAAA',{amount:50,lines:3}),fp('data:image/jpeg;base64,AAAA',{amount:60,lines:3}));
+    assert.notEqual(fp('data:image/jpeg;base64,AAAA',{amount:50,lines:3}),fp('data:image/jpeg;base64,AAAA',{amount:50,lines:4}));
+    assert.notEqual(fp('data:image/jpeg;base64,AAAA',{amount:50,lines:3}),fp('data:image/jpeg;base64,BBBB',{amount:50,lines:3}));
+    assert.notEqual(fp('data:image/jpeg;base64,AAAA',null),fp('data:image/jpeg;base64,AAAAA',null));
+  });
+  // מסך של סריקה שנכשלה אומר את הסיבה, לא שש שורות "לא נקרא" על תעודה שמעולם
+  // לא חזרה. ב-17.9 הרשימה הזאת הסתירה את הסיבה היחידה שבאמת קרתה.
+  test(s+': HEALTHY a document that never came back says why, instead of six derived complaints',async()=>{
+    const a=runtime(s);const original=a.context.fetch;
+    a.context.fetch=async(url,options)=>{if(String(url).endsWith('/scan'))throw Error('Load failed');return original(url,options)};
+    await a.scan();
+    const problems=a.run('JSON.stringify(receiptPaperScanProblems)');
+    assert.equal(a.run('receiptPaperScanState'),'failed');
+    assert.doesNotMatch(problems,/\u05dc\u05d0 \u05e0\u05e7\u05e8\u05d0 \u05e1\u05d4\u05db|\u05dc\u05d0 \u05e0\u05e7\u05e8\u05d0\u05d5 \u05e9\u05d5\u05e8\u05d5\u05ea \u05de\u05d5\u05e6\u05e8\u05d9\u05dd|\u05d0\u05d9\u05e0\u05d5 \u05ea\u05d5\u05d0\u05dd \u05dc\u05e6\u05d9\u05dc\u05d5\u05de\u05d9\u05dd/);
+    assert.match(problems,/\u05d4\u05d7\u05d9\u05d1\u05d5\u05e8 \u05e0\u05e4\u05dc|\u05d4\u05e7\u05e8\u05d9\u05d0\u05d4 \u05dc\u05d0 \u05d4\u05d5\u05e9\u05dc\u05de\u05d4/);
+  });
+  // ואם גם האיסוף לא מצליח כי הרשת כולה מתה — הסריקה נכשלת, אבל המפתח נשמר,
+  // ולחיצה נוספת על "סרוק" אוספת אותה במקום לצלם ולשלם מחדש.
+  test(s+': HEALTHY a scan the line died on is collected by the next attempt, not paid for again',async()=>{
+    const a=runtime(s);const original=a.context.fetch;let dead=true;
+    a.context.fetch=async(url,options)=>{
+      if(!String(url).endsWith('/scan')) return original(url,options);
+      const answer=await original(url,options);
+      if(dead) throw Error('Load failed');
+      return answer;
+    };
+    await a.scan();
+    assert.equal(a.run('receiptPaperScanState'),'failed','שלוש נפילות רצופות הן כישלון');
+    assert.equal(a.run('receiptScanHistory[receiptScanHistory.length-1].code'),'network_error');
+    assert.match(a.run('receiptScanHistory[receiptScanHistory.length-1].error'),/הסריקה עצמה ממשיכה בשרת/);
+    dead=false;
+    await a.run(s+'StartPaperScan()');
+    const collected=a.requests.filter(r=>r.url.endsWith('/scan')).map(r=>JSON.parse(r.body));
+    assert.equal(collected[collected.length-1].resume,true,'הסריקה החוזרת אספה ולא שלחה צילומים מחדש');
     assert.equal(a.run('receiptPaperScanState'),'ok');
     assert.equal(raw(a),1);
   });

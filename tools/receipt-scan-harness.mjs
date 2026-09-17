@@ -9,6 +9,7 @@ export function runtime(supplier, { storage = new Map(), data = fixture(supplier
   const moduleSource = html.match(/<script type="module">([\s\S]*?)<\/script>/)[1]
     .replace(/^import[\s\S]*?from "https:\/\/www\.gstatic\.com\/firebasejs\/[^"\n]+";\n/gm, '');
   const nodes = new Map(), callbacks = [], events = new Map(), requests = [], writes = [], toasts = [];
+  const scanJobs = new Set(); // v107: מפתחות של סריקות שהגיעו לשירות וניתנות לאיסוף
   function node(id) {
     if (nodes.has(id)) return nodes.get(id);
     const classes = new Set(['hidden']);
@@ -41,12 +42,26 @@ export function runtime(supplier, { storage = new Map(), data = fixture(supplier
     initializeApp: () => ({}), getAuth: () => ({ currentUser }), initializeFirestore: () => ({}),
     getFirestore: () => ({}), persistentLocalCache: () => ({}), persistentMultipleTabManager: () => ({}),
     signInAnonymously: async () => ({}), onAuthStateChanged() {},
+    // תשובה כמו של fetch אמיתי: גם text() וגם json(). הלקוח קורא את הגוף כטקסט
+    // ומנתח אותו בעצמו, כדי לזהות תשובה שנקטעה באמצע (v107).
     fetch: async (url, options) => {
       requests.push({ url: String(url), body: options?.body });
-      if (options?.body && JSON.parse(options.body).mode === 'analyze') return {ok:true, status:200, json:async()=>({ok:true,analysis:{claims:[],summary:'fixture'}})};
-      if (String(url).endsWith('/health')) return { ok: true, json: async () => ({ok: true, keyConfigured: true, serviceVersion: supplier === 'tnuva' ? 10 : 145, photoFirst: true}) };
+      const reply = (value, status = 200) => {
+        const body = typeof value === 'string' ? value : JSON.stringify(value);
+        return { ok: status >= 200 && status < 300, status, text: async () => body, json: async () => JSON.parse(body) };
+      };
+      if (options?.body && JSON.parse(options.body).mode === 'analyze') return reply({ok:true,analysis:{claims:[],summary:'fixture'}});
+      if (String(url).endsWith('/health')) return reply({ok: true, keyConfigured: true, serviceVersion: supplier === 'tnuva' ? 10 : 145, photoFirst: true});
       if (!String(url).endsWith('/scan')) throw new Error('Unexpected network request: ' + url);
-      return { ok: true, status: 200, json: async () => structuredClone(data.paper) };
+      const sent = options?.body ? JSON.parse(options.body) : {};
+      // כמו בשרת: סריקה שהגיעה נשמרת תחת המפתח שלה וניתנת לאיסוף אחרי נתק;
+      // מפתח שהמופע לא ראה עונה "אינני מכיר", והלקוח שולח את הצילומים שוב.
+      if (sent.resume === true) {
+        if (!scanJobs.has(sent.scanKey)) return reply({ ok: false, error: 'resume_unknown', serviceVersion: 13 });
+        return reply(structuredClone(data.paper));
+      }
+      if (sent.scanKey) scanJobs.add(sent.scanKey);
+      return reply(structuredClone(data.paper));
     }
   });
   vm.runInContext(moduleSource, context, { filename: 'index.html', timeout: 5000 });

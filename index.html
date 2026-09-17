@@ -686,6 +686,15 @@ const AI_SCAN_NETWORK_RETRIES = 2;
 const AI_SCAN_FETCH_TIMEOUT_MS = 300000;
 const AI_SCAN_NETWORK_RETRY_DELAY_MS = 2500;
 const AI_SCAN_MIN_SERVICE_VERSION = 1; // v34: סדרת גרסאות חדשה של שרת תנובה (v1+)
+// ===== v107: סריקה ששרדה נתק =====
+// קריאה כפולה + הסלמה נמשכת דקה וחצי עד שתיים (נמדד בחנות 17.9: 81 עד 128
+// שניות), ובזמן הזה הטלפון לא תמיד מחזיק את החיבור: נעילת מסך, מעבר אנטנה או
+// יציאה מהאפליקציה חותכים את התשובה באמצע. עד כאן זה נראה כמו "הסריקה החכמה
+// לא הצליחה" בלי קוד ובלי יומן — סריקה שלמה, ששולמה במלואה, נזרקה לפח. מעכשיו
+// כל סריקה נושאת מפתח, והשרת ממשיך לעבוד גם בלי החיבור: אחרי נתק מספיק
+// להתחבר מחדש עם אותו מפתח ולאסוף את התוצאה, בלי לצלם שוב ובלי לשלם שוב.
+const AI_SCAN_RESUME_TTL_MS = 25 * 60 * 1000;
+const aiScanCutKeys = new Map(); // טביעת אצבע של הצילומים → מפתח של סריקה שהקו מת עליה
 const AI_BARCODE_SUFFIX_DIGITS = 6;
 let aiOrientationSession = null;
 let aiOrientationBusy = false;
@@ -702,7 +711,7 @@ let receiptDupConfirmed = false; // אישור שמירה למרות חשד לכ
 const RECEIPT_DRAFT_KEY = 'tn_receipt_draft';
 let receivingDigitsMissTimer = null;
 let receivingDigitsMissNotified = '';
-const APP_VERSION = '106'; // רשימת מועמדים לשורה שאף קריאה לא זיהתה
+const APP_VERSION = '107'; // סריקה ששרדה נתק נאספת מהשרת במקום להיזרק
 // גרסה 73: מוצר בלי מחיר קופה — חלון הכמות מציג מיד את העלות ליח׳ (ללא מע״מ) ופותח שדה להקלדת המחיר שעובר בקופה, בלי לנדוד למסך המחירים
 // v40: תג גרסה קבוע בפינת המסך — לדעת בשנייה איזו גרסה באמת רצה על המכשיר
 // (עוזר במיוחד מול מטמון ה-PWA). pointer-events:none — לעולם לא חוסם מגע.
@@ -1165,6 +1174,15 @@ function tnuvaAdoptPaperAnchors() {
   });
   aiScanDocuments.forEach((input, index) => {
     const doc = returned.find(d => d.noteIndex === index);
+    // v107: תעודה שלא חזרה כלל אינה "נקראה חלקית" — אין בה מה לבדוק. עד כאן היא
+    // ייצרה שש שורות "לא נקרא" (סיכום, מונה פריטים, עמודים, שורות, סוג התעודה),
+    // שהסתירו את הסיבה היחידה שבאמת קרתה: הקריאה עצמה לא הושלמה.
+    if (!doc) {
+      const failure = input && input.scanResult && input.scanResult.ok === false && input.scanResult.error;
+      problems.push('תעודה ' + (index + 1) + ': ' + (failure || 'הקריאה לא הושלמה — נסה לסרוק שוב או הקלד את הסכום'));
+      notes.push({ amount: null, units: null, lines: null });
+      return;
+    }
     const check = tnuvaPaperCheck(doc, input.pages.length || input.restoredPageCount || 0);
     if (!check.receivable) check.problems.concat(check.review).forEach(p => problems.push('תעודה ' + (index + 1) + ': ' + p));
     notes.push({ amount: check.amount, units: null, lines: check.lines });
@@ -12190,26 +12208,107 @@ function tnuvaAdaptScanPayload(payload) {
   });
   return payload;
 }
+// v107: מפתח סריקה — 32 תווים הקסדצימליים, בתוך מה שהשרת מקבל ([A-Za-z0-9_-]{8,64}).
+function aiScanNewKey() {
+  const api = typeof crypto === 'object' && crypto ? crypto : null;
+  if (api && typeof api.randomUUID === 'function') return api.randomUUID().replace(/-/g, '');
+  let key = '';
+  while (key.length < 32) key += Math.random().toString(16).slice(2);
+  return key.slice(0, 32);
+}
+// טביעת אצבע של הבקשה: קצה כל עמוד ואורכו, ולצידם העוגנים שהוקלדו. מטרתה
+// לוודא שמפתח שנשמר אחרי נתק שייך בדיוק לאותה בקשה. העוגנים חלק ממנה בכוונה:
+// משתמש שמתקן את הסכום אחרי נתק מבקש קריאה חדשה, לא את זו שרצה על סכום אחר.
+function aiScanPagesFingerprint(pages, expected) {
+  const anchor = expected ? [expected.amount, expected.lines].join(',') : '';
+  return anchor + '#' + (pages || []).map(p => {
+    const url = String((p && p.dataUrl) || '');
+    return url.length + ':' + url.slice(-48);
+  }).join('|');
+}
+// ניסיון יחיד: שליחה, קריאת הגוף וניתוחו. גוף שאינו JSON שלם הוא חיבור שנקטע —
+// השרת פותח את התשובה בסטטוס 200 ומזרים רווחים עד שהיא מוכנה, ולכן תשובה
+// חתוכה מגיעה כ"200 עם רווחים בלבד". עד v106 היא נבלעה ל-{} והודיעה "לא הצליחה".
+async function aiScanSendOnce(token, body) {
+  const controller = typeof AbortController === 'function' ? new AbortController() : null;
+  const timer = controller ? setTimeout(() => controller.abort(), AI_SCAN_FETCH_TIMEOUT_MS) : null;
+  let response, text;
+  try {
+    response = await fetch(AI_SCAN_WORKER_URL, Object.assign({
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + token },
+      body: JSON.stringify(body)
+    }, controller ? { signal: controller.signal } : {}));
+    text = await response.text();
+  } catch (error) {
+    if (timer) clearTimeout(timer);
+    const cut = new Error((error && error.name === 'AbortError')
+      ? 'הבקשה לא ענתה תוך ' + Math.round(AI_SCAN_FETCH_TIMEOUT_MS / 1000) + ' שניות'
+      : 'החיבור נפל באמצע הסריקה — ' + ((error && error.message) || 'Failed to fetch'));
+    cut.networkFailure = true;
+    throw cut;
+  }
+  if (timer) clearTimeout(timer);
+  let payload = null;
+  try { payload = JSON.parse(text); } catch (error) { payload = null; }
+  if (!payload || typeof payload !== 'object') {
+    const cut = new Error('החיבור נקטע לפני שהתשובה הגיעה במלואה');
+    cut.networkFailure = true;
+    cut.truncated = true;
+    throw cut;
+  }
+  return { response, payload };
+}
 async function aiRequestSingleDocScan(token, pages, expected) {
-  const response = await aiFetchWithRetry(AI_SCAN_WORKER_URL, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + token },
-    body: JSON.stringify({
-      // v34 תנובה: עוגן כסף + מונה "פריטים" (שורות). בלי קטלוג ובלי מזהים —
-      // ההתאמה קוד→מוצר נעשית כולה בטלפון, במתאם שאחרי התשובה.
-      documents: [{
-        noteIndex: 0,
-        pages: pages.map(p => p.dataUrl),
-        expectedSubtotalExVat: expected && Number(expected.amount) > 0 ? r2(Number(expected.amount)) : null,
-        expectedLines: expected && Number.isFinite(Number(expected.lines)) && Number(expected.lines) > 0 ? Math.round(Number(expected.lines)) : null
-      }]
-    })
+  const fingerprint = aiScanPagesFingerprint(pages, expected);
+  const remembered = aiScanCutKeys.get(fingerprint);
+  const fresh = remembered && Date.now() - remembered.at < AI_SCAN_RESUME_TTL_MS ? remembered : null;
+  if (remembered && !fresh) aiScanCutKeys.delete(fingerprint);
+  const scanKey = fresh ? fresh.key : aiScanNewKey();
+  const fullBody = {
+    scanKey,
+    // v34 תנובה: עוגן כסף + מונה "פריטים" (שורות). בלי קטלוג ובלי מזהים —
+    // ההתאמה קוד→מוצר נעשית כולה בטלפון, במתאם שאחרי התשובה.
+    documents: [{
+      noteIndex: 0,
+      pages: pages.map(p => p.dataUrl),
+      expectedSubtotalExVat: expected && Number(expected.amount) > 0 ? r2(Number(expected.amount)) : null,
+      expectedLines: expected && Number.isFinite(Number(expected.lines)) && Number(expected.lines) > 0 ? Math.round(Number(expected.lines)) : null
+    }]
+  };
+  const resumeBody = { scanKey, resume: true };
   // v102: עד כאן הסריקה לא ניסתה שוב אחרי נפילת רשת — ניסיון אחד, וזהו. בחנות
   // זה אומר שהעלאה של 2.6MB שנקטעה מאפסת תעודה שלמה, וזה קרה כמה פעמים ב-17.9.
-  // המנגנון (2 ניסיונות, 2.5 ואז 5 שניות) כבר היה כתוב וכבוי. הוא חוזר רק
-  // לכשלי רשת אמיתיים: תשובה שהשרת כן החזיר, גם שגויה, אינה גוררת ניסיון נוסף.
-  }, AI_SCAN_NETWORK_RETRIES);
-  const payload = await response.json().catch(() => ({}));
+  // v107: הניסיון החוזר אינו מעלה שוב את הצילומים אלא נצמד לסריקה שכבר רצה;
+  // רק שרת שאינו מכיר את המפתח (מופע אחר, או שהבקשה מעולם לא הגיעה) גורר
+  // שליחה מלאה מחדש. תשובה שהשרת כן החזיר, גם שגויה, אינה גוררת ניסיון נוסף.
+  let response = null, payload = null;
+  for (let attempt = 0; attempt <= AI_SCAN_NETWORK_RETRIES; attempt++) {
+    const resuming = attempt > 0 || !!fresh;
+    try {
+      const sent = await aiScanSendOnce(token, resuming ? resumeBody : fullBody);
+      response = sent.response; payload = sent.payload;
+      if (resuming && payload && payload.ok === false
+        && (payload.error === 'resume_unknown' || payload.error === 'invalid_document_count')) {
+        const retried = await aiScanSendOnce(token, fullBody);
+        response = retried.response; payload = retried.payload;
+      }
+      break;
+    } catch (error) {
+      if (!error || !error.networkFailure || attempt >= AI_SCAN_NETWORK_RETRIES) {
+        aiScanCutKeys.set(fingerprint, { key: scanKey, at: Date.now() }); // כדי שסריקה חוזרת תאסוף במקום לשלם שוב
+        const failure = new Error(((error && error.message) || 'הרשת נכשלה')
+          + ' (' + (attempt + 1) + ' ניסיונות). הסריקה עצמה ממשיכה בשרת — נסה שוב ונאסוף אותה בלי צילום חדש.');
+        failure.networkFailure = true;
+        failure.code = error && error.truncated ? 'connection_cut' : 'network_error';
+        throw failure;
+      }
+      aiScanProgressText = (aiScanProgressText || '').split(' · ')[0] + ' · החיבור נפל, מתחבר מחדש לסריקה שכבר רצה…';
+      if (currentView === 'reconcile') renderReconcile();
+      await new Promise(resolve => setTimeout(resolve, AI_SCAN_NETWORK_RETRY_DELAY_MS * (attempt + 1)));
+    }
+  }
+  aiScanCutKeys.delete(fingerprint); // השרת ענה — אין מה לאסוף, והסריקה הבאה תהיה חדשה
   if (!response.ok || !payload.ok) {
     const code = payload.error || '';
     const fatal = code === 'rate_limited' || code === 'invalid_auth' || code === 'auth_required';

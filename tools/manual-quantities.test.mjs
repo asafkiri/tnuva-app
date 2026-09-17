@@ -329,7 +329,12 @@ test(supplier+': the two photo buttons show distinct screens during and after th
   else assert.match(r.node('app').innerHTML,/data-role="rc-scan"/);
   requests.push(r.requests.filter(x=>x.url.endsWith('/scan')).map(x=>JSON.parse(x.body)));
  }
- assert.equal(requests[0].length,1);assert.deepEqual(requests[1],requests[0]);
+ // v107: כל סריקה נושאת מפתח משלה (כדי שאפשר יהיה לאסוף אותה אחרי נתק), ולכן
+ // "בקשה זהה" נמדדת על התוכן — והמפתחות דווקא חייבים להיות שונים זה מזה.
+ const body=list=>list.map(({scanKey,...rest})=>rest);
+ assert.equal(requests[0].length,1);assert.deepEqual(body(requests[1]),body(requests[0]));
+ assert.match(requests[0][0].scanKey,/^[A-Za-z0-9_-]{8,64}$/);
+ assert.notEqual(requests[1][0].scanKey,requests[0][0].scanKey);
 });
 test(supplier+': manual screen and unfinished differences survive reload and returning from review',async()=>{
  const data=plainData(),a=create({data});enterPhotoScreen(a);a.click(photoRole(true));await settleScan();
