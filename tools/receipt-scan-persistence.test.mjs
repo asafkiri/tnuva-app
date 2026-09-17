@@ -26,13 +26,28 @@ for(const s of suppliers) {
     assert.equal(a.run('receiptPaperScanState'),'ok');
     assert.equal(raw(a),1);
   });
-  test(s+': HEALTHY a failed rescan keeps the anchor a previous read already verified',async()=>{
-    const a=runtime(s);await a.scan();
-    assert.equal(a.run('receiptNoteTotal'),50);
-    // צילום חדש (הישן כבר לא תקף למטמון) והרשת נופלת בכל הניסיונות.
+  test(s+': HEALTHY a failed rescan keeps the verified read itself, marked as the previous photo',async()=>{
+    const a=runtime(s);await a.scan();assert.equal(raw(a),1);
     const original=a.context.fetch;
     a.context.fetch=async(...args)=>{if(args[0].endsWith('/scan'))throw Error('Load failed');return original(...args)};
     a.run("aiScanDocuments[0].pages=[{dataUrl:'data:image/jpeg;base64,Yg==',orientationConfirmed:true}];aiScanDocuments[0].cachedPages=null;");
+    await a.run(s+'StartPaperScan()');
+    assert.equal(raw(a),1,'the verified read is still there');
+    assert.equal(a.run('aiScanDocuments[0].scanResult.staleAfterFailure'),true);
+    assert.equal(a.run('receiptPaperScanState'),'ok');
+    assert.match(a.run('tnuvaPaperStatusHtml()'),/הצילום האחרון לא נקרא, ולכן מוצגת הקריאה הקודמת/);
+    // וגם אחרי טעינה מחדש הקריאה עדיין שם.
+    assert.equal(raw(reload(s,a)),1);
+  });
+  test(s+': HEALTHY a failed rescan keeps the anchor a previous read already verified',async()=>{
+    const a=runtime(s);await a.scan();
+    assert.equal(a.run('receiptNoteTotal'),50);
+    // המצב שנוצר ב-17.9: הקריאה עצמה כבר אבדה מהטיוטה, והעוגן של המסמך שרד.
+    const original=a.context.fetch;
+    a.context.fetch=async(...args)=>{if(args[0].endsWith('/scan'))throw Error('Load failed');return original(...args)};
+    a.run(`aiScanDocuments[0].pages=[{dataUrl:'data:image/jpeg;base64,Yg==',orientationConfirmed:true}];
+      aiScanDocuments[0].cachedPages=null; aiScanDocuments[0].cachedResult=null; aiScanDocuments[0].scanResult=null;
+      receiptNotes=[]; recomputeNoteTotal(); receiptRebuildScanResponse();`);
     await a.run(s+'StartPaperScan()');
     assert.equal(a.run('receiptPaperScanState'),'failed');
     assert.equal(a.run('receiptNoteTotal'),50,'the verified money anchor is still on screen');

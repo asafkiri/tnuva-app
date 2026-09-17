@@ -702,7 +702,7 @@ let receiptDupConfirmed = false; // אישור שמירה למרות חשד לכ
 const RECEIPT_DRAFT_KEY = 'tn_receipt_draft';
 let receivingDigitsMissTimer = null;
 let receivingDigitsMissNotified = '';
-const APP_VERSION = '103'; // הקוד של הקריאה השנייה משויך מאליו כשהמחיר מאשר
+const APP_VERSION = '104'; // סריקה שנכשלה אינה מוחקת קריאה מאומתת
 // גרסה 73: מוצר בלי מחיר קופה — חלון הכמות מציג מיד את העלות ליח׳ (ללא מע״מ) ופותח שדה להקלדת המחיר שעובר בקופה, בלי לנדוד למסך המחירים
 // v40: תג גרסה קבוע בפינת המסך — לדעת בשנייה איזו גרסה באמת רצה על המכשיר
 // (עוזר במיוחד מול מטמון ה-PWA). pointer-events:none — לעולם לא חוסם מגע.
@@ -1094,7 +1094,11 @@ function tnuvaPaperStatusHtml() {
   if (receiptStorageWarning) return '<div class="rounded-xl bg-amber-50 border border-amber-300 p-3 mb-3 font-bold text-amber-900">' + htmlEscape(receiptStorageWarning) + '</div>';
   if (receiptEntryMode !== 'photo') return '';
   if (receiptPaperScanState === 'running') return '<div class="rounded-xl bg-blue-50 border border-blue-200 p-3 mb-3 text-sm font-bold text-blue-800"><i class="fa-solid fa-circle-notch fa-spin"></i> ' + htmlEscape(aiScanProgressText || 'קורא את התעודה ברקע…') + '<div class="mt-1">אפשר לסרוק מוצרים כרגיל.</div></div>';
-  if (receiptPaperScanState === 'ok') return '<div class="rounded-xl bg-emerald-50 border border-emerald-200 p-2 mb-2 text-[11px] font-black text-emerald-800"><i class="fa-solid fa-file-circle-check"></i> התעודה נקראה ואומתה · השוואת הכמויות בסיום הקליטה</div>';
+  if (receiptPaperScanState === 'ok') return '<div class="rounded-xl bg-emerald-50 border border-emerald-200 p-2 mb-2 text-[11px] font-black text-emerald-800"><i class="fa-solid fa-file-circle-check"></i> התעודה נקראה ואומתה · השוואת הכמויות בסיום הקליטה</div>' +
+    // v104: הקריאה שמוצגת שרדה ניסיון מאוחר שנכשל, ולכן היא שייכת לצילום הקודם.
+    (aiScanDocuments.some(doc => doc && doc.scanResult && doc.scanResult.staleAfterFailure)
+      ? '<div class="rounded-xl bg-amber-50 border border-amber-300 p-2 mb-2 text-[11px] font-black text-amber-900"><i class="fa-solid fa-triangle-exclamation"></i> הצילום האחרון לא נקרא, ולכן מוצגת הקריאה הקודמת של התעודה. אם צילמת תעודה אחרת — סרוק שוב לפני הסיום.</div>'
+      : '');
   if (receiptPaperScanState === 'failed' || receiptPaperScanState === 'interrupted') return '<div class="rounded-xl bg-amber-50 border border-amber-300 p-3 mb-3 text-sm font-bold text-amber-900">אפשר להמשיך בספירה. לפני הסיום צריך להשלים את נתוני התעודה.' +
     '<div class="mt-1 text-xs">' + receiptPaperScanProblems.map(htmlEscape).join('<br>') + '</div>' +
     tnuvaAnchorRepairHtml() +
@@ -1232,6 +1236,15 @@ function tnuvaStoreScanResults(results) {
     const input = aiScanDocuments[result.docIndex];
     if (!input) return;
     const { pages, ...stored } = result;
+    // v104: קריאה שנכשלה אינה מוחקת קריאה מוצלחת קודמת של אותו מסמך. ב-17.9
+    // קריאה שאומתה במלואה — ₪2,294.64, 28 שורות, סד הנחה ₪32.02 — נמחקה על
+    // ידי ניסיון מאוחר שנכשל, והתעודה חזרה לאפס אחרי שעתיים עבודה. הקריאה
+    // הקודמת נשמרת ומסומנת, והמסך אומר שהיא שייכת לצילום הקודם.
+    const previous = input.scanResult;
+    if (stored.ok === false && previous && previous.ok === true && previous.doc) {
+      input.scanResult = Object.assign({}, previous, { staleAfterFailure: true });
+      return;
+    }
     input.scanResult = stored;
   });
   receiptRebuildScanResponse();
@@ -12109,9 +12122,18 @@ async function aiRequestSingleDocScan(token, pages, expected) {
         : (code === 'incomplete_model_output' || code === 'model_refusal' || code === 'invalid_model_output') ? 'ה-AI לא החזיר פענוח מלא ובטוח לתעודה זו.'
         : (code === 'openai_error' && payload.message) ? 'שירות ה-AI החזיר שגיאה: ' + payload.message
         : anchorExplained ? payload.message.trim()
+        // v104: "לא הצליחה" בלי סיבה שלח לצילום חוזר בלי לדעת מה לתקן. הקודים
+        // שהשרת מחזיר לפני שהוא בכלל קורא את התעודה אומרים בדיוק מה קרה.
+        : code === 'invalid_document' ? 'הצילום נדחה על ידי השירות — ייתכן שהתמונה גדולה מדי או פגומה. צלם שוב, קרוב יותר ובלי חיתוך ידני.'
+        : code === 'request_too_large' ? 'הצילומים כבדים מדי לשליחה. צלם שוב או שלח פחות עמודים בבת אחת.'
+        : code === 'invalid_document_count' ? 'מספר התעודות או העמודים שנשלחו אינו נתמך.'
+        : code === 'internal_error' ? 'שירות הסריקה נפל באמצע הקריאה. נסה שוב בעוד רגע.'
+        : code === 'summary_block_missing' ? 'בלוק הסיכום בתחתית התעודה לא נכנס לצילום. צלם שוב עד השורה האחרונה.'
+        : code ? 'הסריקה לא הצליחה לתעודה זו (' + code + ').'
         : 'הסריקה החכמה לא הצליחה לתעודה זו.'
     );
     error.scanAudit = payload.scanAudit || null;
+    error.code = code || null; // v104: הקוד נשמר ביומן, כדי ש"לא הצליחה" יהיה ניתן לאבחון
     error.fatal = fatal;
     error.anchorExplained = anchorExplained;
     throw error;
@@ -12157,7 +12179,7 @@ async function aiScanSingleDocPipeline(token, docIndex, inputDoc = aiScanDocumen
     try { payload = await aiRequestSingleDocScan(token, pages, inputDoc); }
     catch (error) {
       if (runId === aiScanRunId) receiptScanHistory.push({ docIndex, startedAt, completedAt: Date.now(), ok: false,
-        error: error.message, scanAudit: error.scanAudit || null });
+        error: error.message, code: error.code || null, scanAudit: error.scanAudit || null });
       throw error;
     }
     if (runId !== aiScanRunId) throw new Error('scan_cancelled');
