@@ -54,7 +54,7 @@ const actions = c => JSON.parse(c.run(`JSON.stringify((function(){ const a = rec
   return { state: a.state, decided: a.decided, total: a.total,
     unidentified: a.unidentified.map(x => ({ line: x.row.line, code: x.row.code, doc: x.row.documentIndex, source: x.row.sourceIndex })),
     priced: a.priced.map(x => ({ line: x.row.line, name: x.row.name, printed: x.row.originalUnitPrice, catalog: x.row.catalogBasePrice, doc: x.row.documentIndex, source: x.row.sourceIndex })),
-    settled: a.settled, autoMatched: a.autoMatched, disputed: a.disputed.map(x => ({ line: x.row.line, fields: x.dispute.fields })) };
+    settled: a.settled, modelSettled: a.modelSettled, autoMatched: a.autoMatched, disputed: a.disputed.map(x => ({ line: x.row.line, fields: x.dispute.fields })) };
 })())`));
 const html = c => { c.run('renderReceiving()'); return c.node('app').innerHTML; };
 const paperWith = changes => ({ paper: { ...data.paper, scan: { warnings: [], documents: [{ ...document, ...changes }] } } });
@@ -76,13 +76,127 @@ test('a code disagreement the catalog can settle by itself is not a question for
   assert.match(html(c), /1 מחלוקות בין שתי הקריאות הוכרעו מול המאגר/);
 });
 
-test('a code disagreement where both codes fit the printed price stays a question', async () => {
-  // שני מוצרי YOLO במחיר זהה: הכסף אינו מכריע ביניהם, ולכן המשתמש כן נשאל.
+test('equal-price identities accept the stronger model without changing the chosen product or money', async () => {
+  // v109: שני מוצרי YOLO במחיר זהה — מקבלים את זהות המודל החזק בלי לשאול.
   const c = await scanned(disputeOnFirstRow([{ field: 'code', selected: '14761056', other: '14761414' }]));
+  const before = c.run('JSON.stringify(aiScanResponse)');
   const list = actions(c);
-  assert.deepEqual(list.disputed.map(item => item.line), [1]);
-  assert.equal(list.settled, 0);
-  assert.match(html(c), /הסריקות נחלקו על השורה/);
+  assert.deepEqual(list.disputed, []);
+  assert.equal(list.settled, 1);
+  assert.equal(list.modelSettled, 1);
+  assert.equal(list.total, 2, 'unrelated unread identity and price difference remain');
+  assert.match(html(c), /הוכרעו אוטומטית לפי המודל החזק — המחיר זהה/);
+  assert.equal(c.run('JSON.stringify(aiScanResponse)'), before, 'the original reading and disagreement stay in the audit');
+  assert.equal(c.run('aiScanResponse.scan.documents[0].rows[0].__tnuvaProductId'), 'p_yolo_chocolate');
+  assert.equal(c.run('aiScanResponse.scan.documents[0].rows[0].quantity'), 10);
+  assert.equal(c.run('aiScanResponse.scan.documents[0].rows[0].lineTotalExVat'), 34.7);
+  assert.equal(c.requests.filter(r => r.url.endsWith('/scan')).length, 1, 'no extra OCR request');
+  c.run('saveReceiptDraft()');
+  const restored = harness.runtime('tnuva', { data, storage: c.storage });
+  restored.run('restoreReceiptDraft()');
+  assert.equal(actions(restored).modelSettled, 1, 'the rule also applies to a restored draft');
+  assert.equal(restored.requests.length, 0);
+  restored.run("products.find(p => p.id === 'p_yolo_layers').price = 3.48");
+  assert.deepEqual(actions(restored).disputed.map(item => item.line), [1], 'a later price change reopens the decision');
+});
+
+test('one agora and sub-agora catalog differences are not equal-price identities', async () => {
+  for (const price of [3.48, 3.471]) {
+    const c = await scanned({ ...disputeOnFirstRow([{ field: 'code', selected: '14761056', other: '14761414' }]),
+      products: products.map(p => p.id === 'p_yolo_layers' ? { ...p, price } : p) });
+    assert.deepEqual(actions(c).disputed.map(item => item.line), [1]);
+    assert.equal(actions(c).modelSettled, 0);
+  }
+});
+
+test('the stronger choice wins even when the competing product appears first in the catalog', async () => {
+  const source = disputeOnFirstRow([{ field: 'code', selected: '14761414', other: '14761056' }]);
+  source.paper.scan = { warnings: [], documents: [{ ...document,
+    rows: rows.map((row, index) => index === 0 ? { ...row, code: '14761414' } : row) }] };
+  const c = await scanned(source);
+  assert.equal(actions(c).modelSettled, 1);
+  assert.deepEqual(actions(c).disputed, []);
+  assert.equal(c.run('aiScanResponse.scan.documents[0].rows[0].__tnuvaProductId'), 'p_yolo_layers');
+});
+
+test('equal prices cannot hide quantity, money, section or missing-row disputes', async () => {
+  for (const field of ['quantity', 'unitPriceExVat', 'lineTotalExVat', 'section', 'row']) {
+    const c = await scanned(disputeOnFirstRow([{ field: 'code', selected: '14761056', other: '14761414' },
+      { field, selected: 10, other: 12 }]));
+    assert.deepEqual(actions(c).disputed.map(item => item.line), [1], field);
+    assert.equal(actions(c).modelSettled, 0, field);
+    assert.ok(actions(c).disputed[0].fields.some(item => item.field === field));
+  }
+});
+
+test('failed, same-model and unselected escalations do not settle equal-price identities', async () => {
+  const source = disputeOnFirstRow([{ field: 'code', selected: '14761056', other: '14761414' }]);
+  for (const changed of [
+    { model: 'gpt-5.6-luna', consensus: { ...source.paper.consensus, escalated: false, escalationModel: null, escalationError: 'network' } },
+    { model: 'gpt-5.6-luna', consensus: { ...source.paper.consensus, escalationModel: 'gpt-5.6-luna' } },
+    { model: 'gpt-5.6-luna' },
+    { model: null },
+    { scanAudit: { attempts: [{ stage: 'consensus_1', requestedModel: 'gpt-5.6-luna', selected: true },
+      { stage: 'consensus_escalation', requestedModel: 'gpt-5.6-terra', selected: false }] } }
+  ]) {
+    const c = await scanned({ paper: { ...source.paper, ...changed } });
+    assert.deepEqual(actions(c).disputed.map(item => item.line), [1]);
+    assert.equal(actions(c).modelSettled, 0);
+  }
+});
+
+test('the selected attempt proves escalation or checksum-retry identity even with a dated model name', async () => {
+  const source = disputeOnFirstRow([{ field: 'code', selected: '14761056', other: '14761414' }]);
+  for (const stage of ['consensus_escalation', 'checksum_retry']) {
+    const c = await scanned({ paper: { ...source.paper, model: 'gpt-5.6-terra-2026-09-01',
+      checksumRetryAttempted: stage === 'checksum_retry', checksumRetryModel: 'gpt-5.6-terra',
+      consensus: { ...source.paper.consensus, escalated: stage === 'consensus_escalation' },
+      scanAudit: { attempts: [{ stage: 'consensus_1', requestedModel: 'gpt-5.6-luna', selected: false },
+        { stage, requestedModel: 'gpt-5.6-terra', selected: true }] } } });
+    assert.deepEqual(actions(c).disputed, []);
+    assert.equal(actions(c).modelSettled, 1);
+  }
+});
+
+test('same base price with different deposits or billing units remains a decision', async () => {
+  for (const change of [{ deposit: .3 }, { priceUnit: 'kg' }, { billingPackId: 'pack', billingPackSize: 6 }]) {
+    const c = await scanned({ ...disputeOnFirstRow([{ field: 'code', selected: '14761056', other: '14761414' }]),
+      products: products.map(p => p.id === 'p_yolo_layers' ? { ...p, ...change } : p) });
+    assert.deepEqual(actions(c).disputed.map(item => item.line), [1]);
+    assert.equal(actions(c).modelSettled, 0);
+  }
+});
+
+test('same base price with a promotion only for the other product remains a decision', async () => {
+  const pr = { id: 'rival-promo', type: 'receipt', pct: 10, minQty: 1, minUnit: 'unit',
+    start: '2026-09-01', end: '2026-09-30', productIds: ['p_yolo_layers'] };
+  for (const promo of [pr, { ...pr, minQty: 12 }, { ...pr, type: 'monthEnd' }]) {
+    const c = await scanned({ ...disputeOnFirstRow([{ field: 'code', selected: '14761056', other: '14761414' }]), promos: [promo] });
+    assert.deepEqual(actions(c).disputed.map(item => item.line), [1]);
+    assert.equal(actions(c).modelSettled, 0);
+  }
+  const c = await scanned({ ...disputeOnFirstRow([{ field: 'code', selected: '14761056', other: '14761414' }]),
+    promos: [{ ...pr, start: '2026-10-01', end: '2026-10-31' }] });
+  assert.equal(actions(c).modelSettled, 1, 'future promotions do not affect the invoice date');
+});
+
+test('identical discounts settle automatically, but separate basket thresholds do not', async () => {
+  const source = disputeOnFirstRow([{ field: 'code', selected: '14761056', other: '14761414' }]);
+  const oneRowPaper = { ...source.paper, scan: { warnings: [], documents: [{ ...document,
+    rows: [rows[0]], itemsPrintedLines: 1, printedLines: 1, itemsSectionTotalExVat: 34.7,
+    promoDiscountExVat: 3.47, documentDiscountExVat: 3.47, subtotalExVat: 31.23, netToChargeExVat: 31.23 }] } };
+  const pr = { id: 'shared', type: 'receipt', pct: 10, minQty: 1, minUnit: 'unit', start: '2026-09-01', end: '2026-09-30',
+    productIds: ['p_yolo_chocolate', 'p_yolo_layers'] };
+  const own = { ...pr, id: 'own', productIds: ['p_yolo_chocolate'] };
+  const rival = { ...pr, id: 'rival', productIds: ['p_yolo_layers'] };
+  for (const promos of [[pr], [{ ...pr, minQty: 10 }], [own, rival]]) {
+    const c = await scanned({ paper: oneRowPaper, promos });
+    assert.equal(actions(c).total, 0);
+    assert.equal(actions(c).modelSettled, 1);
+  }
+  const c = await scanned({ paper: oneRowPaper, promos: [{ ...own, minQty: 10 }, { ...rival, minQty: 10 }] });
+  assert.equal(actions(c).modelSettled, 0, 'different basket memberships can change a threshold elsewhere');
+  assert.deepEqual(actions(c).disputed.map(item => item.line), [1]);
 });
 
 test('a row-count disagreement between the reads is never a question on every row', async () => {
@@ -112,8 +226,7 @@ test('a row only the winning read saw is raised as a question about the row itse
 });
 
 test('a code another read confirms is settled by the catalog even when the rival fits the price too', async () => {
-  // שני מוצרי YOLO במחיר זהה: בלי אישור מקריאה נוספת המשתמש נשאל (הבדיקה
-  // הקודמת); כשהמודל היקר וקריאה זולה קראו אותו דבר — המאגר והמחיר סוגרים.
+  // הסכמת קריאה נוספת ממשיכה לסגור קוד מזוהה גם בלי להפעיל את ההקלה החדשה.
   const c = await scanned(disputeOnFirstRow([{ field: 'code', selected: '14761056', other: '14761414', confirmed: 1 }]));
   const list = actions(c);
   assert.deepEqual(list.disputed, []);

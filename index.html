@@ -711,7 +711,7 @@ let receiptDupConfirmed = false; // אישור שמירה למרות חשד לכ
 const RECEIPT_DRAFT_KEY = 'tn_receipt_draft';
 let receivingDigitsMissTimer = null;
 let receivingDigitsMissNotified = '';
-const APP_VERSION = '108'; // "מספר שורות" אינו שאלה על שורה, ושורה שקריאה נוספת מאשרת אינה נשאלת
+const APP_VERSION = '109'; // זהות במחלוקת במחיר זהה מוכרעת לפי המודל החזק, בלי שאלת אישור
 // גרסה 73: מוצר בלי מחיר קופה — חלון הכמות מציג מיד את העלות ליח׳ (ללא מע״מ) ופותח שדה להקלדת המחיר שעובר בקופה, בלי לנדוד למסך המחירים
 // v40: תג גרסה קבוע בפינת המסך — לדעת בשנייה איזו גרסה באמת רצה על המכשיר
 // (עוזר במיוחד מול מטמון ה-PWA). pointer-events:none — לעולם לא חוסם מגע.
@@ -10121,6 +10121,25 @@ function receiptSetRowDecision(row, type, extra) {
 // ההשוואה הישנה — נזרקת כולה, גם כשהתשובה הגיעה משרת ישן. שירות 14 מיישר
 // שורות לפי תוכן ואינו שולח את השדה הזה.
 const RECEIPT_DISPUTE_DOCUMENT_FIELDS = new Set(['rowCount']);
+// ההקלה חלה רק כשקריאה של מודל ההסלמה נבחרה בפועל. עצם ניסיון ההסלמה
+// אינו מספיק: הוא עשוי להיכשל, או לרוץ על אותו מודל כמו הקריאות הראשונות.
+function receiptSelectedStrongerModel(meta) {
+  const consensus = meta && meta.consensus;
+  const base = consensus && consensus.model;
+  if (!base) return null;
+  const attempts = meta.scanAudit && meta.scanAudit.attempts;
+  if (Array.isArray(attempts) && attempts.length) {
+    const selected = attempts.filter(attempt => attempt && attempt.selected === true);
+    if (selected.length !== 1) return null;
+    const attempt = selected[0];
+    const retry = attempt.stage === 'consensus_escalation' ? consensus.escalationModel
+      : attempt.stage === 'checksum_retry' ? meta.checksumRetryModel : null;
+    return retry && retry !== base && attempt.requestedModel === retry ? retry : null;
+  }
+  // תאימות לטיוטות ששמרו את שם המודל שנבחר, בלי יומן ניסיונות מלא.
+  const retry = meta.checksumRetryAttempted && meta.checksumRetryModel || (consensus.escalated && consensus.escalationModel);
+  return retry && retry !== base && meta.model === retry ? retry : null;
+}
 function receiptConsensusDisputes() {
   const out = new Map();
   ((aiScanResponse && aiScanResponse.perDocument) || []).forEach(meta => {
@@ -10132,7 +10151,8 @@ function receiptConsensusDisputes() {
       const fields = Array.isArray(item.fields) ? item.fields : [];
       if (!fields.length || fields.some(field => RECEIPT_DISPUTE_DOCUMENT_FIELDS.has(String((field && field.field) || '')))) return;
       out.set(Number(meta.docIndex) + ':' + rowIndex, Object.assign({}, item, { docIndex: Number(meta.docIndex),
-        escalated: consensus.escalated === true, escalationModel: consensus.escalationModel || null }));
+        escalated: consensus.escalated === true, escalationModel: consensus.escalationModel || null,
+        selectedStrongerModel: receiptSelectedStrongerModel(meta) }));
     });
   });
   return out;
@@ -10145,6 +10165,41 @@ function receiptConsensusDisputes() {
 // ממצא מידע בלבד. ב-17.9 ארבע מחלוקות כאלה נשלחו למשתמש להכרעה — וכולן היו
 // כבר מוכרעות מול המאגר. מה שנשאר באמת פתוח, ורק הוא, עולה לאישור ידני.
 const RECEIPT_DISPUTE_INFORMATIONAL_FIELDS = new Set(['promoStar', 'sourcePage']);
+// v109: שתי זהויות באותו מחיר אינן שאלה למשתמש אחרי הכרעת המודל החזק.
+// השוויון כאן מדויק (לא סבילות שתי האגורות של בדיקת מחירים). זהות אינה
+// יכולה להסתיר מחלוקת על כמות/כסף, או לשנות פיקדון, יחידת חיוב או מבצע סל.
+function receiptSamePriceModelDecision(row, dispute, built = tnuvaBuildCodeIndex()) {
+  if (!row || !dispute || !dispute.selectedStrongerModel || !Array.isArray(dispute.fields)
+      || row.capability !== 'checkable' || row.result !== 'match'
+      || !row.printedVsCatalog || row.printedVsCatalog.off) return false;
+  if (dispute.fields.some(item => item.field !== 'code' && !RECEIPT_DISPUTE_INFORMATIONAL_FIELDS.has(item.field))) return false;
+  const codes = dispute.fields.filter(item => item.field === 'code');
+  if (codes.length !== 1) return false;
+  const selectedCode = tnuvaCodeOf(codes[0].selected), otherCode = tnuvaCodeOf(codes[0].other);
+  if (!selectedCode || !otherCode || built.ambiguous.has(selectedCode) || built.ambiguous.has(otherCode)) return false;
+  const selected = built.map.get(selectedCode), rival = built.map.get(otherCode);
+  if (!selected || !rival || selected.id === rival.id || String(selected.id) !== String(row.productId)) return false;
+  const price = priceAuditNumber(selected.price);
+  if (!(price > 0) || price !== priceAuditNumber(rival.price)) return false;
+  const deposit = product => product.deposit == null || product.deposit === '' ? 0 : priceAuditNumber(product.deposit);
+  if (deposit(selected) == null || deposit(selected) !== deposit(rival)) return false;
+  for (const field of ['priceUnit', 'unitOfMeasure', 'billingPackId', 'billingPackSize']) {
+    if (String(selected[field] || '') !== String(rival[field] || '')) return false;
+  }
+  if (isCrateOrDepositLine(selected) !== isCrateOrDepositLine(rival)) return false;
+  const doc = receiptScanDoc(row.documentIndex);
+  const mapped = doc && Array.isArray(doc.rows) ? doc.rows[Number(row.rowIndex)] : null;
+  if (!mapped || mapped.barcodeMatchMethod === 'user_confirmed') return false;
+  const ownPromos = [], rivalPromos = [];
+  for (const pr of promos) {
+    if (!pr || !Array.isArray(pr.productIds) || !promoActive(pr, row.date)) continue;
+    const own = pr.productIds.includes(selected.id), other = pr.productIds.includes(rival.id);
+    if (own === other) continue; // אותו סל מבצע שומר גם על סף הכמות.
+    if (promoMinUnitsP(pr) > 1 || (pr.minUnit === 'carton' && !(Number(pr.cartonSize) > 0))) return false;
+    (own ? ownPromos : rivalPromos).push(String(pr.type || 'receipt') + ':' + Number(pr.pct));
+  }
+  return JSON.stringify(ownPromos.sort()) === JSON.stringify(rivalPromos.sort());
+}
 function receiptDisputeOpenFields(row, dispute) {
   if (!dispute || !Array.isArray(dispute.fields)) return [];
   const built = tnuvaBuildCodeIndex();
@@ -10166,6 +10221,7 @@ function receiptDisputeOpenFields(row, dispute) {
     const other = tnuvaCodeOf(item.other) || String(item.other == null ? '' : item.other).replace(/\D/g, '').replace(/^0+/, '');
     const rival = other && !built.ambiguous.has(other) ? built.map.get(other) : null;
     if (rival && String(rival.id) === String(row.productId)) return false; // אותו מוצר — אין במה להכריע
+    if (receiptSamePriceModelDecision(row, dispute, built)) return false;
     return !!(rival && Math.abs(Number(rival.price) - Number(row.originalUnitPrice)) <= PRICE_AUDIT_UNIT_TOLERANCE);
   });
 }
@@ -10264,14 +10320,17 @@ function receiptFindAuditRow(documentIndex, sourceIndex) {
 }
 function receiptRowActions(report) {
   const a = report || receiptPriceAudit();
-  const out = { state: a.state, unidentified: [], disputed: [], priced: [], decided: 0, settled: 0, autoMatched: 0, total: 0 };
+  const out = { state: a.state, unidentified: [], disputed: [], priced: [], decided: 0, settled: 0, modelSettled: 0, autoMatched: 0, total: 0 };
   if (a.state !== 'ready') return out;
   const disputes = receiptConsensusDisputes();
   a.rows.forEach(row => {
     const dispute = disputes.get(Number(row.documentIndex) + ':' + Number(row.sourceIndex)) || null;
     const openFields = receiptDisputeOpenFields(row, dispute);
     const open = dispute && openFields.length ? Object.assign({}, dispute, { fields: openFields }) : null;
-    if (dispute && !open) out.settled += 1; // המאגר הכריע; נאמר, לא נשאל
+    if (dispute && !open) {
+      out.settled += 1;
+      if (receiptSamePriceModelDecision(row, dispute)) out.modelSettled += 1;
+    }
     if (receiptRowDecision(row)) { out.decided += 1; return; }
     // v103: "לא זוהה" בבדיקת המחירים פירושו גם זהות שנבחרה בעזרת המחיר (תיקון
     // ספרה, הקוד של הקריאה השנייה) — כזאת אינה יכולה לאשר מחיר, אבל היא כן
@@ -10333,7 +10392,9 @@ function receiptRowCandidatesHtml(row, dispute, hasRival) {
 }
 function receiptRowActionsHtml(report) {
   const actions = receiptRowActions(report);
-  const settledLine = [actions.settled ? actions.settled + ' מחלוקות בין שתי הקריאות הוכרעו מול המאגר' : '',
+  const catalogSettled = actions.settled - actions.modelSettled;
+  const settledLine = [catalogSettled ? catalogSettled + ' מחלוקות בין שתי הקריאות הוכרעו מול המאגר' : '',
+    actions.modelSettled ? actions.modelSettled + ' מחלוקות על זהות המוצר הוכרעו אוטומטית לפי המודל החזק — המחיר זהה' : '',
     actions.autoMatched ? actions.autoMatched + ' שורות שויכו אוטומטית כשהמחיר אישר את הקוד' : ''].filter(Boolean).join(' · ');
   if (!actions.total) {
     const parts = [actions.decided ? actions.decided + ' שורות אושרו ידנית בתעודה הזאת' : '', settledLine].filter(Boolean);
