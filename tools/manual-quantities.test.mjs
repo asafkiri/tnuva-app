@@ -386,6 +386,8 @@ test(supplier+': answering with the number that closes the arithmetic verifies t
  assert.equal(r.run('aiScanResponse.scan.documents[0].promoDiscountExVat'),1);
  assert.equal(r.run('aiScanResponse.scan.documents[0].__tnuvaPaper.promoDiscountExVat'),1);
  assert.equal(r.run('aiScanResponse.scan.documents[0].userConfirmedSummary.read'),1.01);
+ // the mapped copy the closing gate reads must follow too (v112)
+ assert.equal(r.run('aiScanResponse.scan.documents[0].documentDiscountExVat'),1);
  assert.equal(r.run('noteSum()'),91);
  const html=assertManualScreen(r);assert.match(html,/data-role="rc-quantity-all"/);assert.doesNotMatch(html,/צריך לבדוק מספר אחד/);
  // the correction survives a reload
@@ -402,6 +404,22 @@ test(supplier+': confirming what was read moves to the next line, then asks for 
  html=assertManualScreen(r);
  assert.match(html,/צריך לצלם שוב את התעודה/);assert.equal(r.run('receiptPaperScanState'),'failed');
  assert.ok(html.includes('data-role="rc-photo-repair"'));
+});
+test(supplier+': after fixing the discount a real shortage reaches a closable comparison',async()=>{
+ const r=await agoraOff();
+ r.click('rc-summary-answer',null,{doc:'0',field:'promo',choice:'alt'});
+ r.run("showConfirm=(a,b,c,fn)=>fn()");
+ // without a reload: the corrected reading is a cached, approved result (v112)
+ r.click('rc-quantity-differences');assert.ok(r.run('!!receiptQuantityReview'),'the differences window opens');
+ r.run("receiptQuantityReview.rows[0].kind='shortage';receiptQuantityReview.rows[0].difference='2'");
+ assert.equal(r.run('commitReceiptQuantityReview()'),true);
+ // the closing gate reads the corrected discount, not the stale 1.01
+ const errors=json(r,'aiScanEvaluation.errors');
+ assert.ok(!errors.some(e=>/הנחת המסמך שנקראה|סך הנחות המסמך/.test(e)),errors.join(';'));
+ // a draft saved by v111 (discount fixed, mapped copy stale) is healed on reload
+ r.run('aiScanResponse.scan.documents[0].documentDiscountExVat=1.01;saveReceiptDraft()');
+ const b=create({data:agoraOffData(),storage:r.storage});b.run("currentView='receiving';mainMode='receiving';renderReceiving()");
+ assert.equal(b.run('aiScanResponse.scan.documents[0].documentDiscountExVat'),1);
 });
 test(supplier+': a misread total is fixed by the same question',async()=>{
  const r=await agoraOff();
