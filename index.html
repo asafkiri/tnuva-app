@@ -711,7 +711,7 @@ let receiptDupConfirmed = false; // אישור שמירה למרות חשד לכ
 const RECEIPT_DRAFT_KEY = 'tn_receipt_draft';
 let receivingDigitsMissTimer = null;
 let receivingDigitsMissNotified = '';
-const APP_VERSION = '110'; // חשבון שלא נסגר מוצג עם המספרים גם בבדיקת כמויות ידנית
+const APP_VERSION = '111'; // חשבון שלא נסגר: שאלה אחת פשוטה על המספר שבנייר
 // גרסה 73: מוצר בלי מחיר קופה — חלון הכמות מציג מיד את העלות ליח׳ (ללא מע״מ) ופותח שדה להקלדת המחיר שעובר בקופה, בלי לנדוד למסך המחירים
 // v40: תג גרסה קבוע בפינת המסך — לדעת בשנייה איזו גרסה באמת רצה על המכשיר
 // (עוזר במיוחד מול מטמון ה-PWA). pointer-events:none — לעולם לא חוסם מגע.
@@ -1114,8 +1114,7 @@ function tnuvaPaperStatusHtml() {
       ? '<div class="rounded-xl bg-amber-50 border border-amber-300 p-2 mb-2 text-[11px] font-black text-amber-900"><i class="fa-solid fa-triangle-exclamation"></i> הצילום האחרון לא נקרא, ולכן מוצגת הקריאה הקודמת של התעודה. אם צילמת תעודה אחרת — סרוק שוב לפני הסיום.</div>'
       : '');
   if (receiptPaperScanState === 'failed' || receiptPaperScanState === 'interrupted') return '<div class="rounded-xl bg-amber-50 border border-amber-300 p-3 mb-3 text-sm font-bold text-amber-900">אפשר להמשיך בספירה. לפני הסיום צריך להשלים את נתוני התעודה.' +
-    '<div class="mt-1 text-xs">' + receiptPaperScanProblems.map(htmlEscape).join('<br>') + '</div>' +
-    tnuvaAnchorRepairHtml() +
+    tnuvaPaperProblemsHtml('mt-1 text-xs') +
     '<button data-role="rc-photo-repair" class="btn-tap w-full bg-white border border-amber-300 rounded-xl py-2 mt-2">בדוק צילומים / הוסף עמוד חסר</button>' +
     '<button data-role="rc-photo-manual" class="btn-tap w-full py-2 text-xs underline">או הקלד סכום ומספר פריטים</button></div>';
   return '';
@@ -1151,6 +1150,94 @@ function tnuvaAnchorRepairHtml() {
         (printed != null && printed > 0 && gap ? '<button data-role="rc-anchor-entry" data-doc="' + index + '" data-basis="printed" class="btn-tap w-full rounded-lg bg-white border border-amber-300 text-amber-900 py-2.5 font-black">הקלד עם המספר שנקרא ' + money(printed) + '</button>' : '') +
       '</div></div>';
   }).join('');
+}
+// v111: שאלה אחת בשפה פשוטה במקום חשבון. גם אחרי v110 המסך הציג פירוט, הפרש
+// ושני כפתורי "הקלד עם..." — והמשתמש עדיין לא ידע מה לעשות. כשכל שאר התעודה
+// תקין והחשבון לא נסגר רק בשורות הסיכום, יש שני מספרים שיכולים להסביר את זה:
+// "סד הנחה" או "סהכ חייב מעמ". לכל אחד מהם ידוע הערך שהיה סוגר את החשבון, ולכן
+// שואלים מה כתוב בנייר ומציגים את שתי האפשרויות. תשובה שסוגרת את החשבון מתקנת את
+// הקריאה ומאמתת אותה כרגיל; תשובה שמאשרת את הקריאה עוברת לשורה הבאה.
+const tnuvaSummaryAskStep = new WeakMap();
+function tnuvaSummaryQuestions(doc, check) {
+  const paper = doc && (doc.__tnuvaPaper || doc);
+  if (!paper || check.receivable || check.review.length || check.problems.length !== 1) return null;
+  if (check.amount == null || check.rowLines !== check.lines || check.returnLines) return null;
+  const cents = v => Math.round(Number(v) * 100);
+  const items = cents(check.itemsAmount), promo = cents(check.promo), expected = cents(check.amount);
+  if (items - promo === expected) return null;
+  const out = [];
+  const altPromo = items - expected;
+  if (promo > 0 && altPromo >= 0) out.push({ field: 'promo', label: 'סד הנחה בגין מבצעים', read: promo / 100, alt: altPromo / 100 });
+  if (items - promo > 0) out.push({ field: 'subtotal', label: 'סהכ חייב מעמ', read: expected / 100, alt: (items - promo) / 100 });
+  return out.length ? out : null;
+}
+function tnuvaSummaryGuideDocs() {
+  const documents = (aiScanResponse && aiScanResponse.scan && aiScanResponse.scan.documents) || [];
+  return aiScanDocuments.map((input, index) => {
+    const doc = documents.find(item => Number(item && item.noteIndex) === index);
+    if (!doc) return null;
+    const check = tnuvaPaperCheck(doc, input.pages.length || input.restoredPageCount || 0);
+    const questions = tnuvaSummaryQuestions(doc, check);
+    return questions ? { index, doc, check, questions } : null;
+  }).filter(Boolean);
+}
+function tnuvaSummaryGuideHtml() {
+  if (receiptPaperScanState !== 'failed') return '';
+  const guided = tnuvaSummaryGuideDocs();
+  const money = value => '₪' + fmtMoney(value);
+  return guided.map(({ index, doc, questions }) => {
+    const step = tnuvaSummaryAskStep.get(doc) || 0;
+    const label = aiScanDocuments.length > 1 ? ' (תעודה ' + (index + 1) + ')' : '';
+    const box = inner => '<div data-summary-guide="' + index + '" class="rounded-xl bg-white border-2 border-amber-400 p-3 mt-2 text-slate-800" dir="rtl">' + inner + '</div>';
+    if (step >= questions.length) return box(
+      '<div class="font-black text-base">צריך לצלם שוב את התעודה' + htmlEscape(label) + '</div>' +
+      '<div class="text-sm font-bold text-slate-600 mt-1">המספרים בתחתית נקראו נכון, אז כנראה אחד המוצרים ברשימה לא נקרא טוב. צלם שוב, ישר ובאור טוב.</div>');
+    const q = questions[step];
+    const options = [q.read, q.alt].sort((a, b) => a - b);
+    return box(
+      '<div class="font-black text-base"><i class="fa-solid fa-magnifying-glass ml-1"></i>צריך לבדוק מספר אחד בתעודה' + htmlEscape(label) + '</div>' +
+      '<div class="text-sm font-bold text-slate-700 mt-1">הסתכל בתחתית התעודה, בשורה <b>"' + htmlEscape(q.label) + '"</b>. מה כתוב שם?</div>' +
+      '<div class="grid grid-cols-2 gap-2 mt-3">' + options.map(value =>
+        '<button data-role="rc-summary-answer" data-doc="' + index + '" data-field="' + q.field + '" data-choice="' + (value === q.read ? 'read' : 'alt') + '" class="btn-tap rounded-xl bg-white border-2 border-slate-300 py-3 text-lg font-black text-slate-800" dir="ltr">' + money(value) + '</button>').join('') +
+      '</div>' +
+      '<button data-role="rc-photo-manual" class="btn-tap w-full py-2 mt-1 text-xs font-bold text-slate-500 underline">כתוב מספר אחר</button>' +
+      '<div class="text-[11px] font-bold text-slate-500 mt-1">למה? הסכומים בתעודה לא הסתדרו ב-' + money(Math.abs(q.read - q.alt)) + ', כנראה ספרה אחת נקראה לא נכון.</div>');
+  }).join('');
+}
+function tnuvaSummaryAnswer(index, field, choice) {
+  const guided = tnuvaSummaryGuideDocs().find(item => item.index === Number(index));
+  if (!guided) { refreshScanHost(); return false; }
+  const step = tnuvaSummaryAskStep.get(guided.doc) || 0;
+  const q = guided.questions[step];
+  if (!q || q.field !== field) { refreshScanHost(); return false; }
+  if (choice !== 'alt') { tnuvaSummaryAskStep.set(guided.doc, step + 1); refreshScanHost(); return false; }
+  // התיקון נכתב לכל עותקי הקריאה (המקורי, של בדיקת המחירים והממופה), עם סימון
+  // שהמשתמש אישר אותו מול הנייר. סריקה חדשה מחליפה את כולם ממילא.
+  const mark = { field, read: q.read, value: q.alt, at: Date.now() };
+  [guided.doc, guided.doc.__tnuvaPaper, guided.doc.__pricePaper].filter(Boolean).forEach(copy => {
+    if (field === 'promo') copy.promoDiscountExVat = Number(copy.promoDiscountExVat) < 0 ? -q.alt : q.alt;
+    else {
+      if (copy.netToChargeExVat != null && r2(Number(copy.netToChargeExVat)) === r2(Number(copy.subtotalExVat))) copy.netToChargeExVat = q.alt;
+      copy.subtotalExVat = q.alt;
+    }
+    copy.userConfirmedSummary = mark;
+  });
+  aiScanEvaluation = null;
+  const ok = tnuvaAdoptPaperAnchors();
+  if (ok) showToast('תוקן — התעודה אומתה', null, null, 3200);
+  return ok;
+}
+function tnuvaGuidedProblems() {
+  const guided = new Set(receiptPaperScanState === 'failed' ? tnuvaSummaryGuideDocs().map(item => item.index) : []);
+  return receiptPaperScanProblems.filter(p => ![...guided].some(i => String(p).startsWith('תעודה ' + (i + 1) + ': ')));
+}
+// השאלה הפשוטה עומדת לבד; החשבון המלא נשאר זמין למי שרוצה, מקופל.
+function tnuvaPaperProblemsHtml(cls) {
+  const guide = tnuvaSummaryGuideHtml();
+  const rest = guide ? tnuvaGuidedProblems() : receiptPaperScanProblems;
+  const repair = tnuvaAnchorRepairHtml();
+  return (rest.length ? '<div class="' + cls + '">' + rest.map(htmlEscape).join('<br>') + '</div>' : '') + guide +
+    (guide && repair ? '<details class="mt-2 text-xs"><summary class="cursor-pointer text-slate-500 underline">פירוט החשבון</summary>' + repair + '</details>' : repair);
 }
 // v110: הפרש של אגורות בודדות הוא כמעט תמיד ספרה אחת בשורות הסיכום, ולא בשורות
 // המוצרים. ב-23.9 "סד הנחה" המודפס 44.10 נקרא 44.11 — בדיוק "הפרש עיגול" שמודפס
@@ -5791,8 +5878,8 @@ function receiptManualReceivingHtml() {
     : ready ? ''
     // v110: אותו חשבון ואותן בחירות כמו בקליטה בסריקה. עד כאן המסך הזה הציג רק
     // "סכומי השורות ... אינם שווים" וכפתור צילום, בלי מספר אחד להשוות לנייר.
-    : '<div role="status" class="rounded-xl bg-amber-50 border border-amber-300 p-4 mb-3 text-base font-bold text-amber-900">צריך להשלים את פענוח התעודה<div class="mt-2 text-sm">' + problems.map(htmlEscape).join('<br>') + '</div>' +
-      tnuvaAnchorRepairHtml() +
+    : '<div role="status" class="rounded-xl bg-amber-50 border border-amber-300 p-4 mb-3 text-base font-bold text-amber-900">' + (tnuvaSummaryGuideDocs().length && receiptPaperScanState === 'failed' ? '' : 'צריך להשלים את פענוח התעודה') +
+      (receiptPaperScanProblems.length ? tnuvaPaperProblemsHtml('mt-2 text-sm') : '<div class="mt-2 text-sm">' + problems.map(htmlEscape).join('<br>') + '</div>') +
       '<button data-role="rc-photo-repair" class="btn-tap w-full bg-white border border-amber-300 rounded-xl py-3 mt-3">בדוק את צילומי התעודה / צלם שוב</button>' +
       '<button data-role="rc-photo-manual" class="btn-tap w-full py-2 text-xs underline">או הקלד סכום ומספר פריטים</button></div>';
   return '<section data-manual-receiving dir="rtl" class="mb-4">' +
@@ -20431,6 +20518,7 @@ app.addEventListener('click', (e) => {
   if (role === 'an-copy') { anCopyText(t.dataset.what === 'product' ? anProductText(anSelectedKey) : anSummaryText()); return; }
   if (role === 'rc-draft-retry') { flushReceiptDraftToCloud(); return; }
   if (role === 'rc-draft-cloud' || role === 'rc-draft-local') { resolveReceiptDraftConflict(role === 'rc-draft-local'); return; }
+  if (role === 'rc-summary-answer') { if (!aiScanBusy) tnuvaSummaryAnswer(parseInt(t.dataset.doc, 10), t.dataset.field, t.dataset.choice); return; }
   if (role === 'rc-anchor-entry') { if (!aiScanBusy) tnuvaStartAnchorEntry(parseInt(t.dataset.doc, 10), t.dataset.basis); return; }
   if (role === 'cfg-service-check') { tnuvaShowServiceVersion(); return; }
   if (role.startsWith('rc-photo-')) {
