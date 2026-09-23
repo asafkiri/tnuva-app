@@ -357,6 +357,20 @@ test(supplier+': manual scan failure and an interrupted reload offer photo recov
  assertManualScreen(b);assert.ok(b.node('app').innerHTML.includes('data-role="'+repair+'"'));
  b.click(repair);assert.ok(b.node('app').innerHTML.includes('data-role="'+photoRole(true)+'"'));
 });
+test(supplier+': a summary off by one agora shows the arithmetic and the line to compare on the manual screen',async()=>{
+ // 23.9: "סד הנחה" המודפס 44.10 נקרא 44.11 (בדיוק "הפרש עיגול"), והמסך הציג רק
+ // שהחשבון לא נסגר — בלי מספר אחד להשוות לנייר.
+ const data=plainData(),doc=data.paper.scan.documents[0];
+ Object.assign(doc,{promoDiscountExVat:1.01,roundingDiff:0.01,subtotalExVat:91,netToChargeExVat:91});
+ const r=create({data});enterPhotoScreen(r);r.click(photoRole(true));await settleScan();
+ assert.equal(r.run('receiptPaperScanState'),'failed');const html=assertManualScreen(r);
+ assert.match(html,/שורות הפריטים ₪92\.00 פחות הנחה ₪1\.01 = ₪90\.99, אבל &quot;סהכ חייב מעמ&quot; נקרא ₪91\.00 \(הפרש ₪0\.01\)/);
+ assert.match(html,/החשבון שנקרא מהנייר/);
+ assert.match(html,/השווה לנייר: &quot;סד הנחה בגין מבצעים&quot; — נקרא ₪1\.01/);
+ assert.match(html,/ההפרש שווה ל"הפרש עיגול" המודפס/);
+ assert.match(html,/data-role="rc-anchor-entry"[^>]*data-basis="printed"/);
+ assert.match(html,/data-role="rc-photo-manual"/);assert.doesNotMatch(html,/data-role="rc-quantity-all"/);
+});
 test(supplier+': switching back to scanning preserves the paper, entered differences and existing quantities',async()=>{
  const r=await scanned(plainData(),[]);r.click('rc-quantity-differences');
  r.run(`receiptQuantityReview.rows[0].kind='shortage';receiptQuantityReview.rows[0].difference='2';saveReceiptDraft();closeReceiptQuantityReview()`);
