@@ -363,7 +363,7 @@
     <div id="receiptQuantityModal" role="dialog" aria-modal="true" aria-label="בדיקת כמויות ידנית" class="hidden fixed inset-0 bg-slate-900/60 backdrop-blur-sm items-center justify-center p-3 z-[70]" dir="rtl">
       <div class="bg-white rounded-2xl shadow-2xl w-full max-w-lg flex flex-col" style="max-height:90vh;max-height:90dvh">
         <div class="p-4 border-b border-slate-100 shrink-0"><div class="flex items-center justify-between gap-2"><h3 class="font-black text-xl text-slate-800">חוסרים ועודפים</h3><button id="receiptQuantityClose" class="btn-tap p-2 text-slate-600 font-bold" aria-label="סגור בדיקת כמויות">חזרה</button></div>
-          <p class="text-sm text-slate-600 mt-2">סמן רק את ההפרשים שמצאת. בסיום תאשר ששאר הכמויות תואמות.</p>
+          <p class="text-sm text-slate-600 mt-2">חפש את המוצר, בחר "חוסר" או "עודף" וכתוב כמה יחידות. את שאר המוצרים אל תשנה — בסיום הם יאושרו כמו בתעודה.</p>
           <input id="receiptQuantitySearch" type="search" placeholder="חפש מוצר, גם אם אינו בתעודה" aria-label="חיפוש מוצר בבדיקה הידנית" class="w-full border-2 border-slate-200 rounded-xl p-3 mt-3 text-base">
         </div>
         <div class="p-4 overflow-y-auto min-h-0"><div id="receiptQuantityRows"></div><div id="receiptQuantityExtras"></div></div>
@@ -711,7 +711,7 @@ let receiptDupConfirmed = false; // אישור שמירה למרות חשד לכ
 const RECEIPT_DRAFT_KEY = 'tn_receipt_draft';
 let receivingDigitsMissTimer = null;
 let receivingDigitsMissNotified = '';
-const APP_VERSION = '111'; // חשבון שלא נסגר: שאלה אחת פשוטה על המספר שבנייר
+const APP_VERSION = '112'; // תיקון סד הנחה מגיע גם לסגירת התעודה
 // גרסה 73: מוצר בלי מחיר קופה — חלון הכמות מציג מיד את העלות ליח׳ (ללא מע״מ) ופותח שדה להקלדת המחיר שעובר בקופה, בלי לנדוד למסך המחירים
 // v40: תג גרסה קבוע בפינת המסך — לדעת בשנייה איזו גרסה באמת רצה על המכשיר
 // (עוזר במיוחד מול מטמון ה-PWA). pointer-events:none — לעולם לא חוסם מגע.
@@ -1215,7 +1215,11 @@ function tnuvaSummaryAnswer(index, field, choice) {
   // שהמשתמש אישר אותו מול הנייר. סריקה חדשה מחליפה את כולם ממילא.
   const mark = { field, read: q.read, value: q.alt, at: Date.now() };
   [guided.doc, guided.doc.__tnuvaPaper, guided.doc.__pricePaper].filter(Boolean).forEach(copy => {
-    if (field === 'promo') copy.promoDiscountExVat = Number(copy.promoDiscountExVat) < 0 ? -q.alt : q.alt;
+    if (field === 'promo') {
+      copy.promoDiscountExVat = Number(copy.promoDiscountExVat) < 0 ? -q.alt : q.alt;
+      // העותק הממופה מחזיק את ההנחה גם כהנחת-מסמך, וממנה סגירת התעודה קוראת.
+      if (copy.documentDiscountExVat != null) copy.documentDiscountExVat = q.alt;
+    }
     else {
       if (copy.netToChargeExVat != null && r2(Number(copy.netToChargeExVat)) === r2(Number(copy.subtotalExVat))) copy.netToChargeExVat = q.alt;
       copy.subtotalExVat = q.alt;
@@ -1223,6 +1227,15 @@ function tnuvaSummaryAnswer(index, field, choice) {
     copy.userConfirmedSummary = mark;
   });
   aiScanEvaluation = null;
+  // v112: קריאה שנכשלה בבדיקת הנייר לא נשמרה כתוצאה מאושרת, ולכן אחרי התיקון
+  // (בלי רענון) כפתורי הכמויות נענו "צריך להשלים את זיהוי המוצרים". עכשיו
+  // כשהנייר נסגר, התוצאה המתוקנת נשמרת מאושרת בדיוק כמו סריקה שעברה מיד.
+  const input = aiScanDocuments[guided.index];
+  if (input && input.scanResult && input.scanResult.ok && input.scanResult.doc === guided.doc
+    && tnuvaPaperCheck(guided.doc, input.pages.length || input.restoredPageCount || 0).ok) {
+    const { pages, ...cached } = input.scanResult;
+    input.cachedResult = cached; input.cachedPages = input.pages.slice();
+  }
   const ok = tnuvaAdoptPaperAnchors();
   if (ok) showToast('תוקן — התעודה אומתה', null, null, 3200);
   return ok;
@@ -1528,6 +1541,11 @@ function receiptRebuildScanResponse() {
     if (!result) return null;
     result.docIndex = index;
     if (result.doc) result.doc.noteIndex = index;
+    // v112: תיקון "סד הנחה" של גרסה 111 לא עדכן את הנחת-המסמך שבעותק הממופה,
+    // והתעודה ננעלה בסגירה על פער של אגורה. טיוטות שנשמרו כך מתוקנות כאן.
+    const fixed = result.doc && result.doc.userConfirmedSummary;
+    if (fixed && fixed.field === 'promo' && result.doc.documentDiscountExVat != null && result.doc.promoDiscountExVat != null)
+      result.doc.documentDiscountExVat = Math.abs(Number(result.doc.promoDiscountExVat));
     return result;
   }).filter(Boolean);
   const good = results.filter(r => r.ok && r.doc);
@@ -5891,9 +5909,12 @@ function receiptManualReceivingHtml() {
 }
 function receiptQuantityButtonsHtml() {
   if (receiptNoDoc || receiptAttachTarget || receiptPaperScanState !== 'ok' || !aiScanResponse) return '';
+  // v112: שאלה אחת ברורה מעל שני הכפתורים — מה המשתמש צריך להחליט כאן.
   if (receiptUsesManualQuantities()) return '<div class="space-y-3 mb-3">' +
-    '<button data-role="rc-quantity-all" class="btn-tap w-full bg-emerald-600 text-white rounded-xl py-4 px-3 font-black text-base">בדקתי ידנית — כל הכמויות תואמות, המשך לקליטה</button>' +
-    '<button data-role="rc-quantity-differences" class="btn-tap w-full bg-white border-2 border-blue-300 text-blue-800 rounded-xl py-4 px-3 font-black text-base">בדקתי ידנית — יש חוסרים או עודפים</button></div>';
+    '<div class="rounded-xl bg-emerald-50 border border-emerald-200 p-3"><div class="text-xs font-black text-emerald-700"><i class="fa-solid fa-circle-check"></i> התעודה נקראה ואומתה</div>' +
+    '<div class="text-lg font-black text-slate-800 mt-1">הגיע בדיוק מה שכתוב בתעודה?</div></div>' +
+    '<button data-role="rc-quantity-all" class="btn-tap w-full bg-emerald-600 text-white rounded-xl py-4 px-3 font-black text-base">כן — הכול הגיע כמו בתעודה</button>' +
+    '<button data-role="rc-quantity-differences" class="btn-tap w-full bg-white border-2 border-blue-300 text-blue-800 rounded-xl py-4 px-3 font-black text-base">לא — חסר או עודף משהו<span class="block text-xs font-bold text-blue-600 mt-0.5">תבחר את המוצר ותכתוב כמה יחידות</span></button></div>';
   // Folded to its own question. Counting by scanner is the ordinary path, so the
   // manual shortcut asks for one line of the screen until it is actually wanted.
   return '<details data-quantity-picker' + (receiptQuantityPickerOpen ? ' open' : '') +
