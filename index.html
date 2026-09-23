@@ -650,6 +650,12 @@ let receiptNoDoc = false;        // הקליטה הנוכחית נפתחה בל�
 let receiptAttachTarget = null;  // צירוף נייר לקליטה שכבר נשמרה בלי תעודה
 let reconcileData = null;        // נתוני מסך השוואת תעודה
 let reconcileDetectiveRoundingGap = null; // סטיית עיגול זעירה שאושרה בבחירת פתרון של הבלש
+// v113: סטיית העיגול שבין שורות המבצע באפליקציה (מחיר מבצע × כמות, מעוגל פעם
+// אחת למוצר) לבין תנובה (הנחה מעוגלת לכל שורה בנפרד). היא נקבעת בבדיקת הנייר
+// בלבד, מהמספרים שבנייר, ונשמרת כ-{ cents, rows }. ההחלה נסגרת עליה רק כשהפער
+// בפועל שווה לה בדיוק — ולכן אין בה מקום לחוסר, לעודף או להפרש מחיר. כל שינוי
+// ידני בכמות או במחיר מאפס אותה, בדיוק כמו את סטיית הבלש.
+let reconcilePromoRoundingGap = null;
 // v178: האם באמת הוזנו נתוני נייר (הקלדה ידנית / החלת סריקת AI) על noteQty.
 // עד שזה קורה, noteQty הוא עותק של מה שנסרק — והכותרת חייבת לומר את זה.
 let reconcilePaperEntered = false;
@@ -711,7 +717,7 @@ let receiptDupConfirmed = false; // אישור שמירה למרות חשד לכ
 const RECEIPT_DRAFT_KEY = 'tn_receipt_draft';
 let receivingDigitsMissTimer = null;
 let receivingDigitsMissNotified = '';
-const APP_VERSION = '112'; // תיקון סד הנחה מגיע גם לסגירת התעודה
+const APP_VERSION = '113'; // v113: עיגול הנחת מבצע לכל שורה בנפרד (כמו בתנובה) אינו נחשב עוד "מבצע חסר", והנחה שמכסה רק חלק מהמבצעים מצביעה רק על החסר
 // גרסה 73: מוצר בלי מחיר קופה — חלון הכמות מציג מיד את העלות ליח׳ (ללא מע״מ) ופותח שדה להקלדת המחיר שעובר בקופה, בלי לנדוד למסך המחירים
 // v40: תג גרסה קבוע בפינת המסך — לדעת בשנייה איזו גרסה באמת רצה על המכשיר
 // (עוזר במיוחד מול מטמון ה-PWA). pointer-events:none — לעולם לא חוסם מגע.
@@ -6464,7 +6470,7 @@ function openReconcile() {
   receivingDepositLines().forEach(dep => {
     reconcileData.push({ productId: 'deposit-recv-' + dep.product.id, name: dep.name, barcode: '', received: dep.qty, noteQty: dep.qty, price: dep.unit, basePrice: dep.unit, promoPct: 0, promoOn: false, checked: true, isDeposit: true });
   });
-  detectiveOpen = false; noteCheckOpen = false; noteCheckAuto = false; noteCheckRows = []; noteCheckRes = null; reconcileCheckMode = false; noteCheckQtyMode = false; rcStep = null; noteCheckForceQty = false; ncPromoResult = null; reconcileSupplierDiscount = 0; reconcileSupplierPromoItems = []; reconcilePromoMismatchItems = []; reconcileSupplierCreditClaim = null; manualSearchTerm = ''; manualAssigned = []; manualSearchOpen = false; manualPromoMarks = {}; reconcilePaperEntered = false; reconcileDetectiveRoundingGap = null;
+  detectiveOpen = false; noteCheckOpen = false; noteCheckAuto = false; noteCheckRows = []; noteCheckRes = null; reconcileCheckMode = false; noteCheckQtyMode = false; rcStep = null; noteCheckForceQty = false; ncPromoResult = null; reconcileSupplierDiscount = 0; reconcileSupplierPromoItems = []; reconcilePromoMismatchItems = []; reconcileSupplierCreditClaim = null; manualSearchTerm = ''; manualAssigned = []; manualSearchOpen = false; manualPromoMarks = {}; reconcilePaperEntered = false; reconcileDetectiveRoundingGap = null; reconcilePromoRoundingGap = null;
   resetAiInvoiceScan();
   resetDetectiveQuestions();
   setView('reconcile');
@@ -6486,7 +6492,17 @@ function reconcileMoneyBalanced() {
   const exactUnitAnchor = receiptNoteUnits != null && reconcileUnitsGap() === 0;
   if (receiptMoneyMatches(reconcileNoteInc(), (receiptNoteTotal || 0) + (Number(reconcileSupplierDiscount) || 0), exactUnitAnchor)) return true;
   const gap = reconcileGap();
-  return reconcileDetectiveRoundingGap != null && Math.abs(gap) <= 0.05 && Math.abs(gap - reconcileDetectiveRoundingGap) < 0.001;
+  if (reconcileDetectiveRoundingGap != null && Math.abs(gap) <= 0.05 && Math.abs(gap - reconcileDetectiveRoundingGap) < 0.001) return true;
+  return reconcilePromoRoundingCents() != null;
+}
+// v113: הפער שנשאר אחרי החלת נייר של תנובה כשהוא כולו עיגול הנחות המבצע
+// שורה-שורה (ראה reconcilePromoRoundingGap): לכל היותר אגורה לשורת מבצע,
+// ורק כשהוא שווה בדיוק לסטייה שחושבה מהנייר. אחרת null — והפער הוא פער.
+function reconcilePromoRoundingCents() {
+  const allowance = reconcilePromoRoundingGap;
+  if (!allowance || !(Number(allowance.rows) > 0)) return null;
+  const gapCents = Math.round(reconcileGap() * 100);
+  return gapCents === Number(allowance.cents) && Math.abs(gapCents) <= Number(allowance.rows) ? gapCents : null;
 }
 function reconcileIsBalanced() { return reconcileMoneyBalanced() && reconcileUnitsBalanced(); }
 function reconcileAssigned() {
@@ -7506,6 +7522,7 @@ function detectiveApplyResolvedResult(result, i, selectPrefix) {
   });
   const roundingGap = reconcileGap();
   reconcileDetectiveRoundingGap = Math.abs(roundingGap) <= 0.05 ? roundingGap : null;
+  reconcilePromoRoundingGap = null; // v113: הבלש שינה כמויות — סטיית עיגול המבצעים מהנייר כבר אינה מתארת אותן
   return chosen;
 }
 function detectiveApplySolution(i) {
@@ -9912,25 +9929,29 @@ const PRICE_AUDIT_SUBSET_SOLUTION_LIMIT = 8;
 function priceAuditSubsetTolerance(size) { return Math.max(1, Math.ceil(size / 2)); }
 // כל תת-קבוצה של שורות המבצע שסכום ההנחות שלה שווה למודפס. מוחזרות כולן
 // בכוונה: שני הרכבים באותו סכום פירושם שאי אפשר לדעת איזה מבצע לא ירד.
-function priceAuditPromoSubsets(values, targetCents) {
+// v113: rowsPerValue (לא חובה) — כמה שורות נייר יושבות בכל ערך. בבדיקת הנייר
+// ערך הוא מוצר מצורף שיכול לבוא מכמה שורות או תעודות, ותנובה מעגלת כל אחת
+// מהן בנפרד; לכן הסבילות נספרת בשורות ולא במוצרים. בלי הפרמטר — כמו קודם.
+function priceAuditPromoSubsets(values, targetCents, rowsPerValue) {
   const n = values.length, order = values.map((v, i) => i).sort((a, b) => values[b] - values[a]);
+  const rowsOf = i => Array.isArray(rowsPerValue) ? Math.max(1, Number(rowsPerValue[i]) || 1) : 1;
   const sorted = order.map(i => values[i]), suffix = new Array(n + 1).fill(0);
   for (let i = n - 1; i >= 0; i--) suffix[i] = suffix[i + 1] + sorted[i];
-  const maxTol = priceAuditSubsetTolerance(n) + 1e-9, solutions = [];
+  const maxTol = priceAuditSubsetTolerance(values.reduce((sum, v, i) => sum + rowsOf(i), 0)) + 1e-9, solutions = [];
   let overflow = false;
-  (function dfs(i, sum, picked) {
+  (function dfs(i, sum, picked, rows) {
     if (overflow || sum - targetCents > maxTol || sum + suffix[i] - targetCents < -maxTol) return;
     if (i === n) {
       const diff = Math.abs(sum - targetCents);
-      if (diff <= priceAuditSubsetTolerance(picked.length) + 1e-9) {
-        solutions.push({ picked: picked.slice(), diff });
+      if (diff <= priceAuditSubsetTolerance(rows) + 1e-9) {
+        solutions.push({ picked: picked.slice(), diff, rows });
         if (solutions.length > PRICE_AUDIT_SUBSET_SOLUTION_LIMIT) overflow = true;
       }
       return;
     }
-    picked.push(order[i]); dfs(i + 1, sum + sorted[i], picked); picked.pop();
-    dfs(i + 1, sum, picked);
-  })(0, 0, []);
+    picked.push(order[i]); dfs(i + 1, sum + sorted[i], picked, rows + rowsOf(order[i])); picked.pop();
+    dfs(i + 1, sum, picked, rows);
+  })(0, 0, [], 0);
   return { solutions, overflow };
 }
 // מחזיר את שיוך הנחת הסיכום לשורות, או את הסיבה שאי אפשר לשייך. שורה שהמחיר
@@ -12000,6 +12021,16 @@ function aiEvaluateInvoiceScan(payload) {
   // v17: שארית ההנחה נשמרת ומוחזרת — היא הנתון שמאפשר גם למנתח לזהות מבצע
   // חסר, וגם למסך להגיד "יש ₪X הנחה בלי כיסוי" במקום "פער לא מוסבר".
   let promoRebuiltCents = 0, promoResidualCents = 0;
+  // v113: תנובה מחשבת כל הנחת מבצע בדיוק מלא ומעגלת כל שורה בנפרד לפני שהיא
+  // מסכמת את "סד הנחה בגין מבצעים" (הוכח בנייר: הודפס 50.04 = סכום השורות
+  // המעוגלות, לא 50.05 = עיגול הסכום). כאן ההנחה נצברת למוצר — גם על פני כמה
+  // שורות ותעודות — ומעוגלת פעם אחת, וחצי אגורה מדויקת (6 × 5.75 × 15% = 5.175)
+  // נופלת לכל כיוון. לכן ההשוואה נעשית מול הסכום הלא-מעוגל, בסבילות של חצי
+  // אגורה לכל שורת מבצע בנייר. מבצע אמיתי שלא ירד שווה עשרות אגורות לפחות,
+  // ולכן הסבילות הזאת לעולם אינה מבליעה אותו. הערכים נשמרים לכל מועמד
+  // (promoExactValues / promoRowCounts) כדי שגם פירוק הנחה חלקית ישתמש בהם.
+  const promoExactValues = [], promoRowCounts = [], promoAtList = [];
+  let promoRoundingGap = null, promoPartialUnresolved = false;
   if (aggregates.size > 0) {
     // תוקף המבצע נקבע לפי תאריך התעודה, כמו בבדיקת המחירים ובמסך ההשוואה.
     // עד כאן נבדק לפי היום, ולכן תעודה מתאריך קודם נשפטה מול מבצעי היום
@@ -12037,7 +12068,19 @@ function aiEvaluateInvoiceScan(payload) {
       const priceFinding = { type: promoExpected ? 'promo_missing' : 'price', productId: a.product.id, name: a.product.name, qty: a.qty, expectedPrice: expected, paperPrice: a.paperUnitPrice, amount: r2((a.paperUnitPrice - expected) * a.qty), text: (promoExpected ? 'המבצע לא מופיע אצל הספק: ' : 'מחיר שונה: ') + a.product.name + ' — במערכת ₪' + fmtMoney(expected) + ', בנייר ₪' + fmtMoney(a.paperUnitPrice) };
       // לעיתים תנובה מדפיסה את המבצעים כהנחה אחת בתחתית המסמך ולא כהנחת שורה.
       // מחכים לסיום כל השורות ורק אז בודקים אם ההנחה הכללית סוגרת בדיוק את כל המבצעים.
-      if (promoExpected) promoCandidates.push(priceFinding);
+      if (promoExpected) {
+        promoCandidates.push(priceFinding);
+        // v113: סבילות העיגול ניתנת רק למוצר שכל שורות הנייר שלו חויבו בדיוק
+        // במחיר המחירון (ברוטו הנייר = מחיר × כמות, לאגורה). אז ההנחה המדויקת
+        // היא מחיר × כמות × אחוז — ומה שנשאר מול המודפס הוא עיגול תנובה בלבד.
+        // מוצר שחויב ולו באגורה יותר (8.83 במקום 8.82) אינו מקבל סבילות: אחרת
+        // ההפרש נבלע בחצי-האגורה-לשורה של שאר שורות המבצע ונרשם כ"עיגול".
+        const listCents = Math.round((Number(a.product.price) || 0) * 100);
+        const atList = listCents > 0 && Number.isInteger(a.qty) && a.totalCents === listCents * a.qty;
+        promoAtList.push(atList);
+        promoExactValues.push(atList ? (listCents / 100 - expected) * a.qty * 100 : (a.paperUnitPrice - expected) * a.qty * 100);
+        promoRowCounts.push(Math.max(1, Array.isArray(a.rows) ? a.rows.length : 1));
+      }
       else findings.push(priceFinding);
     }
     if (a.promotionTexts.length) findings.push({ type: 'printed_promo', productId: a.product.id, name: a.product.name, text: 'מבצע מודפס ליד ' + a.product.name + ': ' + Array.from(new Set(a.promotionTexts)).join(' · ') });
@@ -12049,12 +12092,80 @@ function aiEvaluateInvoiceScan(payload) {
     // הכסף. ההפרש עצמו, שהוא בדיוק ההנחה שאין לה כיסוי במאגר, נזרק. בשטח
     // (1.9) זה הפך מבצע חסר אחד של ₪12.35 ל"פער לא מוסבר" של ₪50.04 שלא
     // הצביע לשום כיוון. מעכשיו ההפרש מחושב ומקבל שם.
-    promoRebuiltCents = expectedPromoDiscountCents;
-    promoResidualCents = verifiedDocumentDiscountCents - expectedPromoDiscountCents;
+    // v113: כיסוי נקבע מול הסכום הלא-מעוגל (ראה למעלה). כשההנחה המודפסת מכסה,
+    // היא עצמה ההנחה המשוחזרת — והשארית אפס, ולא אגורת עיגול שמחפשים לה
+    // "מבצע חסר במאגר". כל מקרה אחר מחושב בדיוק כמו קודם.
+    const promoExactCents = promoExactValues.reduce((sum, v) => sum + v, 0), promoPaperRows = promoRowCounts.reduce((sum, v) => sum + v, 0);
+    // v113: הסבילות חלה רק כשכל מוצרי המבצע חויבו במחיר המחירון (promoAtList).
+    // אחרת — בדיוק כמו קודם: התאמה מלאה בין הסכום המעוגל למודפס.
+    const promoAllAtList = promoAtList.length > 0 && promoAtList.every(Boolean);
+    // v113: מה תנובה יכולה להדפיס בפועל עבור קבוצת מבצעים. מוצר בשורת נייר אחת:
+    // ההנחה המדויקת מעוגלת לאגורה אחת קבועה, ורק חצי אגורה מדויקת יכולה ליפול
+    // לשני הכיוונים. כך אגורה שחסרה בהנחה המודפסת (44.09 במקום 44.10) אינה
+    // "עיגול" — היא פער. רק מוצר שמגיע מכמה שורות או תעודות (הכמות לכל שורה
+    // אינה ידועה) מקבל חצי אגורה לכל שורה.
+    const promoAchievable = indices => {
+      let lo = 0, hi = 0;
+      indices.forEach(i => {
+        const v = Math.round(promoExactValues[i] * 1e6) / 1e6, rows = promoRowCounts[i];
+        if (rows > 1) { lo += v - rows / 2; hi += v + rows / 2; return; }
+        const floor = Math.floor(v);
+        if (Math.abs(v - floor - 0.5) < 1e-6) { lo += floor; hi += floor + 1; }
+        else { lo += Math.round(v); hi += Math.round(v); }
+      });
+      return { lo, hi };
+    };
+    const promoFits = (indices, target) => { const range = promoAchievable(indices); return target >= range.lo - 1e-6 && target <= range.hi + 1e-6; };
+    const promoCoveredByPrinted = promoCandidates.length > 0 && verifiedDocumentDiscountCents > 0
+      && (expectedPromoDiscountCents === verifiedDocumentDiscountCents
+        || (promoAllAtList && promoFits(promoCandidates.map((c, i) => i), verifiedDocumentDiscountCents)));
+    promoRebuiltCents = promoCoveredByPrinted ? verifiedDocumentDiscountCents : expectedPromoDiscountCents;
+    promoResidualCents = verifiedDocumentDiscountCents - promoRebuiltCents;
+    // v113: אחרי ההחלה שורת מבצע מכוסה נכתבת במחיר המבצע × כמות, מעוגל פעם אחת
+    // למוצר, ואילו הנייר עיגל כל שורה לחוד — ולכן סכום השורות יכול לסטות מהנייר
+    // באגורה לשורה. הסטייה מחושבת כאן, מהנייר בלבד ורק על המוצרים שההנחה
+    // מכסה: ברוטו הנייר שלהם, פחות ההנחה המודפסת, פחות מה שההחלה תכתוב. חוסר,
+    // עודף או מחיר אחר אינם נכנסים לחישוב, ולכן גם לא יכולים להיבלע בו.
+    const promoRoundingGapFor = covered => {
+      let paperCents = 0, appCents = 0, rows = 0;
+      for (const candidate of covered) {
+        const a = aggregates.get(candidate.productId);
+        const listCents = Math.round((Number(a && a.product && a.product.price) || 0) * 100);
+        // v113: רק שורות שחויבו בדיוק במחיר המחירון. אחרת ברוטו הנייר כולל
+        // הפרש מחיר, והוא היה נכנס ל"סטיית העיגול" — אין סטייה, והפער נשאר פער.
+        if (!a || !(listCents > 0 && Number.isInteger(a.qty) && a.totalCents === listCents * a.qty && Number(a.expectedUnitPrice) > 0)) return null;
+        paperCents += a.totalCents;
+        appCents += aiMoneyCents(lineTotalFromUnit(a.expectedUnitPrice, a.qty)) || 0;
+        rows += Math.max(1, Array.isArray(a.rows) ? a.rows.length : 1);
+      }
+      const cents = paperCents - verifiedDocumentDiscountCents - appCents;
+      return rows > 0 && Math.abs(cents) <= rows ? { cents, rows } : null;
+    };
     const catalogPromoGap = (verifiedDocumentDiscountCents > 0 && promoResidualCents > 0)
       ? aiDetectCatalogPromoGap(promoResidualCents, aggregates, day) : null;
-    if (promoCandidates.length && verifiedDocumentDiscountCents > 0 && expectedPromoDiscountCents === verifiedDocumentDiscountCents) {
+    // v113: ההנחה המודפסת מכסה רק חלק מהמבצעים. עד כאן סומנו כל המבצעים
+    // "לא מופיע אצל הספק" — גם אלה שירדו — והכסף לא נסגר ("צפוי 183.87,
+    // נמצא 215.62"), והתעודה ננעלה. כאן מפרקים את ההנחה להרכב המבצעים שלה,
+    // באותה סבילות של חצי אגורה לשורת נייר. רק הרכב יחיד מצביע על מוצר; כמה
+    // הרכבים (צירוף מקרים בסכומים) או יותר מדי — אף מוצר אינו מואשם. אין הרכב
+    // מתאים בכלל — ממשיכים בדיוק כמו קודם.
+    const promoPartial = (() => {
+      if (promoCoveredByPrinted || catalogPromoGap || documentDiscountUnread || !promoAllAtList || !promoCandidates.length || !(verifiedDocumentDiscountCents > 0)) return null;
+      // v113: הפירוק רק בתעודה אחת, כשכל מוצר מבצע מופיע בשורה אחת. מוצר על
+      // פני כמה שורות או תעודות יכול לקבל מבצע בחלק מהן בלבד — והפירוק היה
+      // מצביע על מוצר אחר, זהה-סכום, שהמבצע שלו דווקא ירד. שם אין מואשם.
+      if (returned.size !== 1 || promoRowCounts.some(rows => rows !== 1)) return { ambiguous: true, overflow: false };
+      if (!(promoExactCents - verifiedDocumentDiscountCents > promoPaperRows / 2 + 1e-6)) return null;
+      const { solutions, overflow } = promoCandidates.length <= PRICE_AUDIT_PROMO_SUBSET_LIMIT
+        ? priceAuditPromoSubsets(promoExactValues, verifiedDocumentDiscountCents, promoRowCounts) : { solutions: [], overflow: true };
+      const fits = solutions.filter(solution => solution.picked.length > 0 && promoFits(solution.picked, verifiedDocumentDiscountCents));
+      if (!overflow && fits.length === 1) return { covered: new Set(fits[0].picked) };
+      if (!overflow && !fits.length) return null;
+      return { ambiguous: true, overflow };
+    })();
+    if (promoCoveredByPrinted) {
       findings.push({ type: 'printed_promo', amount: verifiedDocumentDiscountCents / 100, text: 'מבצעי המערכת מופיעים כהנחה כללית מאומתת בתעודה: ₪' + fmtMoney(verifiedDocumentDiscountCents / 100) });
+      promoRoundingGap = promoRoundingGapFor(promoCandidates);
     } else if (catalogPromoGap) {
       // המבצעים שהמערכת כן מכירה אכן מופיעים בהנחה המודפסת — הם אינם טענה
       // נגד הספק, ואסור שייכנסו לכסף. מה שחסר הוא מבצע במאגר, וזה נאמר במפורש.
@@ -12075,6 +12186,17 @@ function aiEvaluateInvoiceScan(payload) {
       })));
       errors.push('שורת "סד הנחה בגין מבצעים" לא נקראה מהצילום, ולכן אי אפשר לדעת אם ' + promoCandidates.length +
         ' המבצעים ירדו בתעודה. צלם שוב וכלול את תחתית התעודה לפני שתתבע משהו מהספק.');
+    } else if (promoPartial && promoPartial.covered) {
+      const coveredFindings = promoCandidates.filter((candidate, i) => promoPartial.covered.has(i));
+      findings.push({ type: 'printed_promo', amount: verifiedDocumentDiscountCents / 100, text: 'הנחת המבצעים המודפסת ₪' + fmtMoney(verifiedDocumentDiscountCents / 100) + ' מכסה ' + coveredFindings.length + ' מתוך ' + promoCandidates.length + ' מבצעי המערכת: ' + coveredFindings.map(candidate => candidate.name).join(' · ') });
+      promoCandidates.forEach((candidate, i) => { if (!promoPartial.covered.has(i)) findings.push(candidate); });
+      promoRoundingGap = promoRoundingGapFor(coveredFindings);
+    } else if (promoPartial && promoPartial.ambiguous) {
+      // v113: אף מוצר אינו מואשם ואין תביעת כסף — התעודה נשארת נעולה עם הסבר.
+      promoPartialUnresolved = true;
+      errors.push('הנחת המבצעים המודפסת בתעודה (₪' + fmtMoney(verifiedDocumentDiscountCents / 100) + ') מכסה רק חלק ממבצעי המערכת (₪' + fmtMoney(expectedPromoDiscountCents / 100) + '): חסרים ₪' + fmtMoney((expectedPromoDiscountCents - verifiedDocumentDiscountCents) / 100) + '. ' +
+        (promoPartial.overflow ? 'יש יותר מדי דרכים להרכיב את הסכום הזה מהמבצעים' : 'יש יותר מדרך אחת להרכיב את הסכום הזה מהמבצעים') +
+        ', ולכן אי אפשר לדעת איזה מבצע לא ירד — ואף מוצר לא נתבע. מה לעשות: עבור בנייר על השורות המסומנות בכוכבית (*) מול רשימת המבצעים, ומצא את המבצע שלא ירד.');
     } else {
       findings.push(...promoCandidates);
       if (promoResidualCents > 0 && verifiedDocumentDiscountCents > 0) {
@@ -12104,11 +12226,13 @@ function aiEvaluateInvoiceScan(payload) {
   // (calculatedEx היה מוריד אותה שוב מהתשלום). אפס כאן מרפא את כל הצרכנים.
   const supplierDiscount = 0;
   const closure = aiFindingsClosure({ aggregates, findings, supplierDiscount }, findings);
-  if (findingsReady && !closure.ok) errors.push(closure.reason || 'הממצאים אינם סוגרים את פער היחידות והסכום');
+  // v113: כשאי אפשר לדעת איזה מבצע חסר, הסגירה נכשלת בדיוק בגובה המבצע החסר —
+  // והשגיאה שכבר נכתבה אומרת זאת במפורש. שגיאת "צפוי/נמצא" נוספת רק מבלבלת.
+  if (findingsReady && !closure.ok && !promoPartialUnresolved) errors.push(closure.reason || 'הממצאים אינם סוגרים את פער היחידות והסכום');
   const uniqueErrors = Array.from(new Set(errors));
   const uniqueWarnings = Array.from(new Set(warnings.concat(Array.isArray(scan.warnings) ? scan.warnings : [])));
   return { valid: uniqueErrors.length === 0 && barcodeSuggestions.length === 0 && findingsReady && aggregates.size > 0 && totalVerified && unitsVerified && closure.ok, totalVerified, unitsVerified, closure,
-    promoDiscountPrinted: verifiedDocumentDiscountCents / 100, promoDiscountRebuilt: promoRebuiltCents / 100, promoDiscountResidual: promoResidualCents / 100, errors: uniqueErrors, warnings: uniqueWarnings, findings, barcodeSuggestions, allRowsMapped, findingsReady, basketComplete, missingDocuments, residuals, autoResolutions, aggregates, docSummaries, extractedTotal: extractedTotalCents / 100, extractedUnits, rowTotal: rowTotalCents / 100, supplierDiscount, depositRows };
+    promoDiscountPrinted: verifiedDocumentDiscountCents / 100, promoDiscountRebuilt: promoRebuiltCents / 100, promoDiscountResidual: promoResidualCents / 100, promoRoundingGap, errors: uniqueErrors, warnings: uniqueWarnings, findings, barcodeSuggestions, allRowsMapped, findingsReady, basketComplete, missingDocuments, residuals, autoResolutions, aggregates, docSummaries, extractedTotal: extractedTotalCents / 100, extractedUnits, rowTotal: rowTotalCents / 100, supplierDiscount, depositRows };
 }
 function aiRotationRetryDocumentIndexes(evaluation) {
   if (!evaluation || !Array.isArray(evaluation.docSummaries)) return [];
@@ -13811,7 +13935,8 @@ function aiApplyInvoiceResult() {
     supplierPromoItems: cloneSafe(reconcileSupplierPromoItems),
     promoMismatchItems: cloneSafe(reconcilePromoMismatchItems),
     creditClaim: reconcileSupplierCreditClaim ? cloneSafe(reconcileSupplierCreditClaim) : null,
-    audit: reconcileAiAudit ? cloneSafe(reconcileAiAudit) : null
+    audit: reconcileAiAudit ? cloneSafe(reconcileAiAudit) : null,
+    promoRounding: reconcilePromoRoundingGap
   };
   // v166: שורות פיקדון קודמות מוסרות — ייבנו מחדש מהפענוח הנוכחי.
   reconcileData = (reconcileData || []).filter(l => !l.isDeposit && String(l.productId || '').indexOf('deposit-') !== 0);
@@ -13851,6 +13976,9 @@ function aiApplyInvoiceResult() {
   const confirmedMappings = aiConfirmedMappingsAudit();
   const automaticMappings = aiAutomaticNamePriceMappingsAudit();
   reconcileAiAudit = { version: 6, scannedAt: Date.now(), model: aiScanResponse && aiScanResponse.model || 'unknown', requestId: aiScanResponse && aiScanResponse.requestId || null, attempts: aiScanAttemptCount || 1, autoRotation: aiScanAutoRotationNote || '', totalVerified: !!ev.totalVerified, unitsVerified: !!ev.unitsVerified, documents: ev.docSummaries, confirmedMappings, automaticMappings, clientAutoResolutions: (Array.isArray(ev.autoResolutions) ? ev.autoResolutions : []).slice(0, 200), perDocument: (aiScanResponse && aiScanResponse.perDocument) || null, findings: safeFindings, hasDiscrepancy: safeFindings.some(f => ['shortage', 'surplus', 'price', 'promo_missing'].includes(f.type)) };
+  // v113: סטיית העיגול שבדיקת הנייר חישבה (ורק היא) עוברת לסגירה. בלעדיה
+  // נייר שבו כל המבצעים ירדו ננעל על "פער ₪0.01" (תעודה 3cc839d1 מ-6/8).
+  reconcilePromoRoundingGap = ev.promoRoundingGap ? { cents: Number(ev.promoRoundingGap.cents) || 0, rows: Number(ev.promoRoundingGap.rows) || 0 } : null;
   const exactUnits = reconcileUnitsBalanced();
   const exactMoney = reconcileMoneyBalanced();
   if (!exactMoney || !exactUnits) {
@@ -13861,6 +13989,7 @@ function aiApplyInvoiceResult() {
     reconcilePromoMismatchItems = before.promoMismatchItems;
     reconcileSupplierCreditClaim = before.creditClaim;
     reconcileAiAudit = before.audit;
+    reconcilePromoRoundingGap = before.promoRounding;
     aiScanError = 'ההחלה לא נסגרה מול העוגן שהוקלד: פער ₪' + fmtMoney(failGap) + ' בין סכום שורות הנייר לסכום שהוקלד. שום נתון לא שונה.';
     aiScanEvaluation.valid = false; renderReconcile(); return;
   }
@@ -14787,11 +14916,11 @@ function reconcileAddItem(pid) {
 function reconcileSetNoteLive(productId, val) {
   const l = (reconcileData || []).find(x => x.productId === productId); if (!l) return;
   let q = parseInt((val || '').toString().replace(/[^0-9]/g, ''), 10); if (isNaN(q) || q < 0) q = 0;
-  l.noteQty = q; reconcilePaperEntered = true; reconcileDetectiveRoundingGap = null; refreshReconcileHeader();
+  l.noteQty = q; reconcilePaperEntered = true; reconcileDetectiveRoundingGap = null; reconcilePromoRoundingGap = null; refreshReconcileHeader();
 }
 function reconcileStepNote(productId, delta) {
   const l = (reconcileData || []).find(x => x.productId === productId); if (!l) return;
-  l.noteQty = Math.max(0, (Number(l.noteQty) || 0) + delta); reconcileDetectiveRoundingGap = null; refreshReconcile();
+  l.noteQty = Math.max(0, (Number(l.noteQty) || 0) + delta); reconcileDetectiveRoundingGap = null; reconcilePromoRoundingGap = null; refreshReconcile();
 }
 function reconcileStepRecv(productId, delta) {
   const l = (reconcileData || []).find(x => x.productId === productId); if (!l) return;
@@ -14804,7 +14933,7 @@ function reconcileSetRecvLive(productId, val) {
 }
 function reconcileSetPriceLive(productId, val) {
   const l = (reconcileData || []).find(x => x.productId === productId); if (!l) return;
-  const n = parseFloat((val || '').toString().replace(/[^0-9.]/g, '')); l.price = isFinite(n) ? n : 0; reconcileDetectiveRoundingGap = null; refreshReconcileHeader();
+  const n = parseFloat((val || '').toString().replace(/[^0-9.]/g, '')); l.price = isFinite(n) ? n : 0; reconcileDetectiveRoundingGap = null; reconcilePromoRoundingGap = null; refreshReconcileHeader();
 }
 function saveReconciledReceipt(opts) {
   opts = opts || {};
@@ -14841,9 +14970,13 @@ function saveReconciledReceipt(opts) {
   const supplierDiscount = r2(Number(reconcileSupplierDiscount) || 0);
   const calculatedEx = r2(grossEx - supplierDiscount);
   const exactUnitAnchor = receiptNoteUnits != null && reconcileUnitsGap() === 0;
+  // v113: בתנובה אין עוגן יחידות, ולכן עד כאן לא נרשמה כאן התאמת עיגול.
+  // כשהסגירה נשענה על סטיית עיגול המבצעים מהנייר, הסטייה נרשמת כ"התאמת
+  // עיגול תעודה" — כך שהסכום לתשלום שווה לנייר לאגורה, כמו במסלול העוגן.
+  const promoRoundingCents = receiptNoteTotal != null && !receiptMoneyMatches(reconcileNoteInc(), (receiptNoteTotal || 0) + supplierDiscount, exactUnitAnchor) ? reconcilePromoRoundingCents() : null;
   const roundingAdjustment = receiptNoteTotal != null && exactUnitAnchor && receiptMoneyMatches(calculatedEx, receiptNoteTotal, true) && moneyDiffCents(calculatedEx, receiptNoteTotal) > 0
-    ? r2(Number(receiptNoteTotal) - calculatedEx) : 0;
-  const ex = roundingAdjustment ? r2(receiptNoteTotal) : calculatedEx;
+    ? r2(Number(receiptNoteTotal) - calculatedEx) : (promoRoundingCents ? promoRoundingCents / 100 : 0);
+  const ex = roundingAdjustment ? r2(calculatedEx + roundingAdjustment) : calculatedEx;
   const unresolvedAmountGap = reconcileMoneyBalanced() ? 0 : reconcileGap();
   const unresolvedUnitsGap = (reconcileUnitsGap() != null && reconcileUnitsGap() !== 0) ? reconcileUnitsGap() : 0;
   const aiAudit = reconcileAiAudit ? cloneSafe(reconcileAiAudit) : null;
