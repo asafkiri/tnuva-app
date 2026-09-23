@@ -357,19 +357,58 @@ test(supplier+': manual scan failure and an interrupted reload offer photo recov
  assertManualScreen(b);assert.ok(b.node('app').innerHTML.includes('data-role="'+repair+'"'));
  b.click(repair);assert.ok(b.node('app').innerHTML.includes('data-role="'+photoRole(true)+'"'));
 });
-test(supplier+': a summary off by one agora shows the arithmetic and the line to compare on the manual screen',async()=>{
- // 23.9: "סד הנחה" המודפס 44.10 נקרא 44.11 (בדיוק "הפרש עיגול"), והמסך הציג רק
- // שהחשבון לא נסגר — בלי מספר אחד להשוות לנייר.
+// 23.9: "סד הנחה" המודפס 44.10 נקרא 44.11 (בדיוק "הפרש עיגול"). v110 הציג את
+// החשבון, ועדיין לא היה ברור מה לעשות. עכשיו נשאלת שאלה אחת: מה כתוב בנייר.
+function agoraOffData() {
  const data=plainData(),doc=data.paper.scan.documents[0];
  Object.assign(doc,{promoDiscountExVat:1.01,roundingDiff:0.01,subtotalExVat:91,netToChargeExVat:91});
- const r=create({data});enterPhotoScreen(r);r.click(photoRole(true));await settleScan();
- assert.equal(r.run('receiptPaperScanState'),'failed');const html=assertManualScreen(r);
- assert.match(html,/שורות הפריטים ₪92\.00 פחות הנחה ₪1\.01 = ₪90\.99, אבל &quot;סהכ חייב מעמ&quot; נקרא ₪91\.00 \(הפרש ₪0\.01\)/);
- assert.match(html,/החשבון שנקרא מהנייר/);
- assert.match(html,/השווה לנייר: &quot;סד הנחה בגין מבצעים&quot; — נקרא ₪1\.01/);
- assert.match(html,/ההפרש שווה ל"הפרש עיגול" המודפס/);
- assert.match(html,/data-role="rc-anchor-entry"[^>]*data-basis="printed"/);
- assert.match(html,/data-role="rc-photo-manual"/);assert.doesNotMatch(html,/data-role="rc-quantity-all"/);
+ return data;
+}
+async function agoraOff() {
+ const r=create({data:agoraOffData()});enterPhotoScreen(r);r.click(photoRole(true));await settleScan();
+ assert.equal(r.run('receiptPaperScanState'),'failed');return r;
+}
+test(supplier+': a summary off by one agora asks one plain question about the paper',async()=>{
+ const r=await agoraOff(),html=assertManualScreen(r);
+ assert.match(html,/צריך לבדוק מספר אחד בתעודה/);
+ assert.match(html,/בשורה <b>"סד הנחה בגין מבצעים"<\/b>. מה כתוב שם\?/);
+ assert.match(html,/data-role="rc-summary-answer"[^>]*data-field="promo" data-choice="alt"[^>]*>₪1\.00</);
+ assert.match(html,/data-role="rc-summary-answer"[^>]*data-field="promo" data-choice="read"[^>]*>₪1\.01</);
+ // the technical sentence gives way to the question; the arithmetic stays folded
+ assert.doesNotMatch(html,/תעודה 1: החשבון לא נסגר/);
+ assert.match(html,/<details[^>]*><summary[^>]*>פירוט החשבון<\/summary>/);
+ assert.doesNotMatch(html,/data-role="rc-quantity-all"/);
+});
+test(supplier+': answering with the number that closes the arithmetic verifies the paper',async()=>{
+ const r=await agoraOff();
+ r.click('rc-summary-answer',null,{doc:'0',field:'promo',choice:'alt'});
+ assert.equal(r.run('receiptPaperScanState'),'ok');
+ assert.equal(r.run('aiScanResponse.scan.documents[0].promoDiscountExVat'),1);
+ assert.equal(r.run('aiScanResponse.scan.documents[0].__tnuvaPaper.promoDiscountExVat'),1);
+ assert.equal(r.run('aiScanResponse.scan.documents[0].userConfirmedSummary.read'),1.01);
+ assert.equal(r.run('noteSum()'),91);
+ const html=assertManualScreen(r);assert.match(html,/data-role="rc-quantity-all"/);assert.doesNotMatch(html,/צריך לבדוק מספר אחד/);
+ // the correction survives a reload
+ const b=create({data:agoraOffData(),storage:r.storage});b.run("currentView='receiving';mainMode='receiving';renderReceiving()");
+ assert.equal(b.run('receiptPaperScanState'),'ok');assert.equal(b.run('aiScanResponse.scan.documents[0].promoDiscountExVat'),1);
+});
+test(supplier+': confirming what was read moves to the next line, then asks for a new photo',async()=>{
+ const r=await agoraOff();
+ r.click('rc-summary-answer',null,{doc:'0',field:'promo',choice:'read'});
+ let html=assertManualScreen(r);
+ assert.match(html,/בשורה <b>"סהכ חייב מעמ"<\/b>/);
+ assert.match(html,/data-field="subtotal" data-choice="alt"[^>]*>₪90\.99</);
+ r.click('rc-summary-answer',null,{doc:'0',field:'subtotal',choice:'read'});
+ html=assertManualScreen(r);
+ assert.match(html,/צריך לצלם שוב את התעודה/);assert.equal(r.run('receiptPaperScanState'),'failed');
+ assert.ok(html.includes('data-role="rc-photo-repair"'));
+});
+test(supplier+': a misread total is fixed by the same question',async()=>{
+ const r=await agoraOff();
+ r.click('rc-summary-answer',null,{doc:'0',field:'promo',choice:'read'});
+ r.click('rc-summary-answer',null,{doc:'0',field:'subtotal',choice:'alt'});
+ assert.equal(r.run('receiptPaperScanState'),'ok');assert.equal(r.run('noteSum()'),90.99);
+ assert.equal(r.run('aiScanResponse.scan.documents[0].netToChargeExVat'),90.99);
 });
 test(supplier+': switching back to scanning preserves the paper, entered differences and existing quantities',async()=>{
  const r=await scanned(plainData(),[]);r.click('rc-quantity-differences');
