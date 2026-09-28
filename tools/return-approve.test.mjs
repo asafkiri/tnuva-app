@@ -145,3 +145,28 @@ test('התעודה אומתה ממכשיר אחר בזמן שהחלון פתוח
   c.run('testConfirms[0].cb()');
   assert.equal(writesFor(c).length, 0);
 });
+
+// v115: עד כה כרטיס תעודה שלא אומתה בהיסטוריית החזרות הציג שני כפתורי
+// "מחק תעודה" זה מתחת לזה (ret-delete ו-del-return) שעושים אותו דבר.
+test('כפתור "מחק תעודה" אחד בכל כרטיס, לא שניים', async () => {
+  const deletes = html => (html.match(/<i class="fa-solid fa-trash-can"><\/i> מחק תעודה<\/button>/g) || []).length;
+  const c = setup();
+  c.run('renderReturnsHistory()');
+  const card = c.run("$('app').innerHTML");
+  assert.equal(deletes(card), 1, 'היסטוריית חזרות: כפתור מחיקה אחד');
+  assert.ok(card.includes('data-role="ret-delete" data-id="ret-1"') && !card.includes('data-role="del-return"'), 'אותו כפתור שבשאר הכרטיסים');
+  assert.equal(deletes(c.run('returnCardInReceipts(returns[0])')), 1, 'תעודות: כפתור מחיקה אחד');
+  const credited = setup({ credited: true, creditedAt: Date.now(), creditNoteTotal: SENT_EX, creditStatus: 'ok' });
+  credited.run('renderReturnsHistory()');
+  assert.equal(deletes(credited.run("$('app').innerHTML")), 1, 'תעודה מאומתת — גם אחד');
+
+  c.context.testDeleted = [];
+  c.run('hardDeleteDocWithBackup = async (name, id, backup) => { testDeleted.push({ name, id, backup }); return true; };');
+  c.click('ret-delete', 'ret-1');
+  assert.equal(json(c, 'testConfirms.length'), 1, 'המחיקה שואלת לפני');
+  await c.run('testConfirms[0].cb()');
+  const deleted = json(c, 'testDeleted');
+  assert.equal(deleted.length, 1);
+  assert.equal(deleted[0].name, 'returns'); assert.equal(deleted[0].id, 'ret-1');
+  assert.equal(deleted[0].backup.items.length, 2, 'עם גיבוי לסל המחזור');
+});
