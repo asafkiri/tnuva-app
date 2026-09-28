@@ -717,7 +717,7 @@ let receiptDupConfirmed = false; // אישור שמירה למרות חשד לכ
 const RECEIPT_DRAFT_KEY = 'tn_receipt_draft';
 let receivingDigitsMissTimer = null;
 let receivingDigitsMissNotified = '';
-const APP_VERSION = '116'; // v116: כמה חויב בתעודה, כמה נסרק בפועל וכמה חסר — גם בכרטיס המנתח, בסיכום התעודה ובהיסטוריה
+const APP_VERSION = '117'; // v117: דרישת זיכוי על מחיר/מבצע רק על יחידות שחויבו והגיעו, ורק כשהנייר עצמו מראה את ההפרש
 // גרסה 73: מוצר בלי מחיר קופה — חלון הכמות מציג מיד את העלות ליח׳ (ללא מע״מ) ופותח שדה להקלדת המחיר שעובר בקופה, בלי לנדוד למסך המחירים
 // v40: תג גרסה קבוע בפינת המסך — לדעת בשנייה איזו גרסה באמת רצה על המכשיר
 // (עוזר במיוחד מול מטמון ה-PWA). pointer-events:none — לעולם לא חוסם מגע.
@@ -7767,8 +7767,11 @@ function manualTogglePromoClaim(pid) {
   }
   if (!l.promoOn) return; // מבצעי מרכזת וכד' לא מטופלים בבדיקת תעודה
   if (reconcileSupplierCreditClaim && reconcileSupplierCreditClaim.source !== 'manual_line') { showToast('כבר קיימת דרישת זיכוי לתעודה הזאת — נהל אותה במסך המבצעים', null, null, 3000); return; }
-  const qty = Math.max(Number(l.noteQty) || 0, Number(l.received) || 0);
-  if (!qty) { showToast('אין כמות בשורה', null, null, 2000); return; }
+  // v117: הזיכוי רק על יחידות שחויבו וגם הגיעו. השורה עוברת כאן למחיר מלא, ולכן
+  // יחידה חסרה כבר יורדת כחוסר במחיר המלא — כולל המבצע שלא ניתן. עם max(נייר, נסרק)
+  // כמות הנייר שהוזנה לפני הסימון (12, הגיעו 4) נתבעה שוב: ₪12 במקום ₪4.
+  const qty = Math.min(Number(l.noteQty) || 0, Number(l.received) || 0);
+  if (!qty) { showToast('אין בשורה יחידות שחויבו והגיעו', null, null, 2000); return; }
   const base = r2(Number(l.basePrice) || Number(l.price) || 0);
   const disc = r2((base - (Number(l.price) || 0)) * qty);
   if (disc <= 0) { showToast('לא נמצא הפרש מבצע בשורה', null, null, 2200); return; }
@@ -14107,9 +14110,57 @@ function aiApplyInvoiceResult() {
   reconcileSupplierDiscount = r2(ev.supplierDiscount || 0);
   reconcileSupplierPromoItems = [];
   reconcilePromoMismatchItems = ev.findings.filter(f => f.type === 'promo_missing').map(f => ({ productId: f.productId, name: f.name, qty: f.qty, expectedPrice: f.expectedPrice, chargedPrice: f.paperPrice, expectedDiscount: Math.max(0, r2(f.amount || 0)) }));
-  const claims = ev.findings.filter(f => (f.type === 'promo_missing' || f.type === 'price') && Number(f.amount) > 0.02);
+  // v117: דרישת זיכוי על מחיר/מבצע — רק על יחידות שחויבו וגם הגיעו, ורק בגובה
+  // ההפרש שהנייר עצמו מראה. השורה של מוצר עם ממצא מחיר נכתבת למעלה במחיר
+  // הנייר, ולכן יחידה שחסרה כבר יורדת מהתשלום כחוסר במחיר הנייר — כולל
+  // ההפרש. תביעת ההפרש על כל הכמות שחויבה הורידה אותו פעם שנייה: 12 חויבו
+  // ב-₪5.50 במקום ₪5 והגיעו 4 → חוסר 8 × 5.50 = 44 ועוד דרישה 12 × 0.50 = 6,
+  // ₪4 יותר מדי (נכון: 4 × 0.50 = 2). ובתנובה שער המנתח סוגר בכסף בלבד, ולכן
+  // טענת "מחיר" שהנייר אינו מראה (חויב בדיוק במחיר הצפוי) עברה — ונפתחה עליה
+  // דרישה על אותו כסף שכבר ירד כחוסר. התקרה: (מחיר הנייר − המחיר הצפוי) ×
+  // min(חויב, נסרק). ממצא שנכנס מתחת לתקרה (אין חוסר, הנייר מאשר) — כמו קודם.
+  // התקרה היא לכל מוצר ולא לכל טענה, ונמדדת מהמחיר שנכתב לשורה: כמה טענות
+  // מחיר על מוצר אחד (שורה לכל מחיר, או פיצול) לא יקבלו כל אחת את כל התקרה,
+  // ושורה שנכתבה במחיר הצפוי אינה משאירה מה לתבוע. וכשהמנתח הוביל, הדרישה
+  // נבנית מממצאי המנוע (ev.engineFindings) — ממצא אחד לכל מוצר, מחושב משורות
+  // הנייר. השער שוקל כסף בלבד ואינו יודע איזה מוצר נושא את ההפרש: טענה "מחיר ב
+  // ₪6" כשהנייר מראה את ההפרש על א נסגרת באותה מידה, ותקרה לפי המוצר שבטענה
+  // (ב: אפס) מחקה ₪6 אמיתיים. טענות המנתח נשארות ההסבר שעל המסך ובהיסטוריה.
+  const priceTypes = f => !!f && (f.type === 'promo_missing' || f.type === 'price');
+  const claimSource = ev.analyzerLed === true && Array.isArray(ev.engineFindings) ? ev.engineFindings : ev.findings;
+  const claimedByProduct = new Map();
+  claimSource.filter(priceTypes).forEach(f => {
+    const id = String(f.productId == null ? '' : f.productId);
+    if (!claimedByProduct.has(id)) claimedByProduct.set(id, []);
+    claimedByProduct.get(id).push(f);
+  });
+  const productClaim = new Map();
+  claimedByProduct.forEach((list, id) => {
+    const a = ev.aggregates.get(list[0].productId);
+    const line = reconcileData.find(l => String(l.productId) === id);
+    const billed = a ? Number(a.qty) || 0 : 0;
+    const arrivedBilled = Math.max(0, Math.min(billed, Number(line && line.received) || 0));
+    const expected = a && Number(a.expectedUnitPrice) > 0 ? Number(a.expectedUnitPrice) : Number(list[0].expectedPrice);
+    // מה שהשורה גובה מעל המחיר הצפוי: שורה שנכתבה במחיר הצפוי אינה משאירה מה לתבוע.
+    const lineGap = a && line ? (Number(line.price) || 0) - expected : NaN;
+    const cap = isFinite(lineGap) && lineGap > 0 ? lineGap * arrivedBilled : 0;
+    const asked = list.filter(f => Number(f.amount) > 0.02);
+    const askedAmount = asked.reduce((sum, f) => sum + Number(f.amount), 0);
+    // אגורה של סבילות: כשהכול הגיע הממצא הוא בדיוק התקרה, וחישוב בדרך אחרת
+    // (מחיר ממוצע × כמות מול סכום − מחיר × כמות) יכול ליפול לצד השני של חצי אגורה.
+    const items = askedAmount <= cap + 0.01 + 1e-9 ? asked
+      : (cap > 0.02 ? [Object.assign({}, asked[0], { qty: arrivedBilled, amount: r2(cap), expectedPrice: expected, paperPrice: Number(line.price) })] : []);
+    productClaim.set(id, items);
+  });
+  const claims = [];
+  productClaim.forEach(items => claims.push(...items));
+  // ממצא שהיה נפתח עליו זיכוי והתקרה איפסה — נשמר בהיסטוריה, אבל אינו משאיר
+  // את התעודה פתוחה לנצח (אין דרישה שאפשר לסגור, והחוסר עצמו בשורות).
+  const noClaimFindings = new Set(ev.findings.filter(f => priceTypes(f) && Number(f.amount) > 0.02
+    && !((productClaim.get(String(f.productId == null ? '' : f.productId)) || []).length)));
   reconcileSupplierCreditClaim = claims.length ? { status: 'open', source: 'ai_invoice_scan', amount: r2(claims.reduce((sum, f) => sum + Number(f.amount || 0), 0)), items: claims.map(f => ({ productId: f.productId, name: f.name, qty: f.qty, expectedUnitPrice: f.expectedPrice, chargedUnitPrice: f.paperPrice, amount: r2(f.amount || 0), reason: f.type })) } : null;
-  const safeFindings = ev.findings.map(f => ({ type: f.type, productId: f.productId || null, name: f.name || '', qty: f.qty != null ? f.qty : null, amount: f.amount != null ? f.amount : null, expectedPrice: f.expectedPrice != null ? f.expectedPrice : null, paperPrice: f.paperPrice != null ? f.paperPrice : null, text: f.text || '' }));
+  const safeFindings = ev.findings.map(f => Object.assign({ type: f.type, productId: f.productId || null, name: f.name || '', qty: f.qty != null ? f.qty : null, amount: f.amount != null ? f.amount : null, expectedPrice: f.expectedPrice != null ? f.expectedPrice : null, paperPrice: f.paperPrice != null ? f.paperPrice : null, text: f.text || '' },
+    noClaimFindings.has(f) ? { noClaim: true, text: (f.text || '') + ' — בלי דרישת זיכוי: בנייר אין הפרש מחיר על יחידה שהגיעה' } : {}));
   const confirmedMappings = aiConfirmedMappingsAudit();
   const automaticMappings = aiAutomaticNamePriceMappingsAudit();
   reconcileAiAudit = { version: 6, scannedAt: Date.now(), model: aiScanResponse && aiScanResponse.model || 'unknown', requestId: aiScanResponse && aiScanResponse.requestId || null, attempts: aiScanAttemptCount || 1, autoRotation: aiScanAutoRotationNote || '', totalVerified: !!ev.totalVerified, unitsVerified: !!ev.unitsVerified, documents: ev.docSummaries, confirmedMappings, automaticMappings, clientAutoResolutions: (Array.isArray(ev.autoResolutions) ? ev.autoResolutions : []).slice(0, 200), perDocument: (aiScanResponse && aiScanResponse.perDocument) || null, findings: safeFindings, hasDiscrepancy: safeFindings.some(f => ['shortage', 'surplus', 'price', 'promo_missing'].includes(f.type)) };
@@ -16019,7 +16070,9 @@ function receiptDiscrepancyInfo(rc, opts) {
   // v201: ממצא מחיר שהבדיקה מוכיחה שנבע ממבצע שלא נתפס אינו "טיפול נדרש"
   // ואינו משאיר את התעודה אדומה לנצח.
   const aiAuditDay = storedReceiptDate(rc);
-  const aiHasNonQuantityFinding = aiFindings.some(f => f && (f.type === 'price' || f.type === 'promo_missing') && !aiPriceFindingPromoMatch(f, aiAuditDay));
+  // v117: ממצא שנשמר בלי דרישת זיכוי (noClaim — אין בנייר הפרש על יחידה שהגיעה)
+  // אינו "טיפול נדרש": אין דרישה לסגור, והחוסר עצמו פותח את התעודה משורותיה.
+  const aiHasNonQuantityFinding = aiFindings.some(f => f && (f.type === 'price' || f.type === 'promo_missing') && f.noClaim !== true && !aiPriceFindingPromoMatch(f, aiAuditDay));
   const aiAuditOpen = !!(rc && rc.aiAudit && rc.aiAudit.hasDiscrepancy && (aiHasNonQuantityFinding || (!aiFindings.length && !(priceOffsets.length && !finalShort.length && !finalOver.length))));
   // חוסר שנסגר במלואו בזיכוי אינו פותח את התעודה; פער סכום חיובי (בכיוון
   // חוסר) נבלע גם הוא בזיכוי. עודף, פער יחידות וממצאי AI אינם נסגרים בכסף.
@@ -16402,14 +16455,60 @@ function openShortGoodsPrompt(rcId) {
   const m = $('shortGoodsModal'); m.classList.remove('hidden'); m.classList.add('flex');
 }
 function hideShortGoodsPrompt() { const m = $('shortGoodsModal'); m.classList.add('hidden'); m.classList.remove('flex'); shortGoodsTarget = null; }
+// v117: דרישת זיכוי על מחיר/מבצע נפתחת רק על יחידות שחויבו וגם הגיעו — יחידה
+// חסרה יורדת מהתשלום כחוסר במחיר הנייר, כולל ההפרש. כשהחוסר מושלם בסחורה
+// היחידות האלה כבר משולמות במחיר הנייר, ולכן ההפרש עליהן חוזר לדרישה: חויבו
+// 12 ב-₪5.50 במקום ₪5, הגיעו 4 (דרישה ₪2), ו-8 הגיעו אחר כך — הדרישה ₪6 והחודש
+// משלם ₪110 ולא ₪114. goods: [{ productId, qty }]; undo מבטל תוספת קודמת
+// (added, { productId, qty, amount }). דרישה שכבר אומתה, קוזזה או בוטלה אינה
+// נפתחת מחדש כאן.
+function supplierCreditClaimGoodsTopUp(rc, goods, undo) {
+  const c = rc && rc.supplierCreditClaim;
+  if (!c || !Array.isArray(c.items) || !['open', 'partial', 'deferred'].includes(c.status)) return null;
+  if (c.source !== 'ai_invoice_scan' && c.source !== 'manual_line') return null;
+  const claim = cloneSafe(c), added = [];
+  (goods || []).forEach(g => {
+    const id = String(g && g.productId != null ? g.productId : ''), n = Number(g && g.qty) || 0;
+    if (!id || !(n > 0)) return;
+    const own = claim.items.filter(it => it && String(it.productId) === id && (Number(it.qty) || 0) > 0);
+    if (!own.length) return;
+    const item = own[0], field = item.amount != null ? 'amount' : 'expectedDiscount';
+    let qty = n, extra;
+    if (undo) {
+      extra = -Math.min(Number(g.amount) || 0, Number(item[field]) || 0);
+      qty = -Math.min(n, Number(item.qty) || 0);
+    } else {
+      const line = (rc.items || []).find(l => l && String(l.productId) === id);
+      const billed = line ? Number(line.noteQty != null ? line.noteQty : line.qty) || 0 : 0;
+      qty = r2(Math.min(n, Math.max(0, billed - own.reduce((sum, it) => sum + (Number(it.qty) || 0), 0))));
+      const unit = (Number(item[field]) || 0) / (Number(item.qty) || 1);
+      extra = unit > 0 ? r2(unit * qty) : 0;
+    }
+    if (!qty || !extra) return;
+    item.qty = r2((Number(item.qty) || 0) + qty);
+    item[field] = r2((Number(item[field]) || 0) + extra);
+    added.push({ productId: id, qty: Math.abs(qty), amount: Math.abs(extra) });
+  });
+  if (!added.length) return null;
+  claim.amount = r2(Math.max(0, (Number(claim.amount) || 0) + (undo ? -1 : 1) * added.reduce((sum, x) => sum + x.amount, 0)));
+  if (claim.status === 'partial') claim.remainingAmount = r2(Math.max(0, claim.amount - (Number(claim.receivedAmount) || 0)));
+  return { claim, added };
+}
 async function confirmShortGoodsCredit() {
   const rc = receipts.find(x => x.id === shortGoodsTarget); if (!rc) { hideShortGoodsPrompt(); return; }
   const { di, items, remaining } = shortGoodsRemainingInfo(rc);
   if (di.shortGoodsCredited || !(remaining > 0)) { hideShortGoodsPrompt(); return; }
   const credit = { at: Date.now(), amount: r2(remaining), items: items.map(s => ({ productId: s.productId || '', name: s.name || '', n: Number(s.n) || 0, price: Number(s.price) || 0 })) };
-  const saved = await runCloudTask('close shortage by goods credit', { op: 'update', path: dataPath('receipts', rc.id), data: { shortGoodsCredit: cloneSafe(credit) }, operationId: makeOperationId('short_goods') });
+  // זיכוי כספי חלקי שכבר נרשם כיסה חלק מהחוסר במחיר הנייר; הסחורה משלימה את השאר.
+  const goodsShare = (Number(di.shortValRaw) || 0) > 0 ? Math.max(0, Math.min(1, remaining / Number(di.shortValRaw))) : 1;
+  const topUp = supplierCreditClaimGoodsTopUp(rc, credit.items.map(s => ({ productId: s.productId, qty: s.n * goodsShare })));
+  if (topUp) credit.claimTopUp = topUp.added;
+  const data = { shortGoodsCredit: cloneSafe(credit) };
+  if (topUp) data.supplierCreditClaim = cloneSafe(topUp.claim);
+  const saved = await runCloudTask('close shortage by goods credit', { op: 'update', path: dataPath('receipts', rc.id), data, operationId: makeOperationId('short_goods') });
   if (!saved) return;
   rc.shortGoodsCredit = credit;
+  if (topUp) rc.supplierCreditClaim = topUp.claim;
   hideShortGoodsPrompt();
   buzz(18);
   showToast('החוסר הושלם בסחורה ✓ — התעודה משולמת במלואה (₪' + fmtMoney(receiptPayableBaseEx(rc)) + ')', null, null, 3400);
@@ -16417,9 +16516,14 @@ async function confirmShortGoodsCredit() {
 }
 async function cancelShortGoodsCredit(rcId) {
   const rc = receipts.find(x => x.id === rcId); if (!rc || !rc.shortGoodsCredit) { showToast('ההשלמה כבר בוטלה', null, null, 2200); return; }
-  const saved = await runCloudTask('cancel goods credit', { op: 'update', path: dataPath('receipts', rc.id), data: { shortGoodsCredit: null }, operationId: makeOperationId('short_goods_cancel') });
+  // v117: מה שההשלמה הוסיפה לדרישת הזיכוי יורד איתה.
+  const undo = Array.isArray(rc.shortGoodsCredit.claimTopUp) ? supplierCreditClaimGoodsTopUp(rc, rc.shortGoodsCredit.claimTopUp, true) : null;
+  const data = { shortGoodsCredit: null };
+  if (undo) data.supplierCreditClaim = cloneSafe(undo.claim);
+  const saved = await runCloudTask('cancel goods credit', { op: 'update', path: dataPath('receipts', rc.id), data, operationId: makeOperationId('short_goods_cancel') });
   if (!saved) return;
   rc.shortGoodsCredit = null;
+  if (undo) rc.supplierCreditClaim = undo.claim;
   buzz(16);
   showToast('ההשלמה בסחורה בוטלה — החוסר חזר להיות פתוח ומופחת מהתשלום', null, null, 3200);
   if (currentView === 'receiptsHistory') renderReceiptsHistory();
