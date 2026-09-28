@@ -717,7 +717,7 @@ let receiptDupConfirmed = false; // אישור שמירה למרות חשד לכ
 const RECEIPT_DRAFT_KEY = 'tn_receipt_draft';
 let receivingDigitsMissTimer = null;
 let receivingDigitsMissNotified = '';
-const APP_VERSION = '115'; // v115: אישור תעודת זיכוי בלחיצה אחת, בלי להקליד את הסכום · כפתור "מחק תעודה" אחד בכרטיס
+const APP_VERSION = '116'; // v116: כמה חויב בתעודה, כמה נסרק בפועל וכמה חסר — גם בכרטיס המנתח, בסיכום התעודה ובהיסטוריה
 // גרסה 73: מוצר בלי מחיר קופה — חלון הכמות מציג מיד את העלות ליח׳ (ללא מע״מ) ופותח שדה להקלדת המחיר שעובר בקופה, בלי לנדוד למסך המחירים
 // v40: תג גרסה קבוע בפינת המסך — לדעת בשנייה איזו גרסה באמת רצה על המכשיר
 // (עוזר במיוחד מול מטמון ה-PWA). pointer-events:none — לעולם לא חוסם מגע.
@@ -13180,7 +13180,26 @@ function tidyAiMoneyText(t) {
     return isFinite(n) ? String(Math.round(n * 100) / 100) : m;
   });
 }
-function aiAnalyzeClaimCardHtml(claim) {
+// v116: כרטיס המנתח הוא מה שרואים בפועל ברוב החוסרים — המנתח רץ לבד על כל
+// ממצא, וכשהוא נסגר הוא מחליף את שורות המנוע (שבהן הפירוט של v114). לכן
+// גם כאן, לטענת חוסר/עודף: כמה חויב בתעודה, כמה נסרק בפועל וכמה חסר. אותו
+// פירוט ואותו כלל — רק כשהחשבון סוגר, ורק כשזו הטענה היחידה על המוצר:
+// הסגירה בתנובה היא בכסף בלבד, ולכן החלפה + חוסר + עודף על אותו מוצר יכולים
+// להיסגר יחד בזמן שכל טענה לבדה "סוגרת" מספרים שאינם נטו של המוצר. החלפה
+// ומחיר נשארים כמו שהם. תצוגה בלבד; כל תקלה חוזרת לכרטיס הפשוט.
+// רק כשהמנתח באמת מוביל: פעולה שבונה מחדש את ההערכה (תאריך לתעודה, שיוך
+// שורה, אישור ברקוד) מחזירה את שורות המנוע עם הפירוט שלהן, והכרטיס הישן לא
+// יצייר את אותם שלושה מספרים פעם שנייה.
+function aiAnalyzeClaimDetailHtml(claim, index, findings, headClass) {
+  if (!aiScanEvaluation || aiScanEvaluation.analyzerLed !== true) return '';
+  if (!claim || (claim.kind !== 'shortage' && claim.kind !== 'surplus')) return '';
+  const own = (Array.isArray(findings) ? findings : []).filter(f => f && f.claimId === 'claim-' + index);
+  if (own.length !== 1 || own[0].type !== claim.kind) return '';
+  if (aiQuantityFindingCount(findings, own[0].productId) > 1) return '';
+  const shortage = claim.kind === 'shortage';
+  try { return aiQuantityFindingDetailHtml(own[0], shortage, shortage ? 'חסר' : 'עודף', headClass); } catch (detailError) { return ''; }
+}
+function aiAnalyzeClaimCardHtml(claim, index, findings) {
   if (claim && claim.kind === 'price' && !priceAuditLegacyVisible({ type: 'price', productId: claim.productId })) return '';
   const style = claim.kind === 'shortage' ? { box: 'bg-rose-50 border-rose-200', head: 'text-rose-800', icon: 'fa-circle-minus', title: 'חוסר' }
     : (claim.kind === 'surplus' ? { box: 'bg-amber-50 border-amber-200', head: 'text-amber-800', icon: 'fa-circle-plus', title: 'עודף' }
@@ -13193,6 +13212,7 @@ function aiAnalyzeClaimCardHtml(claim) {
       '<div class="min-w-0"><div class="text-[10px] font-black ' + style.head + '"><i class="fa-solid ' + style.icon + ' ml-1"></i>' + style.title + '</div>' +
       '<div class="text-sm font-black text-slate-800">' + htmlEscape(tidyAiMoneyText(aiAnalyzeClaimText(claim))) + '</div></div>' + moneyHtml +
     '</div>' +
+    aiAnalyzeClaimDetailHtml(claim, index, findings, style.head) +
     (claim.evidence ? '<div class="text-[10px] font-bold text-slate-500 mt-1">' + htmlEscape(claim.evidence) + '</div>' : '') +
   '</div>';
 }
@@ -13207,7 +13227,7 @@ function aiAnalyzeHtml(ev) {
       '<div class="flex items-center justify-between gap-2 mb-1"><div class="font-black text-base text-violet-900"><i class="fa-solid fa-scale-balanced ml-1"></i>אלה הבעיות שנמצאו</div>' +
       '<span class="rounded-full bg-emerald-100 text-emerald-800 px-2 py-0.5 text-[10px] font-black">נסגר בדיוק ✓</span></div>' +
       (result.summary ? '<div class="text-[11px] font-bold text-violet-800 mb-2">' + htmlEscape(tidyAiMoneyText(result.summary)) + '</div>' : '') +
-      '<div class="space-y-2">' + result.claims.map(aiAnalyzeClaimCardHtml).join('') + '</div>' +
+      '<div class="space-y-2">' + result.claims.map((claim, index) => aiAnalyzeClaimCardHtml(claim, index, result.findings)).join('') + '</div>' +
       '<div class="text-[10px] font-bold text-slate-500 mt-2">המנתח הוביל' + (result.closure.expectedUnitsDelta == null ? '' : ' · יחידות ' + result.closure.actualUnitsDelta + '/' + result.closure.expectedUnitsDelta) + ' · כסף ₪' + fmtMoney(result.closure.actualAmountDelta) + '/₪' + fmtMoney(result.closure.expectedAmountDelta) + (result.droppedClaims ? ' · ' + result.droppedClaims + ' טענות נדחו בשרת' : '') + '</div>' +
       aiAnalyzerCatalogGapsHtml() +
       '<div class="flex gap-2 mt-2">' +
@@ -13271,10 +13291,18 @@ function aiQuantityFindingRowHtml(finding, type, headClass) {
   try { detail = aiQuantityFindingDetailHtml(finding, shortage, label, headClass); } catch (detailError) { detail = ''; }
   return '<div class="py-2 border-t border-black/5 first:border-t-0">' + head + detail + '</div>';
 }
+// v116: כמה ממצאי כמות (חוסר/עודף) נוגעים באותו מוצר. המנוע מוציא לכל היותר
+// אחד למוצר; טענות המנתח יכולות להוציא יותר (החלפה = חוסר של מה שחויב ועודף
+// של מה שסופק), ואז ההפרש של ממצא אחד אינו ההפרש של המוצר — אין פירוט.
+function aiQuantityFindingCount(findings, productId) {
+  const pid = String(productId == null ? '' : productId);
+  return (Array.isArray(findings) ? findings : []).filter(f => f && (f.type === 'shortage' || f.type === 'surplus') && String(f.productId) === pid).length;
+}
 function aiQuantityFindingDetailHtml(finding, shortage, label, headClass) {
   const ev = aiScanEvaluation;
   if (!ev || !(ev.aggregates instanceof Map) || !finding || !finding.productId) return '';
   const pid = String(finding.productId);
+  if (aiQuantityFindingCount(ev.findings, pid) > 1) return '';
   const agg = ev.aggregates.get(finding.productId) || ev.aggregates.get(pid);
   const billed = agg ? (Number(agg.qty) || 0) : 0;
   const line = (reconcileData || []).find(l => l && String(l.productId) === pid);
@@ -13286,7 +13314,7 @@ function aiQuantityFindingDetailHtml(finding, shortage, label, headClass) {
   // סל חלקי: שורות שלא זוהו או תעודה שלא נקראה אינן נספרות ב"חויב", ולכן
   // המספר קטן ממה שמודפס על הנייר — אומרים זאת במקום להציג אותו כעובדה.
   const partial = ev.basketComplete === false;
-  const cell = (title, value, cls) => '<div class="rounded-lg bg-white/80 border border-black/5 py-1.5"><div class="text-[10px] font-bold text-slate-500">' + title + '</div><div class="text-base font-black ' + cls + '">' + value + '</div></div>';
+  const cell = (title, value, cls) => '<div class="rounded-lg bg-slate-50 border border-black/5 py-1.5"><div class="text-[10px] font-bold text-slate-500">' + title + '</div><div class="text-base font-black ' + cls + '">' + value + '</div></div>';
   const summary = billed === 0
     ? (agg ? 'בתעודה רשומות 0 יח׳, ונסרקו ' + scanned + ' יח׳'
       : partial ? 'לא זוהה בשורות התעודה שנקראו, ונסרקו ' + scanned + ' יח׳'
@@ -15103,9 +15131,16 @@ function presentReconcileSummary(lines, ex, open, extra) {
   const listHtml = lines.map(l => {
     const diff = (l.noteQty != null ? l.noteQty : l.qty) - l.qty;
     const tag = diff > 0 ? ' · <span class="text-rose-600 font-bold">חסר ' + diff + '</span>' : (diff < 0 ? ' · <span class="text-amber-600 font-bold">עודף ' + (-diff) + '</span>' : '');
+    const unitText = '₪' + fmtUnitPrice(l.unitPrice, l.promoPct);
+    const promoText = l.promoPct ? ' · מבצע ' + l.promoPct + '%' : '';
+    // v116: בשורה עם הפרש — כמה חויב בתעודה, כמה נסרק בפועל וכמה חסר, ולא רק
+    // "התקבל 4 · חסר 8". ההפרש מחושב משני המספרים האלה עצמם, ולכן הם תמיד סוגרים.
+    const qtyText = diff
+      ? 'חויב\u00a0בתעודה\u00a0' + l.noteQty + ' · נסרק\u00a0בפועל\u00a0' + l.qty + tag + ' · ' + unitText + '\u00a0ליח׳' + promoText
+      : 'התקבל ' + l.qty + ' × ' + unitText + promoText;
     return '<div class="flex items-center justify-between gap-2 py-1.5 border-b border-slate-100 last:border-0">' +
       '<div class="min-w-0"><div class="font-bold text-slate-800 text-sm truncate">' + htmlEscape(l.name) + '</div>' +
-      '<div class="text-[11px] text-slate-400">התקבל ' + l.qty + ' × ₪' + fmtUnitPrice(l.unitPrice, l.promoPct) + (l.promoPct ? ' · מבצע ' + l.promoPct + '%' : '') + tag + '</div></div>' +
+      '<div class="text-[11px] text-slate-400">' + qtyText + '</div></div>' +
       '<div class="font-black text-slate-700 text-sm shrink-0">₪' + fmtMoney(l.lineTotal) + '</div>' +
     '</div>';
   }).join('');
@@ -16077,11 +16112,35 @@ function manualOffsetEntry(groupId, own, other, amount, qty) {
 function manualOffsetSummary(entry) {
   return 'קיזוז ידני: ' + htmlEscape(entry.shortName || '') + ' ⇄ ' + htmlEscape(entry.overName || '') + ' · ₪' + fmtMoney(entry.amountEx || 0);
 }
-function receiptDiffRowHtml(rc, item, dir) {
+// v116: כמה חויב בתעודה וכמה נסרק בפועל לשורת הפרש בתעודה שמורה — רק כשהם
+// סוגרים בדיוק על היתרה שהשורה מציגה. היתרה (n) היא מה שנשאר אחרי קיזוז
+// פנימי, קיזוז מול תעודה אחרת או חיוב נפרד של הספק, ואז "חויב − נסרק" גדול
+// ממנה; שלושה מספרים סותרים גרועים מהשורה של היום, ולכן אין פירוט. כך גם כשיש
+// יותר משורת הפרש אחת לאותו מוצר. שורות פיקדון אינן נספרות. תצוגה בלבד.
+function receiptDiffPaperScanText(rc, item, dir, di) {
+  const pid = String(item && item.productId || '');
+  if (!pid || pid.indexOf('deposit-') === 0) return '';
+  const diffRows = di ? (di.shortItems || []).concat(di.overItems || []).filter(x => x && String(x.productId || '') === pid) : [];
+  if (diffRows.length > 1) return '';
+  let billed = 0, scanned = 0, lines = 0;
+  (rc && Array.isArray(rc.items) ? rc.items : []).forEach(l => {
+    if (!l || l.isDeposit || String(l.productId || '') !== pid) return;
+    billed += l.noteQty != null ? (Number(l.noteQty) || 0) : (Number(l.qty) || 0);
+    scanned += Number(l.qty) || 0;
+    lines++;
+  });
+  const n = Number(item.n) || 0;
+  const gap = dir === 'short' ? billed - scanned : scanned - billed;
+  if (!lines || !(n > 0) || gap !== n || ![billed, scanned, n].every(Number.isInteger)) return '';
+  return 'חויב\u00a0בתעודה\u00a0' + billed + ' · נסרק\u00a0בפועל\u00a0' + scanned + ' · ' + (dir === 'short' ? 'חסר\u00a0' : 'עודף\u00a0') + n + '\u00a0יח׳';
+}
+function receiptDiffRowHtml(rc, item, dir, di) {
   const side = { qty: Number(item.n) || 0, price: Number(item.price) || 0, value: lineTotalFromUnit(item.price, item.n) };
   const isShort = dir === 'short';
+  let paperScanText = '';
+  try { paperScanText = receiptDiffPaperScanText(rc, item, dir, di); } catch (detailError) { paperScanText = ''; }
   return '<div class="flex items-center justify-between gap-2 py-1.5 ' + (isShort ? 'text-rose-700' : 'text-amber-700') + '">' +
-    '<div class="min-w-0"><div class="font-bold truncate">' + (isShort ? 'חסר: ' : 'עודף: ') + htmlEscape(item.name) + '</div><div class="text-[11px] opacity-80">' + offsetSideQtyText(side) + ' · ₪' + fmtMoney(side.value) + '</div></div>' +
+    '<div class="min-w-0"><div class="font-bold truncate">' + (isShort ? 'חסר: ' : 'עודף: ') + htmlEscape(item.name) + '</div><div class="text-[11px] opacity-80">' + (paperScanText || offsetSideQtyText(side)) + ' · ₪' + fmtMoney(side.value) + '</div></div>' +
     '<div class="shrink-0 flex flex-col gap-1">' +
       '<button data-role="rc-offset-choose" data-id="' + htmlEscape(rc.id) + '" data-product="' + htmlEscape(item.productId) + '" data-dir="' + dir + '" class="btn-tap bg-white border ' + (isShort ? 'border-rose-300 text-rose-700' : 'border-amber-300 text-amber-700') + ' rounded-lg px-2.5 py-2 text-[11px] font-black"><i class="fa-solid fa-scale-balanced"></i> מצא קיזוז</button>' +
       // v246: עודף שהספק חייב עליו בנפרד — נסגר כאן, והחיוב נוסף לתשלום
@@ -16635,8 +16694,8 @@ function renderReceiptsHistory() {
         '</div>' : '') +
         (fixOpen ? '<div class="mt-2 bg-rose-50 border border-rose-200 rounded-xl p-2.5 text-xs">' +
           '<div class="font-black text-rose-700 mb-1"><i class="fa-solid fa-triangle-exclamation"></i> הפרשים מול התעודה</div>' +
-          di.shortItems.map(s => receiptDiffRowHtml(rc, s, 'short')).join('') +
-          di.overItems.map(s => receiptDiffRowHtml(rc, s, 'over')).join('') +
+          di.shortItems.map(s => receiptDiffRowHtml(rc, s, 'short', di)).join('') +
+          di.overItems.map(s => receiptDiffRowHtml(rc, s, 'over', di)).join('') +
           (di.unresolvedUnitsGap ? '<div class="flex justify-between text-rose-700 font-black"><span>פער יחידות שטרם שויך</span><span>' + Math.abs(di.unresolvedUnitsGap) + ' (' + (di.unresolvedUnitsGap > 0 ? 'חסרות' : 'עודפות') + ')</span></div>' : '') +
           (di.amountGapOpen ? '<div class="flex justify-between text-rose-700 font-black"><span>פער סכום שטרם שויך</span><span>₪' + fmtMoney(Math.abs(di.unresolvedAmountGap)) + '</span></div>' : '') +
           (rc.noteTotalInc != null ? '<div class="mt-1 pt-1 border-t border-rose-200 text-rose-700/80">תעודת ספק ₪' + fmtMoney(rc.noteTotalInc) + (rc.noteParts && rc.noteParts.length > 1 ? ' (' + rc.noteParts.map(x => '₪' + fmtMoney(normNote(x).amount)).join(' + ') + ')' : '') + ' · לתשלום ₪' + fmtMoney(payableEx) + '</div>' : '') +
