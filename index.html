@@ -717,7 +717,7 @@ let receiptDupConfirmed = false; // אישור שמירה למרות חשד לכ
 const RECEIPT_DRAFT_KEY = 'tn_receipt_draft';
 let receivingDigitsMissTimer = null;
 let receivingDigitsMissNotified = '';
-const APP_VERSION = '116'; // v116: כמה חויב בתעודה, כמה נסרק בפועל וכמה חסר — גם בכרטיס המנתח, בסיכום התעודה ובהיסטוריה
+const APP_VERSION = '117'; // v117: קיזוז אוטומטי גם בכמויות משקל — השוואת כמויות סובלנית לרעש נקודה צפה
 // גרסה 73: מוצר בלי מחיר קופה — חלון הכמות מציג מיד את העלות ליח׳ (ללא מע״מ) ופותח שדה להקלדת המחיר שעובר בקופה, בלי לנדוד למסך המחירים
 // v40: תג גרסה קבוע בפינת המסך — לדעת בשנייה איזו גרסה באמת רצה על המכשיר
 // (עוזר במיוחד מול מטמון ה-PWA). pointer-events:none — לעולם לא חוסם מגע.
@@ -16160,7 +16160,7 @@ function findOffsetMatch(rc, preferredOtherId, preferredProductId, preferredOthe
       if (preferredProductId && a.productId !== preferredProductId) continue;
       for (const b of theirs) {
         if (preferredOtherProductId && b.productId !== preferredOtherProductId) continue;
-        if (a.productId === b.productId && a.d === -b.d && a.d !== 0) {
+        if (a.productId === b.productId && sameOffsetQty(a.d, -b.d) && a.d !== 0) {
           return { other: other, productId: a.productId, name: a.name,
                    otherProductId: b.productId, otherName: b.name, byPrice: false,
                    price: Number(a.price) || 0, qty: Math.abs(a.d),
@@ -16183,7 +16183,7 @@ function findOffsetMatch(rc, preferredOtherId, preferredProductId, preferredOthe
       if (aCents <= 0) continue;
       for (const b of theirs) {
         if (preferredOtherProductId && b.productId !== preferredOtherProductId) continue;
-        if (Math.round((Number(b.price) || 0) * 100) === aCents && a.d === -b.d && a.d !== 0) {
+        if (Math.round((Number(b.price) || 0) * 100) === aCents && sameOffsetQty(a.d, -b.d) && a.d !== 0) {
           return { other: other, productId: a.productId, name: a.name,
                    otherProductId: b.productId, otherName: b.name, byPrice: true,
                    price: Number(a.price) || 0, qty: Math.abs(a.d),
@@ -16212,6 +16212,12 @@ function autoOffsetDismissed(rc, other, oid) {
   return (Array.isArray(rc.canceledOffsetIds) && rc.canceledOffsetIds.includes(oid)) ||
          (Array.isArray(other.canceledOffsetIds) && other.canceledOffsetIds.includes(oid));
 }
+// v117: כמויות משוקללות (1.25 ק"ג) עלולות לצבור רעש נקודה צפה בחיסור
+// noteQty - qty (0.3 - 0.1 = 0.19999999999999998), ואז חוסר ועודף זהים
+// לא נחשבו זוג. השוואה במיליוניות במקום שוויון מדויק — כמו ביטבתה.
+function sameOffsetQty(a, b) {
+  return Math.abs((Number(a) || 0) - (Number(b) || 0)) < 0.000001;
+}
 function findAutoOffsetPair() {
   // receipts כבר ממוין מהחדשה לישנה — 9 הראשונות הן "ההזמנות האחרונות".
   const recent = receipts.slice(0, AUTO_OFFSET_RECENT_DOCS)
@@ -16228,7 +16234,7 @@ function findAutoOffsetPair() {
         const aCents = Math.round((Number(a.price) || 0) * 100);
         if (aCents <= 0 || !a.productId || !a.d) continue;
         for (const b of theirs) {
-          if (b.productId !== a.productId || b.d !== -a.d) continue;
+          if (b.productId !== a.productId || !sameOffsetQty(b.d, -a.d)) continue;
           if (Math.round((Number(b.price) || 0) * 100) !== aCents) continue;
           const oid = crossOffsetId(rc.id, other.id, a.productId);
           if (autoOffsetDismissed(rc, other, oid)) continue;
