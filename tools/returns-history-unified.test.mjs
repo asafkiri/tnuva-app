@@ -491,3 +491,25 @@ test('מחיקת תעודה מתוך המסך המאוחד: גיבוי לסל ה
   assert.equal(app(c), '<div id="marker">מסך הקליטה</div>', 'מסך הקליטה לא נדרס');
   assert.equal(json(c, 'returns.length'), 2, 'אבל הנתונים התעדכנו');
 });
+
+// ===== ה. v123: כפתור "בטל אימות" אחד =====
+// בכרטיס מאומת היו שני כפתורים לאותה פעולה: טקסט מלא, ולצד "ערוך אימות" גם
+// אייקון חץ בודד. נשאר הטקסט — הוא אומר מה יקרה — מתחת לפעולה הראשית.
+test('v123: בכרטיס מאומת יש כפתור "בטל אימות" אחד — עם טקסט, אחרי פעולת האימות הראשית', () => {
+  const c = setup();
+  c.run('renderReceiptsHistory()');
+  for (const id of ['ret-ok', 'ret-gap']) {
+    const card = c.run("returnCardInReceipts(returns.find(x => x.id === '" + id + "'))");
+    assert.equal((card.match(/data-role="uncredit"/g) || []).length, 1, id + ': כפתור ביטול אימות אחד');
+    assert.ok(card.includes('<i class="fa-solid fa-rotate-left"></i> בטל אימות — פתח מחדש לתיקון'), id + ': עם טקסט שמסביר');
+    assert.ok(!card.includes('title="בטל אימות"'), id + ': האייקון הבודד ירד');
+    assert.ok(card.indexOf('data-role="rv-open"') < card.indexOf('data-role="uncredit"'), id + ': מתחת לפעולה הראשית');
+    assert.ok(card.indexOf('data-role="uncredit"') < card.indexOf('data-role="ret-edit-items"'), id + ': ולפני עריכת הפריטים');
+  }
+  // תעודה ממתינה — אין מה לבטל
+  assert.ok(!c.run("returnCardInReceipts(returns.find(x => x.id === 'ret-pending'))").includes('data-role="uncredit"'));
+  // והכפתור עדיין חי: שואל קודם, ואז פותח מחדש
+  c.click('uncredit', 'ret-ok');
+  assert.equal(json(c, 'testConfirms.length'), 1);
+  assert.equal(json(c, 'testConfirms[0].title'), 'ביטול אימות');
+});
