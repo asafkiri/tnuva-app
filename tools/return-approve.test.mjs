@@ -32,7 +32,9 @@ function setup(extra) {
       { id: 'p-cottage', name: 'קוטג׳ בדיקה', barcode: '7290000000015', price: 4.6 }
     ];
     returns = [${JSON.stringify(ret)}];
-    currentView = 'returnsHistory';
+    receipts = [];
+    receiptHistoryFilter = 'all';
+    currentView = 'receiptsHistory';
     showConfirm = (title, msg, okText, cb) => { testConfirms.push({ title, msg, okText, cb }); };
   `);
   return c;
@@ -40,13 +42,14 @@ function setup(extra) {
 const writesFor = c => json(c, "testWrites.filter(w => w.op === 'update' && String(w.path).indexOf('ret-1') > -1)");
 const withoutTime = data => { const d = Object.assign({}, data); delete d.creditedAt; return d; };
 
-test('כרטיס שטרם אומת מציע "אישור" לצד "בדוק" — בשני המסכים, עם הסכום מראש', () => {
+// v122: היסטוריית החזרות אוחדה לתוך מסך התעודות — בודקים את המסך המאוחד ואת הכרטיס עצמו
+test('כרטיס שטרם אומת מציע "אישור" לצד "בדוק" — במסך התעודות המאוחד ובכרטיס, עם הסכום מראש', () => {
   const c = setup();
   const money = c.run('fmtMoney(' + SENT_EX + ')');
-  c.run('renderReturnsHistory()');
+  c.run('renderReceiptsHistory()');
   const history = c.run("$('app').innerHTML");
   const receipts = c.run('returnCardInReceipts(returns[0])');
-  for (const [where, html] of [['היסטוריית חזרות', history], ['תעודות', receipts]]) {
+  for (const [where, html] of [['היסטוריית תעודות', history], ['כרטיס', receipts]]) {
     assert.ok(html.includes('data-role="rv-approve" data-id="ret-1"'), where + ': כפתור האישור קיים');
     assert.ok(html.includes('data-role="rv-verify-inline" data-id="ret-1"'), where + ': ההקלדה נשארת לצידו');
     assert.ok(html.includes('id="rvNote_ret-1"'), where + ': שדה הסכום נשאר');
@@ -59,7 +62,7 @@ test('כרטיס שטרם אומת מציע "אישור" לצד "בדוק" — �
 
 test('תעודה מאומתת אינה מציעה אישור', () => {
   const c = setup({ credited: true, creditedAt: Date.now(), creditNoteTotal: SENT_EX, creditStatus: 'ok' });
-  c.run('renderReturnsHistory()');
+  c.run('renderReceiptsHistory()');
   assert.ok(!c.run("$('app').innerHTML").includes('rv-approve'));
   assert.ok(!c.run('returnCardInReceipts(returns[0])').includes('rv-approve'));
   c.click('rv-approve', 'ret-1');
@@ -85,8 +88,8 @@ test('"אישור" רושם בדיוק את מה שהוחזר וסוגר את ה
   assert.equal(r.creditNoteTotal, SENT_EX);
   assert.equal(r.creditStatus, 'ok');
   assert.equal(json(c, 'returnsBalance().bal'), 0, 'אין חוב זיכוי פתוח');
-  c.run('renderReturnsHistory()');
-  assert.ok(c.run("$('app').innerHTML").includes('הזיכוי אומת'), 'הכרטיס עובר לירוק');
+  c.run('renderReceiptsHistory()');
+  assert.ok(c.run("$('app').innerHTML").includes('אומתה'), 'הכרטיס עובר לירוק');
 });
 
 test('אישור זהה לחלוטין להקלדה ידנית של אותו סכום', () => {
@@ -151,13 +154,13 @@ test('התעודה אומתה ממכשיר אחר בזמן שהחלון פתוח
 test('כפתור "מחק תעודה" אחד בכל כרטיס, לא שניים', async () => {
   const deletes = html => (html.match(/<i class="fa-solid fa-trash-can"><\/i> מחק תעודה<\/button>/g) || []).length;
   const c = setup();
-  c.run('renderReturnsHistory()');
+  c.run('renderReceiptsHistory()');
   const card = c.run("$('app').innerHTML");
-  assert.equal(deletes(card), 1, 'היסטוריית חזרות: כפתור מחיקה אחד');
+  assert.equal(deletes(card), 1, 'היסטוריית תעודות: כפתור מחיקה אחד');
   assert.ok(card.includes('data-role="ret-delete" data-id="ret-1"') && !card.includes('data-role="del-return"'), 'אותו כפתור שבשאר הכרטיסים');
-  assert.equal(deletes(c.run('returnCardInReceipts(returns[0])')), 1, 'תעודות: כפתור מחיקה אחד');
+  assert.equal(deletes(c.run('returnCardInReceipts(returns[0])')), 1, 'כרטיס: כפתור מחיקה אחד');
   const credited = setup({ credited: true, creditedAt: Date.now(), creditNoteTotal: SENT_EX, creditStatus: 'ok' });
-  credited.run('renderReturnsHistory()');
+  credited.run('renderReceiptsHistory()');
   assert.equal(deletes(credited.run("$('app').innerHTML")), 1, 'תעודה מאומתת — גם אחד');
 
   c.context.testDeleted = [];
@@ -300,6 +303,9 @@ test('המרווחים של כל מסך נשמרו', () => {
   const receipts = c.run('retVerifyRowHtml(returns[0], true)');
   assert.ok(history.includes('font-bold mb-1.5"') && history.includes('items-stretch mb-2"'), 'היסטוריה: בלי מרווח עליון, עם מרווח תחתון');
   assert.ok(receipts.includes('font-bold mt-2 mb-1.5"') && receipts.includes('items-stretch"'), 'תעודות: מרווח עליון, בלי תחתון');
-  c.run('renderReturnsHistory()');
-  assert.ok(c.run("$('app').innerHTML").includes('items-stretch mb-2"'), 'והיסטוריית החזרות בונה את השורה בגרסת ההיסטוריה');
+  // v122: המסך המאוחד מציג את הכרטיס של התעודות — ולכן בונה את השורה בגרסת התעודות, לא בגרסת ההיסטוריה הישנה
+  c.run('renderReceiptsHistory()');
+  const unified = c.run("$('app').innerHTML");
+  assert.ok(unified.includes('font-bold mt-2 mb-1.5"') && unified.includes('items-stretch"'), 'והמסך המאוחד בונה את השורה בגרסת התעודות');
+  assert.ok(!unified.includes('items-stretch mb-2"'), 'בלי המרווח התחתון של ההיסטוריה הישנה');
 });
