@@ -324,18 +324,18 @@ test('a price check missing only price-confirmed matches folds green and asks fo
   assert.equal(actions(c).autoMatched, 1);
   // אבל המסך אינו מציג אותה כמשימה פתוחה.
   const view = html(c);
-  assert.match(view, /המחירים תואמים — אין צורך בפעולה · 2 שורות/);
+  assert.match(view, /אין פער מחיר — אין צורך בפעולה · 2 שורות/);
   assert.doesNotMatch(view, /בדיקת המחירים אינה מלאה/);
   assert.doesNotMatch(view, /<details data-price-panel open/, 'folded like a complete check');
-  assert.match(view, /1 שורות נבדקו מול המאגר · 1 שורות שויכו למוצר בעזרת המחיר המודפס/);
+  assert.match(view, /1 שורות נבדקו מול המאגר · שורה אחת שויכה למוצר בעזרת המחיר המודפס\. המחיר בה זהה למחיר המאגר ואין עליו מבצע/);
   // הכרטיס אומר לאיזה מוצר שויכה השורה, ומה נקרא בנייר נשאר לעיון.
   assert.match(view, /YOLO מעדן שכבות שוקולד חלב ולבן 122 גרם/);
   assert.match(view, /בנייר נקרא: מעדן שוקו דל חלב YOLO/);
-  assert.match(view, /לפי הקוד של הקריאה השנייה של הצילום\. המחיר המודפס שווה למחיר המאגר/);
+  assert.match(view, /לפי הקוד של הקריאה השנייה של הצילום\. המחיר המודפס זהה למחיר המאגר ואין למוצר מבצע בתוקף/);
   assert.doesNotMatch(view, /יש לאשר את ההתאמה/);
   // גם הכפתור שבתוך הסורק אינו שולח את המשתמש לבדוק שוב.
   c.run("scanPurpose = 'receiving'; refreshPriceScannerNotice()");
-  assert.equal(c.node('scanPriceNotice').textContent, 'בדיקת מחירים: המחירים תואמים — אין צורך בפעולה');
+  assert.equal(c.node('scanPriceNotice').textContent, 'בדיקת מחירים: אין פער מחיר — אין צורך בפעולה');
 });
 
 test('the green fold needs the matched product to still cost what the paper printed, and nothing else open', async () => {
@@ -357,6 +357,29 @@ test('the green fold needs the matched product to still cost what the paper prin
   // ופער מחיר אמיתי נשאר פער מחיר.
   const priced = await scanned(autoOnlyPaper([rows[3]]));
   assert.match(html(priced), /<span role="status">המחיר בתעודה שונה מהמחיר שבמאגר/);
+  // "אין פער" פירושו זהה לאגורה, לא בתוך סבילות שתי האגורות.
+  const agora = await scanned(autoOnlyCase);
+  agora.run("products.find(p => p.id === 'p_yolo_layers').price = 3.48");
+  assert.equal(agora.run('receiptPriceAuditAutoOnly(receiptPriceAudit())'), false);
+});
+
+// v120, מביקורת: שורה ששויכה לפי המחיר אינה עוברת את שלב המבצעים. מבצע בתוקף
+// על המוצר ששויך — לבד או בסל עם שורה אחרת — משאיר את הבדיקה פתוחה.
+test('an active promotion on the auto-matched product keeps the price check open', async () => {
+  const promo = (productIds, minQty = 1) => ({ promos: [{ id: 'pr_test', name: 'מבצע בדיקה', type: 'receipt', pct: 10, minQty,
+    start: '2026-09-01', end: '2026-09-30', productIds }] });
+  const alone = await scanned(Object.assign({}, autoOnlyCase, promo(['p_yolo_layers'])));
+  assert.equal(alone.run('receiptPriceAuditAutoOnly(receiptPriceAudit())'), false);
+  assert.match(html(alone), /<details data-price-panel open><summary[^>]*><span role="status">בדיקת המחירים אינה מלאה · 1\/2 לא נבדקו/);
+  alone.run("scanPurpose = 'receiving'; refreshPriceScannerNotice()");
+  assert.doesNotMatch(alone.node('scanPriceNotice').textContent, /אין צורך בפעולה/);
+  // סל של 12 יחידות: 10 בשורה שזוהתה בקוד ו-6 בשורה ששויכה — רק יחד הן מגיעות לסף.
+  const basket = await scanned(Object.assign({}, autoOnlyCase, promo(['p_yolo_chocolate', 'p_yolo_layers'], 12)));
+  assert.equal(basket.run('receiptPriceAuditAutoOnly(receiptPriceAudit())'), false);
+  assert.doesNotMatch(html(basket), /אין צורך בפעולה/);
+  // מבצע שלא בתוקף בתאריך התעודה אינו משנה דבר.
+  const expired = await scanned(Object.assign({}, autoOnlyCase, { promos: [{ ...promo(['p_yolo_layers']).promos[0], start: '2026-08-01', end: '2026-08-31' }] }));
+  assert.equal(expired.run('receiptPriceAuditAutoOnly(receiptPriceAudit())'), true);
 });
 
 test('a product the user picked is acknowledged as their decision, not as the catalog\'s', async () => {

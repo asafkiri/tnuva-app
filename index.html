@@ -717,7 +717,7 @@ let receiptDupConfirmed = false; // אישור שמירה למרות חשד לכ
 const RECEIPT_DRAFT_KEY = 'tn_receipt_draft';
 let receivingDigitsMissTimer = null;
 let receivingDigitsMissNotified = '';
-const APP_VERSION = '119'; // v119: בדיקת מחירים שחסרות בה רק שורות ששויכו לפי המחיר — ירוקה ומקופלת, "אין צורך בפעולה"
+const APP_VERSION = '120'; // v120: "אין צורך בפעולה" רק כשאין מבצע בתוקף על המוצר ששויך והמחיר זהה לאגורה
 // גרסה 73: מוצר בלי מחיר קופה — חלון הכמות מציג מיד את העלות ליח׳ (ללא מע״מ) ופותח שדה להקלדת המחיר שעובר בקופה, בלי לנדוד למסך המחירים
 // v40: תג גרסה קבוע בפינת המסך — לדעת בשנייה איזו גרסה באמת רצה על המכשיר
 // (עוזר במיוחד מול מטמון ה-PWA). pointer-events:none — לעולם לא חוסם מגע.
@@ -10211,11 +10211,17 @@ function receiptAutoMatchedProduct(row) {
   if (receiptDisputeOpenFields(row, dispute).some(item => String((item && item.field) || '') !== 'code')) return null;
   const product = (products || []).find(item => String(item.id) === String(mapped.__tnuvaProductId));
   const printed = priceAuditNumber(row.originalUnitPrice), price = product ? priceAuditNumber(product.price) : null;
+  // זהה לאגורה, לא בסבילות שתי האגורות של בדיקת המחירים: זו הצהרה שאין פער.
   if (!(price > 0) || printed == null || priceAuditNumber(row.adaptedUnitPrice) !== printed
-      || Math.abs(price - printed) > PRICE_AUDIT_UNIT_TOLERANCE) return null;
+      || aiMoneyCents(price) !== aiMoneyCents(printed)) return null;
+  // v120: שורה כזאת אינה עוברת את שלב המבצעים של בדיקת המחירים. מבצע בתוקף על
+  // המוצר ששויך (לבד או בסל עם שורות אחרות) פירושו שהמחיר הרגיל בנייר אולי
+  // אינו המחיר הנכון — וזו בדיוק השאלה שהבדיקה קיימת כדי לשאול.
+  if ((promos || []).some(pr => pr && Array.isArray(pr.productIds) && pr.productIds.includes(product.id)
+      && pr.type !== 'monthEnd' && promoActive(pr, row.date))) return null;
   const how = /second_read/.test(method) ? 'לפי הקוד של הקריאה השנייה של הצילום'
     : /repair/.test(method) ? 'אחרי תיקון ספרה בקוד שנקרא' : 'לפי השם והמחיר המודפסים';
-  return { product, reason: 'שויך אוטומטית ל"' + product.name + '" ' + how + '. המחיר המודפס שווה למחיר המאגר, אבל הוא שימש לזיהוי המוצר ולכן אינו נספר כבדיקת מחיר נפרדת — אין צורך בפעולה.' };
+  return { product, reason: 'שויך אוטומטית ל"' + product.name + '" ' + how + '. המחיר המודפס זהה למחיר המאגר ואין למוצר מבצע בתוקף, אבל המחיר שימש לזיהוי המוצר ולכן אינו נספר כבדיקת מחיר נפרדת — אין צורך בפעולה.' };
 }
 // הבדיקה אינה מלאה רק בגלל שורות כאלה, ואין שום דבר אחר שמחכה להחלטה.
 function receiptPriceAuditAutoOnly(a, pending) {
@@ -10241,7 +10247,7 @@ function receiptPriceAuditHtml(report, options) {
   const differences = a.rows.filter(r => r.result === 'difference'), missing = a.rows.filter(r => r.capability !== 'checkable');
   const money = n => n == null ? 'לא זמין' : '₪' + fmtUnitPrice(n, true);
   const autoOnly = receiptPriceAuditAutoOnly(a, pending);
-  const title = differences.length ? 'המחיר בתעודה שונה מהמחיר שבמאגר' : (a.complete ? 'המחירים שנבדקו תואמים' : autoOnly ? 'המחירים תואמים — אין צורך בפעולה' : 'בדיקת המחירים אינה מלאה');
+  const title = differences.length ? 'המחיר בתעודה שונה מהמחיר שבמאגר' : (a.complete ? 'המחירים שנבדקו תואמים' : autoOnly ? 'אין פער מחיר — אין צורך בפעולה' : 'בדיקת המחירים אינה מלאה');
   const cards = a.rows.map(r => { const auto = receiptAutoMatchedProduct(r); return '<article data-price-row="' + htmlEscape(r.id) + '" data-price-result="' + htmlEscape(r.result || r.capability) + '" class="border-t border-slate-200 py-3">' +
     // שורה ששויכה אוטומטית מוצגת בשם המוצר ששויך; מה שנקרא בנייר נשאר לעיון.
     '<div class="font-black text-base">' + htmlEscape(auto ? auto.product.name : r.name) + '</div>' +
@@ -10271,8 +10277,9 @@ function receiptPriceAuditHtml(report, options) {
     '><summary class="flex items-center justify-between gap-2 cursor-pointer font-black ' +
     (differences.length ? 'text-rose-800' : openPanel ? 'text-amber-900' : 'text-emerald-800') + '">' +
     '<span role="status">' + title + ' · ' + badge + '</span><i class="fa-solid fa-chevron-down hist-chevron shrink-0"></i></summary>' +
-    (autoOnly ? '<div class="mt-1">0 שורות עם פער · ' + (a.rows.length - missing.length) + ' שורות נבדקו מול המאגר · ' + missing.length +
-        ' שורות שויכו למוצר בעזרת המחיר המודפס. המחיר בהן שווה למחיר המאגר, אבל אינו נספר כבדיקה נפרדת — אין צורך בפעולה.</div>'
+    (autoOnly ? '<div class="mt-1">0 שורות עם פער · ' + (a.rows.length - missing.length) + ' שורות נבדקו מול המאגר · ' +
+        (missing.length === 1 ? 'שורה אחת שויכה למוצר בעזרת המחיר המודפס. המחיר בה זהה' : missing.length + ' שורות שויכו למוצר בעזרת המחיר המודפס. המחיר בהן זהה') +
+        ' למחיר המאגר ואין עליו מבצע, אבל אינו נספר כבדיקה נפרדת — אין צורך בפעולה.</div>'
       : '<div class="mt-1">' + differences.length + ' שורות עם פער · ' + missing.length + ' שורות שלא ניתן לבדוק</div>') +
     '<div class="text-xs text-slate-600 mt-1">ללא מע״מ · אותה יחידת מוצר · פיקדון בנפרד · לפי הכמות בנייר. הספירה אינה משפיעה על בדיקה זו.</div>' +
     // תאריך שנקרא מהנייר מקופל; תאריך שהונח פתוח, אומר שהוא הנחה, ומזמין שינוי.
@@ -10311,7 +10318,7 @@ function refreshPriceScannerNotice() {
   if (!relevant) return;
   const n = a.rows.filter(r => r.result === 'difference').length;
   button.textContent = n ? 'המחיר בתעודה שונה מהמחיר שבמאגר · ' + n + ' שורות — פתח בדיקה' : a.complete ? 'בדיקת מחירים: המחירים שנבדקו תואמים'
-    : receiptPriceAuditAutoOnly(a) ? 'בדיקת מחירים: המחירים תואמים — אין צורך בפעולה' : 'בדיקת המחירים אינה מלאה — פתח לבדיקה';
+    : receiptPriceAuditAutoOnly(a) ? 'בדיקת מחירים: אין פער מחיר — אין צורך בפעולה' : 'בדיקת המחירים אינה מלאה — פתח לבדיקה';
 }
 
 function refreshPriceAuditViews() {
@@ -10585,10 +10592,11 @@ function receiptRowActions(report) {
     if (dispute && !open) {
       out.settled += 1;
       if (receiptSamePriceModelDecision(row, dispute)) out.modelSettled += 1;
-      else if (userPicked) out.userSettled += 1;
+      else if (userPicked && dispute.fields.some(item => String((item && item.field) || '') === 'code')) out.userSettled += 1;
     }
     if (receiptRowDecision(row)) { out.decided += 1; return; }
-    if (userPicked) out.userMatched += 1;
+    // זהות שאישר המשתמש ושכבר אינה נפתרת במאגר נספרת למטה כשיוך אוטומטי, לא פעמיים.
+    if (userPicked && row.capability !== 'unidentified') out.userMatched += 1;
     // v103: "לא זוהה" בבדיקת המחירים פירושו גם זהות שנבחרה בעזרת המחיר (תיקון
     // ספרה, הקוד של הקריאה השנייה) — כזאת אינה יכולה לאשר מחיר, אבל היא כן
     // מוצר שהשורה שויכה אליו. עד כאן היא הוצגה כ"הקוד שבשורה אינו במאגר"
