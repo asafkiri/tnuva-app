@@ -54,7 +54,7 @@ const actions = c => JSON.parse(c.run(`JSON.stringify((function(){ const a = rec
   return { state: a.state, decided: a.decided, total: a.total,
     unidentified: a.unidentified.map(x => ({ line: x.row.line, code: x.row.code, doc: x.row.documentIndex, source: x.row.sourceIndex })),
     priced: a.priced.map(x => ({ line: x.row.line, name: x.row.name, printed: x.row.originalUnitPrice, catalog: x.row.catalogBasePrice, doc: x.row.documentIndex, source: x.row.sourceIndex })),
-    settled: a.settled, modelSettled: a.modelSettled, autoMatched: a.autoMatched, disputed: a.disputed.map(x => ({ line: x.row.line, fields: x.dispute.fields })) };
+    settled: a.settled, modelSettled: a.modelSettled, userSettled: a.userSettled, userMatched: a.userMatched, autoMatched: a.autoMatched, disputed: a.disputed.map(x => ({ line: x.row.line, fields: x.dispute.fields })) };
 })())`));
 const html = c => { c.run('renderReceiving()'); return c.node('app').innerHTML; };
 const paperWith = changes => ({ paper: { ...data.paper, scan: { warnings: [], documents: [{ ...document, ...changes }] } } });
@@ -294,6 +294,80 @@ test('a second-read code is adopted only when the catalog price confirms it', as
   // וכך גם כשהקריאה השנייה לא קראה קוד כלל — המצב של "יופ. דנונה" ב-12:29.
   const unread = await scanned(secondReadCase(1, null));
   assert.deepEqual(actions(unread).unidentified.map(item => item.line), [2, 3]);
+});
+
+// v119: תעודה 561010864 (1.10) — כל השורות תואמות, ושתיים שויכו לפי הקוד של
+// הקריאה השנייה. הבדיקה נשארה צהובה ופתוחה, "יש לאשר את ההתאמה", בלי כפתור
+// לאשר, והמשתמש לא ידע מה עוד רוצים ממנו. כאן: שורה 1 תקינה, ושורה 2 נקראה
+// בקוד שאינו במאגר ושויכה לפי הקוד של הקריאה השנייה במחיר זהה.
+const autoOnlyPaper = (extra = [], fields = [{ field: 'code', selected: '88888888', other: '14761414' }]) => {
+  const paperRows = [rows[0], { ...rows[1], code: '88888888' }, ...extra];
+  const total = Math.round(paperRows.reduce((sum, row) => sum + row.lineTotalExVat, 0) * 100) / 100;
+  return { paper: { ...data.paper,
+    consensus: { ...consensus, disputedRows: [{ noteIndex: 0, rowIndex: 1, lineNumber: 2, code: '88888888', description: rows[1].description,
+      fields }] },
+    scan: { warnings: [], documents: [{ ...document, rows: paperRows, itemsSectionTotalExVat: total, subtotalExVat: total,
+      netToChargeExVat: total, itemsPrintedLines: paperRows.length, printedLines: paperRows.length }] } } };
+};
+const autoOnlyCase = autoOnlyPaper();
+
+test('a price check missing only price-confirmed matches folds green and asks for nothing', async () => {
+  const c = await scanned(autoOnlyCase);
+  const row = JSON.parse(c.run("JSON.stringify(aiScanResponse.scan.documents[0].rows[1])"));
+  assert.equal(row.__tnuvaProductId, 'p_yolo_layers');
+  assert.equal(row.barcodeMatchMethod, 'tnuva_code_second_read');
+  // הבדיקה עצמה נשארת כנה: המחיר שבחר את המוצר אינו ראיה למחיר.
+  const audit = JSON.parse(c.run("JSON.stringify(receiptPriceAudit())"));
+  assert.equal(audit.complete, false);
+  assert.equal(audit.rows.find(r => r.line === 2).capability, 'unidentified');
+  assert.equal(actions(c).total, 0);
+  assert.equal(actions(c).autoMatched, 1);
+  // אבל המסך אינו מציג אותה כמשימה פתוחה.
+  const view = html(c);
+  assert.match(view, /המחירים תואמים — אין צורך בפעולה · 2 שורות/);
+  assert.doesNotMatch(view, /בדיקת המחירים אינה מלאה/);
+  assert.doesNotMatch(view, /<details data-price-panel open/, 'folded like a complete check');
+  assert.match(view, /1 שורות נבדקו מול המאגר · 1 שורות שויכו למוצר בעזרת המחיר המודפס/);
+  // הכרטיס אומר לאיזה מוצר שויכה השורה, ומה נקרא בנייר נשאר לעיון.
+  assert.match(view, /YOLO מעדן שכבות שוקולד חלב ולבן 122 גרם/);
+  assert.match(view, /בנייר נקרא: מעדן שוקו דל חלב YOLO/);
+  assert.match(view, /לפי הקוד של הקריאה השנייה של הצילום\. המחיר המודפס שווה למחיר המאגר/);
+  assert.doesNotMatch(view, /יש לאשר את ההתאמה/);
+  // גם הכפתור שבתוך הסורק אינו שולח את המשתמש לבדוק שוב.
+  c.run("scanPurpose = 'receiving'; refreshPriceScannerNotice()");
+  assert.equal(c.node('scanPriceNotice').textContent, 'בדיקת מחירים: המחירים תואמים — אין צורך בפעולה');
+});
+
+test('the green fold needs the matched product to still cost what the paper printed, and nothing else open', async () => {
+  // מחיר המאגר השתנה אחרי השיוך: המחיר כבר אינו מאשר את הזהות.
+  const changed = await scanned(autoOnlyCase);
+  changed.run("products.find(p => p.id === 'p_yolo_layers').price = 3.99");
+  assert.match(html(changed), /<details data-price-panel open><summary[^>]*><span role="status">בדיקת המחירים אינה מלאה · 1\/2 לא נבדקו/);
+  // שורה שאין לה מוצר כלל (קוד שלא נקרא) עדיין מחכה להחלטה, ולכן הבדיקה נשארת פתוחה.
+  const mixed = await scanned(autoOnlyPaper([rows[2]]));
+  assert.equal(actions(mixed).autoMatched, 1);
+  assert.deepEqual(actions(mixed).unidentified.map(item => item.line), [3]);
+  assert.match(html(mixed), /<details data-price-panel open><summary[^>]*><span role="status">בדיקת המחירים אינה מלאה · 2\/3 לא נבדקו/);
+  mixed.run("scanPurpose = 'receiving'; refreshPriceScannerNotice()");
+  assert.equal(mixed.node('scanPriceNotice').textContent, 'בדיקת המחירים אינה מלאה — פתח לבדיקה');
+  // מחלוקת על הכמות באותה שורה אינה נסגרת בזהות המוצר.
+  const quantity = await scanned(autoOnlyPaper([], [{ field: 'code', selected: '88888888', other: '14761414' }, { field: 'quantity', selected: 6, other: 8 }]));
+  assert.equal(JSON.parse(quantity.run("JSON.stringify(aiScanResponse.scan.documents[0].rows[1].__tnuvaProductId)")), 'p_yolo_layers');
+  assert.match(html(quantity), /<span role="status">בדיקת המחירים אינה מלאה · 1\/2 לא נבדקו/);
+  // ופער מחיר אמיתי נשאר פער מחיר.
+  const priced = await scanned(autoOnlyPaper([rows[3]]));
+  assert.match(html(priced), /<span role="status">המחיר בתעודה שונה מהמחיר שבמאגר/);
+});
+
+test('a product the user picked is acknowledged as their decision, not as the catalog\'s', async () => {
+  const c = await scanned(secondReadCase(2, '7296150612', null));
+  c.click('rowfix-pick', null, { doc: '0', row: '2', product: 'p_prili' });
+  const list = actions(c);
+  assert.equal(list.userMatched, 1);
+  assert.equal(list.userSettled, 1);
+  const view = html(c);
+  assert.match(view, /שורה אחת שויכה על ידך למוצר/);
+  assert.doesNotMatch(view, /מחלוקות בין שתי הקריאות הוכרעו מול המאגר/, 'the user settled it, not the catalog');
 });
 
 test('a code that swallowed digits from the next column still points at one product', async () => {

@@ -717,7 +717,7 @@ let receiptDupConfirmed = false; // אישור שמירה למרות חשד לכ
 const RECEIPT_DRAFT_KEY = 'tn_receipt_draft';
 let receivingDigitsMissTimer = null;
 let receivingDigitsMissNotified = '';
-const APP_VERSION = '118'; // v118: היסטוריית התעודות ממוינת לפי תאריך התעודה ולא לפי מועד ההקלדה
+const APP_VERSION = '119'; // v119: בדיקת מחירים שחסרות בה רק שורות ששויכו לפי המחיר — ירוקה ומקופלת, "אין צורך בפעולה"
 // גרסה 73: מוצר בלי מחיר קופה — חלון הכמות מציג מיד את העלות ליח׳ (ללא מע״מ) ופותח שדה להקלדת המחיר שעובר בקופה, בלי לנדוד למסך המחירים
 // v40: תג גרסה קבוע בפינת המסך — לדעת בשנייה איזו גרסה באמת רצה על המכשיר
 // (עוזר במיוחד מול מטמון ה-PWA). pointer-events:none — לעולם לא חוסם מגע.
@@ -10195,6 +10195,36 @@ function receiptPriceAudit() {
   out.complete = allComplete && out.rows.length > 0 && out.rows.every(r => r.capability === 'checkable');
   return out;
 }
+// v119: שורה שהמוצר שלה נבחר בעזרת המחיר (תיקון ספרה, הקוד של הקריאה השנייה,
+// שם ומחיר) אינה ראיה למחיר, ונשארת "לא נבדקה". אבל כשמחיר המאגר של המוצר
+// ששויך שווה למחיר המודפס, אין בה שום שאלה פתוחה. בתעודה 561010864 (1.10) שתי
+// שורות כאלה השאירו את הבדיקה צהובה ופתוחה עם "יש לאשר את ההתאמה" — בלי שום
+// כפתור לאשר — והמשתמש לא הבין מה עוד רוצים ממנו. complete עצמו אינו משתנה.
+function receiptAutoMatchedProduct(row) {
+  if (!row || row.capability !== 'unidentified' || !(priceAuditNumber(row.quantity) > 0)) return null;
+  const doc = receiptScanDoc(row.documentIndex);
+  const mapped = doc && Array.isArray(doc.rows) ? doc.rows[Number(row.rowIndex)] : null;
+  const method = String(mapped && mapped.barcodeMatchMethod || '');
+  if (!mapped || !mapped.__tnuvaProductId || !/repair|name_price|second_read/.test(method)) return null;
+  // מחלוקת פתוחה על כמות, כסף או השורה עצמה אינה נסגרת בזהות המוצר.
+  const dispute = receiptConsensusDisputes().get(Number(row.documentIndex) + ':' + Number(row.sourceIndex)) || null;
+  if (receiptDisputeOpenFields(row, dispute).some(item => String((item && item.field) || '') !== 'code')) return null;
+  const product = (products || []).find(item => String(item.id) === String(mapped.__tnuvaProductId));
+  const printed = priceAuditNumber(row.originalUnitPrice), price = product ? priceAuditNumber(product.price) : null;
+  if (!(price > 0) || printed == null || priceAuditNumber(row.adaptedUnitPrice) !== printed
+      || Math.abs(price - printed) > PRICE_AUDIT_UNIT_TOLERANCE) return null;
+  const how = /second_read/.test(method) ? 'לפי הקוד של הקריאה השנייה של הצילום'
+    : /repair/.test(method) ? 'אחרי תיקון ספרה בקוד שנקרא' : 'לפי השם והמחיר המודפסים';
+  return { product, reason: 'שויך אוטומטית ל"' + product.name + '" ' + how + '. המחיר המודפס שווה למחיר המאגר, אבל הוא שימש לזיהוי המוצר ולכן אינו נספר כבדיקת מחיר נפרדת — אין צורך בפעולה.' };
+}
+// הבדיקה אינה מלאה רק בגלל שורות כאלה, ואין שום דבר אחר שמחכה להחלטה.
+function receiptPriceAuditAutoOnly(a, pending) {
+  if (!a || a.state !== 'ready' || a.complete || !a.rows.length || !a.documents.every(d => d.complete)) return false;
+  if (a.rows.some(r => r.result === 'difference' || (r.printedVsCatalog && r.printedVsCatalog.off))) return false;
+  const missing = a.rows.filter(r => r.capability !== 'checkable');
+  if (!missing.length || !missing.every(r => receiptAutoMatchedProduct(r))) return false;
+  return !(pending || receiptRowActions(a)).total;
+}
 // כרטיסי ההחלטה נפתחים רק במסך הקליטה, כי שם יושב מאזין הלחיצות ושם אפשר
 // לסרוק. חלון הסיכום מקבל שורה אחת שמפנה לשם, כדי שלא יאשרו קליטה בלי לדעת.
 function receiptPriceAuditHtml(report, options) {
@@ -10210,33 +10240,40 @@ function receiptPriceAuditHtml(report, options) {
         pending.total + ' שורות דורשות החלטה — חזור למסך הקליטה כדי לסגור אותן</section>' : '');
   const differences = a.rows.filter(r => r.result === 'difference'), missing = a.rows.filter(r => r.capability !== 'checkable');
   const money = n => n == null ? 'לא זמין' : '₪' + fmtUnitPrice(n, true);
-  const title = differences.length ? 'המחיר בתעודה שונה מהמחיר שבמאגר' : (a.complete ? 'המחירים שנבדקו תואמים' : 'בדיקת המחירים אינה מלאה');
-  const cards = a.rows.map(r => '<article data-price-row="' + htmlEscape(r.id) + '" data-price-result="' + htmlEscape(r.result || r.capability) + '" class="border-t border-slate-200 py-3">' +
-    '<div class="font-black text-base">' + htmlEscape(r.name) + '</div><div class="text-xs text-slate-600">' + htmlEscape(r.code) + ' · כמות בתעודה: ' + (r.quantity == null ? 'חסרה' : r.quantity) + '</div>' +
+  const autoOnly = receiptPriceAuditAutoOnly(a, pending);
+  const title = differences.length ? 'המחיר בתעודה שונה מהמחיר שבמאגר' : (a.complete ? 'המחירים שנבדקו תואמים' : autoOnly ? 'המחירים תואמים — אין צורך בפעולה' : 'בדיקת המחירים אינה מלאה');
+  const cards = a.rows.map(r => { const auto = receiptAutoMatchedProduct(r); return '<article data-price-row="' + htmlEscape(r.id) + '" data-price-result="' + htmlEscape(r.result || r.capability) + '" class="border-t border-slate-200 py-3">' +
+    // שורה ששויכה אוטומטית מוצגת בשם המוצר ששויך; מה שנקרא בנייר נשאר לעיון.
+    '<div class="font-black text-base">' + htmlEscape(auto ? auto.product.name : r.name) + '</div>' +
+    (auto && r.name !== auto.product.name ? '<div class="text-xs text-slate-600">בנייר נקרא: ' + htmlEscape(r.name) + '</div>' : '') +
+    '<div class="text-xs text-slate-600">' + htmlEscape(r.code) + ' · כמות בתעודה: ' + (r.quantity == null ? 'חסרה' : r.quantity) + '</div>' +
     '<div class="text-xs text-slate-600">תעודה ' + htmlEscape(r.documentNumber || String(r.documentIndex + 1) + ' (מספר לא נקרא)') + ' · עמוד ' + (r.page ?? 'לא נקרא') + ' · שורה ' + (r.line ?? 'לא נקראה') + ' · ' + htmlEscape(r.date || 'תאריך חסר') + '</div>' +
     '<div class="mt-2">מחיר יחידה מודפס: <b>' + money(r.originalUnitPrice) + '</b></div>' +
     (r.chargedUnitPrice != null ? '<div>מחיר לחיוב מחושב: <b>' + money(r.chargedUnitPrice) + '</b></div>' : '') +
     (r.chargeDerivation ? '<div class="text-xs text-slate-600 mt-1">' + htmlEscape(r.chargeDerivation) + '</div>' : '') +
-    '<div>מחיר מאגר לפני הנחה: ' + money(r.catalogBasePrice) + (r.regularDiscountPct ? ' · הנחה קבועה ' + r.regularDiscountPct + '%' : '') + '</div>' +
+    '<div>מחיר מאגר לפני הנחה: ' + money(auto ? priceAuditNumber(auto.product.price) : r.catalogBasePrice) + (r.regularDiscountPct ? ' · הנחה קבועה ' + r.regularDiscountPct + '%' : '') + '</div>' +
     (r.promo ? '<div>מבצע: ' + htmlEscape(r.promo.name) + ' · ' + htmlEscape(r.promo.start) + ' עד ' + htmlEscape(r.promo.end) + ' · מינימום ' + r.promo.minUnits + '</div>' : '') +
     r.expectedOptions.map(o => '<div class="rounded-lg bg-slate-50 p-2 mt-2"><div>מחיר צפוי · ' + htmlEscape(o.label) + ': <b>' + money(o.price) + '</b></div>' +
       (r.comparisonPrice != null ? '<div>מחיר בתעודה באותו בסיס: <b>' + money(r.comparisonPrice) + '</b></div>' : '') +
       (r.result === 'difference' ? '<div>הפרש ליחידה: <b>' + money(o.unitDifference) + '</b> · הפרש לשורה: <b>' + money(o.lineDifference) + '</b></div>' : '') + '</div>').join('') +
-    '<div class="font-bold mt-2">' + htmlEscape(r.reason) + '</div>' +
-    (r.monthlyStatus ? '<div class="text-xs bg-blue-50 p-2 mt-2">' + htmlEscape(r.monthlyStatus) + '</div>' : '') + '</article>').join('');
+    '<div class="font-bold mt-2">' + htmlEscape(auto ? auto.reason : r.reason) + '</div>' +
+    (r.monthlyStatus ? '<div class="text-xs bg-blue-50 p-2 mt-2">' + htmlEscape(r.monthlyStatus) + '</div>' : '') + '</article>'; }).join('');
   // A review with nothing to act on folds into a single line. Open, it filled the
   // receiving screen with notices and pushed the scan button below the fold. A
-  // priced gap, or a row that could not be checked, still opens by itself.
-  const openPanel = differences.length > 0 || !a.complete;
+  // priced gap, or a row that could not be checked, still opens by itself —
+  // unless every such row was matched with the printed price and nothing waits.
+  const openPanel = differences.length > 0 || (!a.complete && !autoOnly);
   const badge = differences.length ? differences.length + '/' + a.rows.length + ' עם פער'
-    : (missing.length ? missing.length + '/' + a.rows.length + ' לא נבדקו' : a.rows.length + ' שורות');
+    : (missing.length && !autoOnly ? missing.length + '/' + a.rows.length + ' לא נבדקו' : a.rows.length + ' שורות');
   const panelShell = '<section data-price-audit class="rounded-xl ' + (openPanel ? 'border-2 border-amber-300' : 'border border-emerald-200')
     + ' bg-white p-2.5 mb-2 text-sm" dir="rtl" aria-label="בדיקת מחירים ומבצעים">';
   return rowActions + panelShell + '<details data-price-panel' + (openPanel ? ' open' : '') +
     '><summary class="flex items-center justify-between gap-2 cursor-pointer font-black ' +
     (differences.length ? 'text-rose-800' : openPanel ? 'text-amber-900' : 'text-emerald-800') + '">' +
     '<span role="status">' + title + ' · ' + badge + '</span><i class="fa-solid fa-chevron-down hist-chevron shrink-0"></i></summary>' +
-    '<div class="mt-1">' + differences.length + ' שורות עם פער · ' + missing.length + ' שורות שלא ניתן לבדוק</div>' +
+    (autoOnly ? '<div class="mt-1">0 שורות עם פער · ' + (a.rows.length - missing.length) + ' שורות נבדקו מול המאגר · ' + missing.length +
+        ' שורות שויכו למוצר בעזרת המחיר המודפס. המחיר בהן שווה למחיר המאגר, אבל אינו נספר כבדיקה נפרדת — אין צורך בפעולה.</div>'
+      : '<div class="mt-1">' + differences.length + ' שורות עם פער · ' + missing.length + ' שורות שלא ניתן לבדוק</div>') +
     '<div class="text-xs text-slate-600 mt-1">ללא מע״מ · אותה יחידת מוצר · פיקדון בנפרד · לפי הכמות בנייר. הספירה אינה משפיעה על בדיקה זו.</div>' +
     // תאריך שנקרא מהנייר מקופל; תאריך שהונח פתוח, אומר שהוא הנחה, ומזמין שינוי.
     a.documents.map(d => ((d.dateAssumed
@@ -10273,7 +10310,8 @@ function refreshPriceScannerNotice() {
   button.classList.toggle('hidden', !relevant);
   if (!relevant) return;
   const n = a.rows.filter(r => r.result === 'difference').length;
-  button.textContent = n ? 'המחיר בתעודה שונה מהמחיר שבמאגר · ' + n + ' שורות — פתח בדיקה' : a.complete ? 'בדיקת מחירים: המחירים שנבדקו תואמים' : 'בדיקת המחירים אינה מלאה — פתח לבדיקה';
+  button.textContent = n ? 'המחיר בתעודה שונה מהמחיר שבמאגר · ' + n + ' שורות — פתח בדיקה' : a.complete ? 'בדיקת מחירים: המחירים שנבדקו תואמים'
+    : receiptPriceAuditAutoOnly(a) ? 'בדיקת מחירים: המחירים תואמים — אין צורך בפעולה' : 'בדיקת המחירים אינה מלאה — פתח לבדיקה';
 }
 
 function refreshPriceAuditViews() {
@@ -10531,24 +10569,30 @@ function receiptFindAuditRow(documentIndex, sourceIndex) {
 }
 function receiptRowActions(report) {
   const a = report || receiptPriceAudit();
-  const out = { state: a.state, unidentified: [], disputed: [], priced: [], decided: 0, settled: 0, modelSettled: 0, autoMatched: 0, total: 0 };
+  const out = { state: a.state, unidentified: [], disputed: [], priced: [], decided: 0, settled: 0, modelSettled: 0, userSettled: 0, userMatched: 0, autoMatched: 0, total: 0 };
   if (a.state !== 'ready') return out;
   const disputes = receiptConsensusDisputes();
   a.rows.forEach(row => {
     const dispute = disputes.get(Number(row.documentIndex) + ':' + Number(row.sourceIndex)) || null;
     const openFields = receiptDisputeOpenFields(row, dispute);
     const open = dispute && openFields.length ? Object.assign({}, dispute, { fields: openFields }) : null;
+    const doc = receiptScanDoc(row.documentIndex);
+    const mapped = doc && Array.isArray(doc.rows) ? doc.rows[Number(row.rowIndex)] : null;
+    // v119: שורה שהמשתמש שייך בעצמו (בחירה מהמאגר, סריקת ברקוד) נאמרת כהחלטה
+    // שלו. עד כאן מחלוקת שהוא סגר נספרה כ"הוכרעו מול המאגר", ולא נשאר במסך
+    // שום סימן שההכרעה שלו נקלטה.
+    const userPicked = !!(mapped && String(mapped.barcodeMatchMethod || '') === 'user_confirmed');
     if (dispute && !open) {
       out.settled += 1;
       if (receiptSamePriceModelDecision(row, dispute)) out.modelSettled += 1;
+      else if (userPicked) out.userSettled += 1;
     }
     if (receiptRowDecision(row)) { out.decided += 1; return; }
+    if (userPicked) out.userMatched += 1;
     // v103: "לא זוהה" בבדיקת המחירים פירושו גם זהות שנבחרה בעזרת המחיר (תיקון
     // ספרה, הקוד של הקריאה השנייה) — כזאת אינה יכולה לאשר מחיר, אבל היא כן
     // מוצר שהשורה שויכה אליו. עד כאן היא הוצגה כ"הקוד שבשורה אינו במאגר"
     // ושלחה את המשתמש לסרוק ארגז שכבר זוהה. שאלה נשאלת רק על שורה בלי מוצר.
-    const doc = receiptScanDoc(row.documentIndex);
-    const mapped = doc && Array.isArray(doc.rows) ? doc.rows[Number(row.rowIndex)] : null;
     const matched = !!(mapped && mapped.__tnuvaProductId);
     if (row.capability === 'unidentified' && matched) { out.autoMatched += 1; return; }
     if (row.capability === 'unidentified') out.unidentified.push({ row, dispute });
@@ -10603,12 +10647,13 @@ function receiptRowCandidatesHtml(row, dispute, hasRival) {
 }
 function receiptRowActionsHtml(report) {
   const actions = receiptRowActions(report);
-  const catalogSettled = actions.settled - actions.modelSettled;
+  const catalogSettled = actions.settled - actions.modelSettled - actions.userSettled;
+  const mine = actions.userMatched === 1 ? 'שורה אחת שויכה על ידך למוצר' : actions.userMatched ? actions.userMatched + ' שורות שויכו על ידך למוצרים' : '';
   const settledLine = [catalogSettled ? catalogSettled + ' מחלוקות בין שתי הקריאות הוכרעו מול המאגר' : '',
     actions.modelSettled ? actions.modelSettled + ' מחלוקות על זהות המוצר הוכרעו אוטומטית לפי המודל החזק — המחיר זהה' : '',
     actions.autoMatched ? actions.autoMatched + ' שורות שויכו אוטומטית כשהמחיר אישר את הקוד' : ''].filter(Boolean).join(' · ');
   if (!actions.total) {
-    const parts = [actions.decided ? actions.decided + ' שורות אושרו ידנית בתעודה הזאת' : '', settledLine].filter(Boolean);
+    const parts = [actions.decided ? actions.decided + ' שורות אושרו ידנית בתעודה הזאת' : '', mine, settledLine].filter(Boolean);
     return parts.length ? '<section class="rounded-xl border border-emerald-200 bg-emerald-50 p-2.5 mb-2 text-sm font-bold text-emerald-900" dir="rtl">' +
       htmlEscape(parts.join(' · ')) + '.</section>' : '';
   }
@@ -10663,7 +10708,7 @@ function receiptRowActionsHtml(report) {
   }).join('');
   return '<section data-row-actions class="rounded-xl border-2 border-violet-300 bg-white p-2.5 mb-2 text-sm" dir="rtl" aria-label="שורות שדורשות החלטה">' +
     '<div class="font-black text-violet-900" role="status">' + actions.total + ' שורות דורשות החלטה לפני הקליטה' +
-    (actions.decided ? ' · ' + actions.decided + ' שורות אושרו ידנית' : '') + '</div>' +
+    (actions.decided ? ' · ' + actions.decided + ' שורות אושרו ידנית' : '') + (mine ? ' · ' + mine : '') + '</div>' +
     '<div class="text-[11px] font-bold text-slate-500 mt-0.5">כל החלטה נשמרת בטיוטה ואינה משנה את מה שנקרא מהנייר.' +
       (settledLine ? ' ' + htmlEscape(settledLine) + ' ולא נשאלו כאן.' : '') + '</div>' +
     newCards + disputedCards + priceCards + '</section>';
