@@ -717,7 +717,7 @@ let receiptDupConfirmed = false; // אישור שמירה למרות חשד לכ
 const RECEIPT_DRAFT_KEY = 'tn_receipt_draft';
 let receivingDigitsMissTimer = null;
 let receivingDigitsMissNotified = '';
-const APP_VERSION = '117'; // v117: קיזוז אוטומטי גם בכמויות משקל — השוואת כמויות סובלנית לרעש נקודה צפה
+const APP_VERSION = '118'; // v118: היסטוריית התעודות ממוינת לפי תאריך התעודה ולא לפי מועד ההקלדה
 // גרסה 73: מוצר בלי מחיר קופה — חלון הכמות מציג מיד את העלות ליח׳ (ללא מע״מ) ופותח שדה להקלדת המחיר שעובר בקופה, בלי לנדוד למסך המחירים
 // v40: תג גרסה קבוע בפינת המסך — לדעת בשנייה איזו גרסה באמת רצה על המכשיר
 // (עוזר במיוחד מול מטמון ה-PWA). pointer-events:none — לעולם לא חוסם מגע.
@@ -16778,10 +16778,13 @@ function renderReceiptsHistory() {
     return receiptHistoryFilter === 'all' || (receiptHistoryFilter === 'open' && open) || (receiptHistoryFilter === 'credit' && credit) || (receiptHistoryFilter === 'done' && !open && !credit);
   };
   const returnMatchesFilter = r => receiptHistoryFilter === 'all' || (receiptHistoryFilter === 'credit' && !r.credited) || (receiptHistoryFilter === 'done' && !!r.credited);
+  // v118: קליטות וחזרות יחד — לפי תאריך התעודה (הנייר), ורק בתוך אותו יום לפי רגע ההקלדה
+  const locDay = t => { const x = new Date(t || 0); return x.getFullYear() + '-' + String(x.getMonth() + 1).padStart(2, '0') + '-' + String(x.getDate()).padStart(2, '0'); };
+  const docDay = d => String(d.docDate || d.date || locDay(d.timestamp));
   const combined = [
-    ...receipts.filter(receiptMatchesFilter).map(rc => ({ ts: rc.timestamp || 0, html: receiptCard(rc) })),
-    ...returns.filter(returnMatchesFilter).map(r => ({ ts: r.timestamp || 0, html: returnCardInReceipts(r) }))
-  ].sort((a, b) => b.ts - a.ts);
+    ...receipts.filter(receiptMatchesFilter).map(rc => ({ day: docDay(rc), ts: rc.timestamp || 0, html: receiptCard(rc) })),
+    ...returns.filter(returnMatchesFilter).map(r => ({ day: docDay(r), ts: r.timestamp || 0, html: returnCardInReceipts(r) }))
+  ].sort((a, b) => b.day.localeCompare(a.day) || (b.ts - a.ts));
   const items = combined.map(x => x.html).join('');
   const recBal = receiptsBalance();
   let recBalBanner = '';
