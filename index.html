@@ -716,7 +716,7 @@ let receiptDupConfirmed = false; // אישור שמירה למרות חשד לכ
 const RECEIPT_DRAFT_KEY = 'tn_receipt_draft';
 let receivingDigitsMissTimer = null;
 let receivingDigitsMissNotified = '';
-const APP_VERSION = '125'; // v125: התאמה לפי טעם, הוספת מוצר חסר ובחירת המבצעים לייבוא
+const APP_VERSION = '126'; // v126: המבצעים עם המוצרים החזקים ביותר מוצגים ראשונים
 // גרסה 73: מוצר בלי מחיר קופה — חלון הכמות מציג מיד את העלות ליח׳ (ללא מע״מ) ופותח שדה להקלדת המחיר שעובר בקופה, בלי לנדוד למסך המחירים
 // v40: תג גרסה קבוע בפינת המסך — לדעת בשנייה איזו גרסה באמת רצה על המכשיר
 // (עוזר במיוחד מול מטמון ה-PWA). pointer-events:none — לעולם לא חוסם מגע.
@@ -2015,7 +2015,7 @@ function startListeners() {
       if (ea !== eb) return eb.localeCompare(ea);
       return (b.timestamp || 0) - (a.timestamp || 0);
     });
-    if (currentView === 'returns' || currentView === 'receiptsHistory') rerender();
+    if (currentView === 'returns' || currentView === 'receiptsHistory' || currentView === 'promos') rerender();
   }, console.error);
 
   // הגדרות מחיר מומלץ — קטגוריות רווחיות
@@ -2080,7 +2080,7 @@ function startListeners() {
       if (ea !== eb) return eb.localeCompare(ea);
       return (b.timestamp || 0) - (a.timestamp || 0);
     });
-    if (currentView === 'receiptsHistory' || currentView === 'receiving' || currentView === 'health') rerender();
+    if (currentView === 'receiptsHistory' || currentView === 'receiving' || currentView === 'health' || currentView === 'promos') rerender();
     setTimeout(migrateLegacyReceiptOffsets, 0);
     setTimeout(stampResolvedAiPriceFindings, 0); // v202
     setTimeout(autoOffsetSweep, 0); // v244: קיזוז אוטומטי כשמתגלה זוג מדויק
@@ -18742,6 +18742,21 @@ async function promoAutoCleanup() {
     if (currentView === 'promos') renderPromos();
   }
 }
+// אותו מדד כמו בניתוח המוצרים: יחידות שנקלטו פחות חזרות, ב־30 יום.
+// כל מבצע מדורג לפי המוצר החזק ביותר שבו, בלי יתרון לסל עם יותר מוצרים.
+function promoProductStrengths(day) {
+  const stats = analysisAggregate(receipts, returns, anDateShift(-29, day), day, products);
+  return new Map(stats.rows.filter(r => r.product && !r.crate && !r.product.hidden)
+    .map(r => [r.product.id, { product: r.product, units: Number.isFinite(r.soldUnits) ? r.soldUnits : 0 }]));
+}
+function promoStrongestProduct(pr, strengths) {
+  let strongest = null;
+  (pr.productIds || []).forEach(id => {
+    const candidate = strengths.get(id);
+    if (candidate && candidate.units > (strongest ? strongest.units : 0)) strongest = candidate;
+  });
+  return strongest;
+}
 function renderPromos() {
   const day = todayStr();
   promoAutoCleanup();
@@ -18752,19 +18767,22 @@ function renderPromos() {
     '<button data-role="sign-start-internal" class="btn-tap w-full bg-white border-2 border-amber-300 text-amber-700 rounded-2xl py-3 font-black text-sm flex items-center justify-center gap-2 mb-3"><i class="fa-solid fa-tag"></i> שלט למבצע פנימי של החנות</button>' +
     promoImportHtml();
   if (!promos.length) { app.innerHTML = head + '<div class="text-center text-slate-400 py-10"><i class="fa-solid fa-percent text-4xl mb-2 opacity-30"></i><div class="font-bold">אין מבצעים עדיין</div></div>'; return; }
+  const strengths = promoProductStrengths(day);
   const withState = promos.slice().map(pr => {
     let state;
     if (promoActive(pr, day)) state = 0;            // פעיל
     else if (pr.start && pr.start > day) state = 1; // עתידי
     else state = 2;                                 // הסתיים
-    return { pr: pr, state: state };
+    return { pr: pr, state: state, strongest: promoStrongestProduct(pr, strengths) };
   });
   withState.sort((a, b) => {
     if (a.state !== b.state) return a.state - b.state;
+    const strengthDiff = (b.strongest ? b.strongest.units : 0) - (a.strongest ? a.strongest.units : 0);
+    if (strengthDiff) return strengthDiff;
     const A = a.pr, B = b.pr;
-    if (a.state === 0) return (A.end || '').localeCompare(B.end || '');     // הפעילים: הנגמר הקרוב קודם
-    if (a.state === 1) return (A.start || '').localeCompare(B.start || ''); // העתידיים: המתחיל הקרוב קודם
-    return (B.end || '').localeCompare(A.end || '');                        // שהסתיימו: האחרון שנגמר קודם
+    if (a.state === 0) return (A.end || '').localeCompare(B.end || '');     // בחוזק שווה: הנגמר הקרוב קודם
+    if (a.state === 1) return (A.start || '').localeCompare(B.start || ''); // בחוזק שווה: המתחיל הקרוב קודם
+    return (B.end || '').localeCompare(A.end || '');                        // בחוזק שווה: האחרון שנגמר קודם
   });
   const groupLabels = ['פעילים עכשיו', 'עתידיים', 'הסתיימו'];
   const groupHeadClass = ['text-emerald-600', 'text-blue-600', 'text-slate-400'];
@@ -18775,11 +18793,11 @@ function renderPromos() {
       html += '<div class="flex items-center gap-1.5 px-1 mt-4 mb-1.5 text-xs font-black ' + groupHeadClass[o.state] + '"><i class="fa-solid ' + groupIcon[o.state] + '"></i> ' + groupLabels[o.state] + '</div>';
       lastState = o.state;
     }
-    html += promoRowHtml(o.pr, o.state);
+    html += promoRowHtml(o.pr, o.state, o.strongest);
   });
-  app.innerHTML = head + '<div class="pb-6">' + html + '</div>';
+  app.innerHTML = head + '<div class="text-[11px] text-slate-500 font-bold px-1 mt-3">החזקים למעלה · הערכת מכירות ב־30 הימים האחרונים<br><span class="text-slate-400">לפי קליטות פחות חזרות לספק</span></div><div class="pb-6">' + html + '</div>';
 }
-function promoRowHtml(pr, state) {
+function promoRowHtml(pr, state, strongest) {
   const cnt = (pr.productIds || []).length;
   const cardBorder = state === 0 ? 'border-emerald-200' : (state === 1 ? 'border-blue-200' : 'border-slate-200');
   const cardBg = state === 2 ? 'bg-slate-50 opacity-70' : 'bg-white';
@@ -18796,6 +18814,7 @@ function promoRowHtml(pr, state) {
       '<div class="text-xs text-slate-400 mt-0.5">' + (pr.type === 'monthEnd' ? '<span class="' + meColor + ' font-black">מרכזת</span> · ' : '') + cnt + ' מוצרים · ' + (pr.start || '?') + ' ← ' + (pr.end || '?') + '</div></div>' +
       '<div class="shrink-0 text-left"><div class="' + pctBadge + ' font-black px-2.5 py-1 rounded-full text-sm">' + pr.pct + '%</div>' + statusBadge + '</div>' +
     '</div>' +
+    (strongest ? '<div class="text-[11px] text-slate-500 font-bold mt-1.5 truncate" title="' + htmlEscape(strongest.product.name) + '">מוביל במבצע: ' + htmlEscape(strongest.product.name) + '</div>' : '') +
     (promoMinUnitsP(pr) > 1 ? '<div class="text-[11px] text-slate-500 font-bold mt-1"><i class="fa-solid fa-layer-group"></i> מינימום ' + promoMinLabelP(pr) + ' מהסל</div>' : '') +
   '</button>' +
     (cnt ? '<button data-role="promo-barcodes" data-id="' + pr.id + '" class="btn-tap shrink-0 w-12 rounded-2xl border ' + cardBorder + ' ' + (state === 2 ? 'bg-slate-50 text-slate-400 opacity-70' : 'bg-white text-slate-700') + ' flex items-center justify-center shadow-sm" title="ברקודים לקופה" aria-label="ברקודים לקופה"><i class="fa-solid fa-barcode text-lg"></i></button>' : '') +
