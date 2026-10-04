@@ -193,3 +193,123 @@ test('an older server can still reread printed barcodes without duplicating loca
   assert.equal(c.run('promoImport.stage'), 'summary');
   assert.equal(c.run('promoImport.sheet.rows.length'), 1);
 });
+
+const sahlab = { ...product('sahlab', 'משקה שיבולת שועל בטעם סחלב 1 ליטר', 9.4), barcode: '7290116931432' };
+const matcha = { ...product('matcha', "משקה שיבולת שועל עם מאצ'ה אלטרנטיב 1 ליטר", 9.4), barcode: '7290116936628' };
+const matchaParts = () => [
+  { x: 84, s: '₪ 7.99' }, { x: 139, s: '15%' }, { x: 196, s: '9.40' }, { x: 280, s: 'ליטר' },
+  { x: 310, s: '1' }, { x: 350, s: 'שיבולת שועל' }, { x: 410, s: 'ה' }, { x: 420, s: "'" }, { x: 430, s: 'מאצ' },
+  { x: 474, s: '############' }
+];
+const matchaRow = (overrides = {}) => row({ name: "מאצ'ה שיבולת שועל 1 ליטר", listPrice: 9.4, promoPrice: 7.99,
+  productId: 'sahlab', candidateProductIds: ['sahlab'], ...overrides });
+function beginReview(c, result) {
+  c.context.importRows = result.rows;
+  c.run(`const sheet={validFrom:'2026-10-01',validTo:'2026-10-31',rows:importRows,groups:tnvBuildGroups(importRows)};
+    promoImport={stage:'wizard',sheet,missing:promoImportMatch(sheet),unresolved:[],source:'ai'};
+    promoImportOpenNextMissing();`);
+}
+test('the real fragmented matcha name never offers or auto-selects same-price sahlab', () => {
+  for (const confidence of [.8, .99]) {
+    const c = runtime([sahlab]);
+    const result = verify(c, [matchaRow({ name: sahlab.name, matchConfidence: confidence })], [source({ parts: matchaParts() })]);
+    assert.equal(result.rows[0].productId, null);
+    assert.deepEqual(json(result.rows[0].candidateProductIds), []);
+    beginReview(c, result);
+    assert.match(c.run('promoImportHtml()'), /לא נמצאה התאמה בטוחה במאגר/);
+    assert.doesNotMatch(c.run('promoImportHtml()'), /data-id="sahlab"/);
+    assert.doesNotMatch(c.run("promoImportNameOptionsHtml(promoImport.missing[0],'סחלב')"), /data-id="sahlab"/);
+    c.run("promoImportResolveName('sahlab')");
+    assert.equal(c.run('promoImport.stage'), 'matching');
+    assert.equal(c.run('promoImport.sheet.rows[0].productId'), null);
+    assert.equal(c.writes.length, 0);
+  }
+});
+test('the correct matcha is selectable locally despite a wrong model proposal', () => {
+  const c = runtime([sahlab, matcha]);
+  const result = verify(c, [matchaRow()], [source({ parts: matchaParts() })]);
+  assert.equal(result.rows[0].productId, null);
+  assert.deepEqual(json(result.rows[0].candidateProductIds), ['matcha']);
+  beginReview(c, result);
+  assert.match(c.run('promoImportHtml()'), /data-id="matcha"/);
+  assert.doesNotMatch(c.run('promoImportHtml()'), /data-id="sahlab"/);
+  c.run("promoImportResolveName('matcha')");
+  assert.equal(c.run('promoImport.stage'), 'summary');
+  assert.deepEqual(json(c.run('promoImport.sheet.groups[0].productIds')), ['matcha']);
+});
+test('different flavors and drink bases are excluded from AI candidates, while aliases work', () => {
+  const c = runtime();
+  for (const [sourceName, catalogName] of [
+    ['משקה סויה וניל 1 ליטר','משקה סויה שוקולד 1 ליטר'],
+    ['משקה שיבולת שועל וניל 1 ליטר','משקה סויה וניל 1 ליטר'],
+    ['שייק בננה וניל 400 מל','שייק תות בננה 400 מל'],
+    ['משקה שיבולת שועל מאצה 1 ליטר','משקה שיבולת שועל 1 ליטר'],
+    ['בולגרית 5% קוביות 200 גרם','פרוסות בולגרית 5% 200 גרם']
+  ]) {
+    c.context.names = [sourceName, catalogName];
+    assert.equal(c.run('tnvPromoIdentityConflict(...names)'), true, sourceName);
+  }
+  for (const [sourceName, catalogName] of [
+    ["מאצ ' ה שיבולת שועל 1 ליטר",matcha.name],
+    ['מיץ תפוז גזר 400 מל','מיץ תפוגזר 400 מל'],
+    ['שייק תות בננה 400 מל','שייקתות בננה חלבון 400 מל']
+  ]) {
+    c.context.names = [sourceName, catalogName];
+    assert.equal(c.run('tnvPromoIdentityConflict(...names)'), false, sourceName);
+  }
+});
+test('adding a missing product requires its barcode and resolves only the current source row', async () => {
+  const c = runtime([sahlab]);
+  const result = verify(c, [matchaRow(), matchaRow({ sourceLine: 2 })],
+    [source({ parts: matchaParts() }), source({ sourceLine: 2, parts: matchaParts() })]);
+  beginReview(c, result);
+  c.click('promo-import-name-create');
+  assert.equal(c.node('prod_barcode').value, '');
+  assert.equal(c.node('prod_price').value, '9.4');
+  await c.run('saveProd(false)');
+  assert.equal(c.writes.length, 0, 'no invented barcode or product');
+  c.node('prod_barcode').value = matcha.barcode;
+  c.run('pricingCatsLoaded=true; pricingCats=[]; findCloudProductByBarcode=async()=>null');
+  await c.run('saveProd(false)');
+  assert.equal(c.writes.length, 1);
+  assert.equal(c.writes[0].data.barcode, matcha.barcode);
+  assert.equal(c.writes[0].path.at(-2), 'products');
+  assert.equal(c.run('promoImport.missing[0].done'), true);
+  assert.equal(c.run('!!promoImport.missing[1].done'), false);
+  assert.equal(c.run('promoImport.stage'), 'matching');
+  c.click('promo-import-name-skip');
+  assert.equal(c.run('promoImport.stage'), 'summary');
+  assert.equal(c.writes.length, 1, 'promotion waits for final approval');
+  await c.run('promoImportCreateAll()');
+  assert.equal(c.writes.length, 2);
+  assert.deepEqual(json(c.writes[1].data.productIds), ['barcode_' + matcha.barcode]);
+});
+test('cancelling product creation keeps the source row unresolved', () => {
+  const c = runtime([sahlab]);
+  beginReview(c, verify(c, [matchaRow()], [source({ parts: matchaParts() })]));
+  c.click('promo-import-name-create');
+  c.run('hideProdModal()');
+  assert.equal(c.run('promoImport.creatingRowKey'), null);
+  assert.equal(c.run('promoImport.stage'), 'matching');
+  assert.equal(c.run('!!promoImport.missing[0].done'), false);
+  assert.equal(c.writes.length, 0);
+});
+test('an entire promotion can be excluded and restored before approval', async () => {
+  const c = runtime([cheese, product('coffee', 'קפה 1 ליטר', 10)]);
+  const result = verify(c, [row(), row({ name:'קפה 1 ליטר', sourceLine:2, productId:'coffee', candidateProductIds:['coffee'],
+    listPrice:10, discountPct:20, promoPrice:8 })], [source(), source({sourceLine:2,parts:parts('קפה 1 ליטר','10','20%','8')})]);
+  beginReview(c, result);
+  assert.equal(c.run('promoImport.stage'), 'summary');
+  assert.match(c.run('promoImportHtml()'), /בולגרית 5% 250 גרם/);
+  c.click('promo-import-group-toggle', '0');
+  assert.match(c.run('promoImportHtml()'), /לא יתווסף/);
+  c.click('promo-import-group-toggle', '1');
+  assert.match(c.run('promoImportHtml()'), /אין מבצעים שנבחרו להוספה/);
+  await c.run('promoImportCreateAll()');
+  assert.equal(c.writes.length, 0);
+  c.click('promo-import-group-toggle', '1');
+  const expected = json(c.run('promoImport.sheet.groups[1].productIds'));
+  await c.run('promoImportCreateAll()');
+  assert.equal(c.writes.length, 1);
+  assert.deepEqual(json(c.writes[0].data.productIds), expected);
+});
