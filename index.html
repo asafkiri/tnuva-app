@@ -716,7 +716,7 @@ let receiptDupConfirmed = false; // אישור שמירה למרות חשד לכ
 const RECEIPT_DRAFT_KEY = 'tn_receipt_draft';
 let receivingDigitsMissTimer = null;
 let receivingDigitsMissNotified = '';
-const APP_VERSION = '124'; // v124: התאמת דפי מבצעים ללא ברקוד למוצרים קיימים לפי שם
+const APP_VERSION = '125'; // v125: התאמה לפי טעם, הוספת מוצר חסר ובחירת המבצעים לייבוא
 // גרסה 73: מוצר בלי מחיר קופה — חלון הכמות מציג מיד את העלות ליח׳ (ללא מע״מ) ופותח שדה להקלדת המחיר שעובר בקופה, בלי לנדוד למסך המחירים
 // v40: תג גרסה קבוע בפינת המסך — לדעת בשנייה איזו גרסה באמת רצה על המכשיר
 // (עוזר במיוחד מול מטמון ה-PWA). pointer-events:none — לעולם לא חוסם מגע.
@@ -17524,6 +17524,7 @@ function hideProdModal() {
   setAiUnknownProductBarcodeLock(false);
   setProductBarcodeBlocked(false);
   priceEditId = null; priceFromScan = false; productCreateId = null; prodAfterSaveTarget = null; productEditorScanReturn = false; aiUnknownProductCreateContext = null; tnuvaRowProductContext = null;
+  if (promoImport) promoImport.creatingRowKey = null;
 }
 function calcCartonPrice() {
   const cp = parseFloat(($('prod_cartonPrice').value || '').toString().replace(',', '.'));
@@ -17550,6 +17551,18 @@ function scanProdBarcode() {
 async function saveProd(again) {
   const name = ($('prod_name').value || '').trim();
   const barcode = ($('prod_barcode').value || '').trim();
+  const promoNameContext = prodAfterSaveTarget === 'promo_import_name' && promoImport
+    ? { session: promoImport, rowKey: promoImport.creatingRowKey } : null;
+  if (promoNameContext && !tnvEan13Ok(normalizeBarcode(barcode))) {
+    showToast('סרוק או הזן ברקוד תקין מהאריזה של המוצר החדש', null, null, 3200); $('prod_barcode').focus(); return;
+  }
+  if (promoNameContext) {
+    const next = promoImport.missing.find(m => !m.done);
+    if (!next || next.key !== promoNameContext.rowKey || promoImport.stage !== 'matching') return;
+    if (tnvPromoIdentityConflict(next.name, name)) {
+      showToast('פרטי המוצר החדש אינם מתאימים לשורה בדף', null, null, 3200); return;
+    }
+  }
   const raw = ($('prod_price').value || '').toString().replace(',', '.').trim();
   const num = parseFloat(raw);
   if (raw !== '' && !(num >= 0)) { showToast('מחיר הקנייה אינו תקין', null, null, 2500); $('prod_price').focus(); return; }
@@ -17684,6 +17697,7 @@ async function saveProd(again) {
   if (afterTarget === 'ai_unknown' && savedProduct) { aiCompleteUnknownProduct(savedProduct, unknownCreateContext); return; }
   if (afterTarget === 'tnuva_row' && savedProduct) { tnuvaRowProductContext = rowProductContext; receiptCompleteRowProduct(savedProduct); return; }
   if (afterTarget === 'promo_import' && savedProduct) { promoImportProductSaved(savedProduct); return; }
+  if (afterTarget === 'promo_import_name' && savedProduct) { promoImportProductSaved(savedProduct, promoNameContext); return; }
   if (afterTarget && savedProduct) { promptQty(savedProduct, afterTarget); return; }
   if (again) { if (wasFromScan) openPriceScanner(); else openProdModal(null, false, ''); }
 }
@@ -17751,7 +17765,8 @@ function promoImportMatch(sheet) {
       const key = item.byName ? item.rowKey : normalizeBarcode(item.barcode);
       if (seen.has(key)) return;
       seen.add(key);
-      missing.push({ key, byName: !!item.byName, candidateProductIds: item.candidateProductIds || [], barcode: item.barcode, name: item.name, price: (Number(item.listPrice) > 0 ? item.listPrice : group.unitPriceExVat) });
+      missing.push({ key, byName: !!item.byName, candidateProductIds: item.candidateProductIds || [], barcode: item.barcode,
+        name: item.sourceName || item.name, price: (Number(item.listPrice) > 0 ? item.listPrice : group.unitPriceExVat) });
     });
   });
   return missing;
@@ -18149,7 +18164,7 @@ function tnvBuildGroups(rows){
       validTo: g.items[0].effEnd || null,
       dated: !!g.items[0].datedNote,
       products: g.items.map(it=>({ barcode: it.bc, name: it.name, listPrice: it.list, promoPrice: it.promo, note: it.note || '',
-        rowKey: it.rowKey, byName: !!it.byName, productId: it.productId || null, candidateProductIds: it.candidateProductIds || [] }))
+        rowKey: it.rowKey, byName: !!it.byName, sourceName: it.sourceName, productId: it.productId || null, candidateProductIds: it.candidateProductIds || [] }))
     };
   });
 }
@@ -18198,7 +18213,30 @@ function tnvPromoSourceHasNumbers(source, list, pct, promo) {
     prices.some(p => p.x < d.x && tnvR2(p.v) === tnvR2(promo)) &&
     prices.some(p => p.x > d.x && tnvR2(p.v) === tnvR2(list)));
 }
+function tnvPromoNormalizedName(name) {
+  return String(name || '').toLowerCase().replace(/[\u200e-\u200f\u202a-\u202e\u2066-\u2069]/g, '')
+    .replace(/מאצ\s*['׳’]?\s*ה/g, 'מאצה').replace(/\bmatcha\b/g, 'מאצה')
+    .replace(/([א-ת])\s*['׳’]\s*([א-ת])/g, '$1$2')
+    .replace(/תפוגזר/g, 'תפוז גזר').replace(/שייקתות/g, 'שייק תות').replace(/לימונענעי/g, 'לימונענע')
+    .replace(/\bgo\b/g, 'גו').replace(/["״׳'’(),.\-–—]/g, ' ').replace(/\s+/g, ' ').trim();
+}
+function tnvPromoNameDetails(name) {
+  const text = tnvPromoNormalizedName(name);
+  const has = term => new RegExp('(?:^|\\s)(?:ב|ו)?' + term + '(?=\\s|$)').test(text);
+  return {
+    flavors: ['מאצה', 'סחלב', 'קפה', 'קינמון', 'וניל', 'בננה', 'תות', 'אפרסק', 'פסיפלורה', 'קרמל', 'מלון',
+      'שוקולד', 'לוז', 'בזיליקום', 'פיקנטי', 'מנגו', 'חמוציות', 'לימונענע', 'לימון', 'תפוז', 'גזר', 'תפוח', 'רימון', 'סלק', 'פירות יער'].filter(has),
+    bases: ['שיבולת שועל', 'סויה', 'שקדים'].filter(has),
+    forms: ['קוביות', 'פרוסות', 'פלח'].filter(has)
+  };
+}
 function tnvPromoIdentityConflict(sheetName, catalogName) {
+  // Known flavors/bases printed in the source must exist in the catalog name.
+  // Model candidates go through this gate too, even when prices are identical.
+  const da = tnvPromoNameDetails(sheetName), db = tnvPromoNameDetails(catalogName);
+  if (['flavors', 'bases'].some(kind => da[kind].length &&
+    (da[kind].some(v => !db[kind].includes(v)) || db[kind].some(v => !da[kind].includes(v))))) return true;
+  if (da.forms.length && db.forms.length && !da.forms.some(v => db.forms.includes(v))) return true;
   const percents = name => (String(name).match(/\d+(?:\.\d+)?\s*%/g) || []).map(s => Number(s.replace(/[\s%]/g, '')));
   const a = percents(sheetName), b = percents(catalogName);
   if (a.length && b.length && !a.some(v => b.includes(v))) return true;
@@ -18216,11 +18254,12 @@ function tnvPromoIdentityConflict(sheetName, catalogName) {
   return ['volume', 'weight'].some(kind => sa[kind].length && sb[kind].length && !sa[kind].some(v => sb[kind].includes(v)));
 }
 function tnvPromoCatalogMatch(raw, sourceName = raw.name) {
-  const proposed = products.find(p => p.id === raw.productId);
-  const ids = [...new Set((raw.candidateProductIds || []).filter(id => products.some(p => p.id === id)))];
+  const compatible = p => p && !tnvPromoIdentityConflict(sourceName, p.name);
+  const proposed = products.find(p => p.id === raw.productId && compatible(p));
+  const ids = [...new Set((raw.candidateProductIds || []).filter(id => products.some(p => p.id === id && compatible(p))))];
   if (proposed && !ids.includes(proposed.id)) ids.push(proposed.id);
   // Catch duplicate/underspecified names locally even when the model claims certainty.
-  const normalized = name => String(name).replace(/\bGO\b/gi, 'גו');
+  const normalized = tnvPromoNormalizedName;
   const plausible = products.filter(p => aiPrintedNameMatchesProduct(normalized(sourceName), normalized(p.name)) && !tnvPromoIdentityConflict(sourceName, p.name));
   plausible.forEach(p => { if (!ids.includes(p.id)) ids.push(p.id); });
   const auto = proposed && Number(raw.matchConfidence) >= .9 && ids.length === 1 &&
@@ -18265,10 +18304,11 @@ function tnvVerifyAiSheet(ai, parsed){
       conflicts.push({ label: label, local: loc.list + ' פחות ' + loc.pct + '% = ' + loc.promo, ai: list + ' פחות ' + pct + '% = ' + promo });
       return;
     }
-    const match = byName ? tnvPromoCatalogMatch(raw, tnvPromoSourceName(source.parts)) : { productId: null, candidateProductIds: [] };
+    const sourceName = byName ? tnvPromoSourceName(source.parts) : '';
+    const match = byName ? tnvPromoCatalogMatch(raw, sourceName) : { productId: null, candidateProductIds: [] };
     const row = { bc: byName ? '' : bc, byName, rowKey, sourceLine: source ? source.sourceLine : null,
                   productId: match.productId, candidateProductIds: match.candidateProductIds,
-                  pct: pct, list: list, promo: promo, name: String(raw.name || ''),
+                  pct: pct, list: list, promo: promo, name: String(raw.name || ''), sourceName,
                   colors: source ? source.colors : ((parsed.colorsByBarcode || {})[bc] || []), note: String(raw.noteText || ''),
                   effStart: from, effEnd: to, minUnits: 1, datedNote: false };
     if (raw.noteKind === 'startDate' && tnvIsoDate(raw.noteStartDate) && raw.noteStartDate >= from && raw.noteStartDate <= to) { row.effStart = raw.noteStartDate; row.datedNote = true; }
@@ -18450,6 +18490,9 @@ function promoImportResolveName(productId) {
   const next = promoImport.missing.find(m => !m.done);
   const product = productId ? products.find(p => p.id === productId) : null;
   if (!next || !next.byName || (productId && !product)) return;
+  if (product && tnvPromoIdentityConflict(next.name, product.name)) {
+    showToast('פרטי המוצר אינם מתאימים לשורה בדף — חפש את המוצר הנכון או בחר לא להוסיף', null, null, 4000); return;
+  }
   const sourceRow = (promoImport.sheet.rows || []).find(row => row.rowKey === next.key);
   if (sourceRow) { sourceRow.productId = product ? product.id : null; sourceRow.skipped = !product; }
   (promoImport.sheet.groups || []).forEach(group => {
@@ -18468,20 +18511,37 @@ function promoImportResolveName(productId) {
 function promoImportNameOptionsHtml(next, query) {
   const q = String(query || '').trim().toLowerCase();
   const candidates = new Set(next.candidateProductIds || []);
-  const list = products.filter(p => q ? String(p.name || '').toLowerCase().includes(q) || String(p.barcode || '').includes(q) : candidates.has(p.id)).slice(0, 40);
+  const list = products.filter(p => !tnvPromoIdentityConflict(next.name, p.name) &&
+    (q ? tnvPromoNormalizedName(p.name).includes(tnvPromoNormalizedName(q)) || String(p.barcode || '').includes(q) : candidates.has(p.id))).slice(0, 40);
   return list.map(p => '<button data-role="promo-import-name-pick" data-id="' + htmlEscape(p.id) + '" class="btn-tap w-full text-right rounded-xl border border-slate-200 bg-white p-3 mb-2">' +
     '<div class="font-black text-slate-800">' + htmlEscape(p.name) + '</div><div class="text-xs text-slate-500">' + htmlEscape(p.barcode || '') +
     (Number(p.price) > 0 ? ' · מחירון ₪' + fmtMoney(p.price) : '') + '</div></button>').join('') ||
-    '<div class="text-sm text-slate-500 py-3">' + (q ? 'לא נמצא מוצר — נסה שם אחר או דלג על השורה' : 'חפש את המוצר הקיים במאגר לפי שם או ברקוד') + '</div>';
+    '<div class="text-sm text-amber-800 py-3">לא נמצאה התאמה בטוחה במאגר. אפשר לחפש בשם או בברקוד, להוסיף מוצר חדש או לא להוסיף אותו למבצע.</div>';
 }
-function promoImportProductSaved(savedProduct) {
+function promoImportCreateMissingName() {
+  if (!promoImport || promoImport.stage !== 'matching') return;
+  const next = promoImport.missing.find(m => !m.done);
+  if (!next || !next.byName) return;
+  openProdModal(null, false, '', 'promo_import_name');
+  promoImport.creatingRowKey = next.key;
+  $('prod_name').value = next.name || '';
+  if (Number(next.price) > 0) $('prod_price').value = String(next.price);
+  updateProdRecHint();
+}
+function promoImportProductSaved(savedProduct, nameContext = null) {
   if (!promoImport) return;
+  if (nameContext) {
+    const next = promoImport.missing.find(m => !m.done);
+    if (promoImport !== nameContext.session || promoImport.stage !== 'matching' || !next || next.key !== nameContext.rowKey) return;
+    promoImportResolveName(savedProduct.id); return;
+  }
   const code = normalizeBarcode(savedProduct.barcode || '');
-  promoImport.missing.forEach(m => { if (normalizeBarcode(m.barcode) === code) m.done = true; });
+  if (!code) return;
+  promoImport.missing.forEach(m => { if (!m.byName && normalizeBarcode(m.barcode) === code) m.done = true; });
   // השיוך לקבוצות מתעדכן מיד — גם אם הברקוד שונה ידנית בעורך.
   (promoImport.sheet.groups || []).forEach(group => {
     (group.products || []).forEach(item => {
-      if (!item.productId && normalizeBarcode(item.barcode) === code) {
+      if (!item.byName && !item.productId && normalizeBarcode(item.barcode) === code) {
         item.productId = savedProduct.id;
         group.productIds.push(savedProduct.id);
         group.missingCount--;
@@ -18490,21 +18550,30 @@ function promoImportProductSaved(savedProduct) {
   });
   promoImportOpenNextMissing();
 }
+function promoImportToggleGroup(index) {
+  if (!promoImport || promoImport.stage !== 'summary' || promoImport.busy) return;
+  const group = promoImport.sheet.groups[index];
+  if (!group || group.created || promoImportExistingPromo(group, promoImport.sheet)) return;
+  group.excluded = !group.excluded;
+  if (currentView === 'promos') renderPromos();
+}
 async function promoImportCreateAll() {
   if (!promoImport || promoImport.stage !== 'summary' || promoImport.busy) return;
   const sheet = promoImport.sheet;
-  if ((promoImport.missing || []).some(m => !m.done) || sheet.groups.some(g => (g.productIds || []).some(id => !products.some(p => p.id === id)))) {
+  const selectedGroups = sheet.groups.filter(group => !group.excluded);
+  if (!selectedGroups.length) { showToast('לא נבחרו מבצעים להוספה', null, null, 2800); return; }
+  if ((promoImport.missing || []).some(m => !m.done) || selectedGroups.some(g => (g.productIds || []).some(id => !products.some(p => p.id === id)))) {
     showToast('יש מוצר שעדיין לא שויך או הוסר מהמאגר — בדוק את ההתאמות לפני פתיחה', null, null, 3600); return;
   }
-  if (sheet.groups.some(group => { const d = promoImportGroupDates(group, sheet); return !d.from || !d.to; })) {
+  if (selectedGroups.some(group => { const d = promoImportGroupDates(group, sheet); return !d.from || !d.to; })) {
     showToast('הדף לא כלל תאריכים ברורים — פתח את המבצעים ידנית או שלח את הקובץ המקורי', null, null, 3600); return;
   }
   promoImport.busy = true;
   renderPromos();
-  let created = 0, skipped = 0, failed = 0;
-  for (const group of sheet.groups) {
+  let created = 0, skipped = sheet.groups.length - selectedGroups.length, failed = 0;
+  for (const group of selectedGroups) {
     if (!group.productIds.length) { skipped++; continue; }
-    if (promoImportExistingPromo(group, sheet)) { skipped++; continue; }
+    if (group.created || promoImportExistingPromo(group, sheet)) { skipped++; continue; }
     const dates = promoImportGroupDates(group, sheet);
     const newId = makeOperationId('promo');
     const data = {
@@ -18554,26 +18623,35 @@ function promoImportHtml() {
       '<div class="font-black text-amber-900">בחר מוצר למבצע · נשארו ' + left + '</div>' +
       '<div class="font-black text-slate-800 mt-2">בדף: ' + htmlEscape(next.name) + '</div>' +
       '<div class="text-sm text-slate-600 mb-3">מחירון ₪' + fmtMoney(next.price) + ' · אין ברקוד ברור בדף</div>' +
-      '<input data-role="promo-import-name-search" type="search" placeholder="חיפוש במוצרים הקיימים" class="w-full rounded-xl border border-slate-300 p-3 mb-3" aria-label="חיפוש מוצר למבצע">' +
-      '<div id="promoNameOptions">' + promoImportNameOptionsHtml(next, '') + '</div>' +
-      '<button data-role="promo-import-name-skip" class="btn-tap w-full rounded-xl border border-slate-300 bg-white p-3 font-bold">דלג על המוצר הזה</button>' +
+      '<input data-role="promo-import-name-search" type="search" value="' + htmlEscape(st.nameQuery || '') + '" placeholder="חיפוש במוצרים הקיימים" class="w-full rounded-xl border border-slate-300 p-3 mb-3" aria-label="חיפוש מוצר למבצע">' +
+      '<div id="promoNameOptions">' + promoImportNameOptionsHtml(next, st.nameQuery || '') + '</div>' +
+      '<button data-role="promo-import-name-create" class="btn-tap w-full rounded-xl bg-blue-600 text-white p-3 font-bold mb-2">הוסף מוצר חדש למאגר ושייך למבצע</button>' +
+      '<div class="text-xs text-slate-500 mb-2">בהוספת מוצר חדש יש לסרוק או להזין את הברקוד מהאריזה.</div>' +
+      '<button data-role="promo-import-name-skip" class="btn-tap w-full rounded-xl border border-slate-300 bg-white p-3 font-bold">לא להוסיף את המוצר למבצע</button>' +
       '<button data-role="promo-import-close" class="btn-tap w-full text-slate-600 py-2 mt-1 text-sm">בטל ייבוא</button></div>';
   }
   const sheet = st.sheet;
   const mismatches = promoImportPriceMismatches(sheet);
   const audit = st.audit || {};
-  const rows = sheet.groups.map(group => {
+  const selectedCount = sheet.groups.filter(group => !group.excluded && !group.created && !promoImportExistingPromo(group, sheet) && group.productIds.length).length;
+  const rows = sheet.groups.map((group, index) => {
     const existing = promoImportExistingPromo(group, sheet);
     const dates = promoImportGroupDates(group, sheet);
-    const badge = group.created ? '<span class="text-emerald-600 font-black text-[10px]">נפתח ✓</span>'
+    const badge = group.excluded ? '<span class="text-slate-500 font-black text-[10px]">לא יתווסף</span>' : group.created ? '<span class="text-emerald-600 font-black text-[10px]">נפתח ✓</span>'
       : (existing ? '<span class="text-slate-400 font-black text-[10px]">כבר קיים</span>'
         : (!group.productIds.length ? '<span class="text-rose-500 font-black text-[10px]">אין מוצרים משויכים</span>' : ''));
     // תוקף חריג מוצג על הקבוצה עצמה — מבצע שמתחיל באמצע החודש אסור שייראה
     // כמו כל השאר, אחרת ההערה שאושרה נעלמת מהעין ברגע שהמסך נסגר.
     const dateNote = group.dated ? '<span class="text-[10px] font-black text-violet-700 bg-violet-50 border border-violet-200 rounded px-1.5 py-0.5 mr-1">' + htmlEscape(dates.from) + ' → ' + htmlEscape(dates.to) + '</span>' : '';
-    return '<div class="flex items-center justify-between gap-2 border-b border-slate-100 py-1.5">' +
+    const toggle = !existing && !group.created && group.productIds.length
+      ? '<button data-role="promo-import-group-toggle" data-id="' + index + '" aria-pressed="' + !!group.excluded + '" class="btn-tap rounded-lg border border-slate-300 bg-white px-2 py-1.5 text-xs font-bold text-slate-600 mt-1"' + (st.busy ? ' disabled' : '') + '>' + (group.excluded ? 'כן להוסיף את המבצע' : 'לא להוסיף את המבצע') + '</button>' : '';
+    const names = (group.products || []).filter(item => item.productId && !item.skipped).map(item => {
+      const p = products.find(p => p.id === item.productId); return p ? p.name : item.name;
+    });
+    return '<div class="border-b border-slate-100 py-2"><div class="flex items-center justify-between gap-2">' +
       '<div class="min-w-0"><div class="text-sm font-black text-slate-800">' + htmlEscape(group.name) + ' · ' + group.discountPct + '%' + dateNote + '</div>' +
-      '<div class="text-[10px] font-bold text-slate-500">' + group.productIds.length + ' מוצרים' + (group.packUnits >= 2 ? ' · מינימום ' + group.packUnits + ' יח׳' : '') + (group.unitPriceExVat ? ' · ₪' + fmtMoney(group.unitPriceExVat) : '') + '</div></div>' + badge + '</div>';
+      '<div class="text-[10px] font-bold text-slate-500">' + group.productIds.length + ' מוצרים' + (group.packUnits >= 2 ? ' · מינימום ' + group.packUnits + ' יח׳' : '') + (group.unitPriceExVat ? ' · ₪' + fmtMoney(group.unitPriceExVat) : '') + '</div></div>' + badge + '</div>' +
+      '<div class="text-xs text-slate-600 mt-1">' + names.map(htmlEscape).join(' · ') + '</div>' + toggle + '</div>';
   }).join('');
   // מחלקות מלאות ולא מורכבות ממחרוזות: כך נעשה בכל הקובץ, וכך הן שורדות גם
   // אם Tailwind יפסיק להיבנות בזמן ריצה מה-CDN.
@@ -18606,7 +18684,7 @@ function promoImportHtml() {
     block('slate', 'fa-circle-info', 'הערות הקריאה החוזרת', audit.warnings || []) +
     (mismatches.length ? '<div class="rounded-xl bg-amber-50 border border-amber-300 p-2 mt-2 text-[11px] font-bold text-amber-900"><i class="fa-solid fa-triangle-exclamation"></i> מחירים שונים מהמאגר: ' + mismatches.map(m => htmlEscape(m.name) + ' (מאגר ₪' + fmtMoney(m.catalog) + ' / דף ₪' + fmtMoney(m.sheet) + ')').join(' · ') + '</div>' : '') +
     '<div class="mt-1">' + rows + '</div>' +
-    '<button data-role="promo-import-create" class="btn-tap w-full bg-violet-600 text-white rounded-xl py-3 font-black mt-2"' + (st.busy ? ' disabled' : '') + '>' + (st.busy ? '<i class="fa-solid fa-spinner fa-spin"></i> פותח…' : '<i class="fa-solid fa-check-double"></i> פתח את כל המבצעים') + '</button>' +
+    '<button data-role="promo-import-create" class="btn-tap w-full bg-violet-600 text-white rounded-xl py-3 font-black mt-2"' + (st.busy || !selectedCount ? ' disabled' : '') + '>' + (st.busy ? '<i class="fa-solid fa-spinner fa-spin"></i> פותח…' : (selectedCount ? '<i class="fa-solid fa-check-double"></i> פתח ' + selectedCount + ' מבצעים שנבחרו' : 'אין מבצעים שנבחרו להוספה')) + '</button>' +
     '<button data-role="promo-import-close" class="btn-tap w-full bg-white border border-slate-300 text-slate-600 rounded-xl py-2 font-black text-xs mt-2">בטל</button></div>';
 }
 function promoImportPick() {
@@ -20803,6 +20881,7 @@ app.addEventListener('input', (e) => {
   if (['rcNoteInput', 'rcNoteLines'].includes(t.id)) { rememberReceiptManualInput(); saveReceiptDraft(); return; }
   const role = t.getAttribute && t.getAttribute('data-role');
   if (role === 'promo-import-name-search' && promoImport && promoImport.stage === 'matching') {
+    promoImport.nameQuery = t.value;
     const next = promoImport.missing.find(m => !m.done);
     const box = $('promoNameOptions');
     if (next && box) box.innerHTML = promoImportNameOptionsHtml(next, t.value);
@@ -21077,6 +21156,8 @@ app.addEventListener('click', (e) => {
   if (role === 'promo-import-next') { promoImportOpenNextMissing(); return; }
   if (role === 'promo-import-name-pick') { promoImportResolveName(id); return; }
   if (role === 'promo-import-name-skip') { promoImportResolveName(null); return; }
+  if (role === 'promo-import-name-create') { promoImportCreateMissingName(); return; }
+  if (role === 'promo-import-group-toggle') { promoImportToggleGroup(Number(id)); return; }
   if (role === 'promo-import-create') { promoImportCreateAll(); return; }
   if (role === 'promo-import-close') { promoImport = null; renderPromos(); return; }
   if (role === 'ai-analyze-copy') { const text = aiAnalyzeClaimsPlainText(); if (!text) return; if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(text).then(() => showToast('הטענות הועתקו', null, null, 2200)).catch(() => showToast('ההעתקה נכשלה', null, null, 2200)); else showToast('ההעתקה אינה נתמכת בדפדפן הזה', null, null, 2600); return; }
