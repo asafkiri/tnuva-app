@@ -453,7 +453,7 @@ test('a code disagreement on a row whose printed price contradicts the catalog s
   assert.equal(JSON.parse(open).length, 1, 'an unconfirmed price cannot settle an identity');
 });
 
-test('a date the photo did not carry falls back to today, says so, and stays editable', async () => {
+test('a date the photo did not carry defaults to today in a collapsed editable field', async () => {
   const c = await scanned(paperWith({ docDate: null }));
   const doc = JSON.parse(c.run('JSON.stringify(receiptPriceAudit().documents[0])'));
   assert.equal(doc.date, today);
@@ -461,7 +461,9 @@ test('a date the photo did not carry falls back to today, says so, and stays edi
   // התאריך המונח אינו חוסם שורות: המחירים נבדקים, והמבצעים נשפטים לפי היום.
   assert.equal(c.run("JSON.stringify(receiptPriceAudit().rows.filter(r => r.reason === 'חסר תאריך תעודה לבדיקת תוקף המבצע').length)"), '0');
   const view = html(c);
-  assert.match(view, /התאריך לא נקרא מהנייר. הבדיקה מניחה את היום/);
+  assert.doesNotMatch(view, /התאריך לא נקרא מהנייר|הבדיקה מניחה את היום/);
+  assert.match(view, /<details data-price-date><summary/);
+  assert.doesNotMatch(view, /<details data-price-date open/);
   assert.match(view, /data-role="price-doc-date"/);
   // שינוי ידני מפסיק להיות הנחה ומחושב מחדש מיד.
   c.run("priceAuditSetDate(0, '2026-09-10')");

@@ -737,7 +737,7 @@ let receiptDupConfirmed = false; // אישור שמירה למרות חשד לכ
 const RECEIPT_DRAFT_KEY = 'tn_receipt_draft';
 let receivingDigitsMissTimer = null;
 let receivingDigitsMissNotified = '';
-const APP_VERSION = '128'; // v128: חיפוש מוצר לשורת תעודה גם בלי מוצר פיזי לסריקה
+const APP_VERSION = '129'; // v129: חסימות בדיקת מבצעים ניתנות לטיפול ותאריך היום מקופל
 // גרסה 73: מוצר בלי מחיר קופה — חלון הכמות מציג מיד את העלות ליח׳ (ללא מע״מ) ופותח שדה להקלדת המחיר שעובר בקופה, בלי לנדוד למסך המחירים
 // v40: תג גרסה קבוע בפינת המסך — לדעת בשנייה איזו גרסה באמת רצה על המכשיר
 // (עוזר במיוחד מול מטמון ה-PWA). pointer-events:none — לעולם לא חוסם מגע.
@@ -9907,8 +9907,8 @@ function priceAuditDocumentDay(doc, source) {
   return priceAuditDate((doc && doc.__priceConfirmedDate) || (paper && paper.docDate) || (typeof receiptDocDate !== 'undefined' && receiptDocDate));
 }
 // v98: תאריך שלא נקרא מהנייר עצר עד כאן את כל בדיקת המחירים וביקש הקלדה.
-// תעודה נקלטת ביום שהיא מגיעה, ולכן ההנחה היא היום — אבל היא נאמרת כהנחה,
-// מוצגת פתוחה לעריכה, ולעולם אינה מתחזה לתאריך שנקרא מהנייר.
+// תעודה נקלטת ביום שהיא מגיעה, ולכן ברירת המחדל היא היום. במקור השמור לא
+// נכתב תאריך שלא נקרא; בשורת התאריך המקופלת תמיד אפשר לבחור תאריך אחר.
 function priceAuditEffectiveDay(doc, source) {
   const read = priceAuditDocumentDay(doc, source);
   return { day: read || priceAuditDate(todayStr()), assumed: !read };
@@ -9964,13 +9964,20 @@ function priceAuditPromoSubsets(values, targetCents, rowsPerValue) {
 // לא ידוע — ולכן היא חוסמת את ההרכב כולו, ולא רק את עצמה.
 function priceAuditSummaryPlan(entries, discount) {
   const money = n => '₪' + fmtMoney(n), tail = '; אין מספיק ראיות לשיוך ההנחה לכל מוצר';
+  const blockers = entries.filter(e => e.row.capability !== 'checkable').map(e => ({ sourceIndex: e.row.sourceIndex, name: e.row.name, reason: e.row.reason }));
+  // פירוט למשתמש בלבד. כל הנחת שורה מעוגלת בנפרד, כפי שתנובה מסכמת אותה.
+  const knownTotal = r2(entries.reduce((sum, e) => {
+    const r = e.row;
+    if (r.capability !== 'checkable' || !r.promo || !(r.quantity > 0) || r.comparisonPrice == null) return sum;
+    return sum + r2(Math.max(0, r.comparisonPrice - discountedUnitPrice(r.catalogBasePrice, r.promo.pct)) * r.quantity);
+  }, 0));
   // הסיבה המלאה נכתבת פעם אחת ברמת התעודה. בשורה עצמה נשארת שורה קצרה, כדי
   // שכרטיס המוצר לא יחזור על אותו משפט ארוך בכל שורה בתעודה.
-  const blocked = text => ({ ok: false, status: text + tail, rowReason: 'הנחת המבצע שבסיכום התעודה לא שויכה לשורות' + tail });
+  const blocked = text => ({ ok: false, knownTotal, blockers, status: text + tail, rowReason: 'הנחת המבצע שבסיכום התעודה עדיין לא שויכה — ראה את הנושאים להשלמה למעלה' });
   const applied = [], members = [];
   for (const e of entries) {
     const row = e.row;
-    if (row.capability !== 'checkable') return blocked('לא כל שורות התעודה ניתנות לבדיקה');
+    if (row.capability !== 'checkable') return blocked('נדרש להשלים בדיקה של ' + blockers.length + ' שורות לפני שיוך הנחת המבצעים');
     const gross = row.comparisonPrice, base = row.catalogBasePrice, qty = row.quantity;
     if (gross == null || !(base > 0) || !(qty > 0)) return blocked('חסר מחיר או כמות בשורה');
     const expected = row.promo ? discountedUnitPrice(base, row.promo.pct) : base;
@@ -10001,7 +10008,7 @@ function priceAuditSummaryPlan(entries, discount) {
   const note = members.length === 1 ? 'שורת מבצע יחידה; שאר השורות תואמות' : 'לפי הרכב הנחות המבצע בתעודה';
   members.forEach((m, i) => { if (picked.has(i)) applied.push({ entry: m.entry, share: m.cents / 100, note }); else missed.push(m); });
   const names = missed.map(m => m.entry.row.name).join(', ');
-  return { ok: true, applied, missed: missed.map(m => m.entry), expectedTotal,
+  return { ok: true, applied, missed: missed.map(m => m.entry), expectedTotal, knownTotal, blockers: [],
     status: missed.length
       ? 'הנחת הסיכום ' + money(discount) + ' מכסה ' + (members.length - missed.length) + ' מתוך ' + members.length
         + ' שורות המבצע בתעודה; המבצע לא הופעל ב' + (missed.length === 1 ? 'שורה: ' : 'שורות: ') + names + ' (' + money(expectedTotal - discount) + ')'
@@ -10036,7 +10043,7 @@ function receiptPriceAudit() {
         catalogBasePrice: product ? priceAuditNumber(PRICE_AUDIT_SUPPLIER === 'berman' ? product.listPrice : product.price) : null,
         regularDiscountPct: PRICE_AUDIT_SUPPLIER === 'berman' && product ? priceAuditNumber(product.discountPct) : 0,
         promo: null, expectedOptions: [], comparisonPrice: null, comparisonBasis: 'ללא מע״מ; פיקדון נבדק בשורה נפרדת',
-        capability: 'checkable', result: null, reason: '', monthlyStatus: null };
+        capability: 'checkable', result: null, reason: '', monthlyStatus: null, printedPromo: raw.promoStar === true };
       if (!source) { row.capability = 'partial'; row.reason = 'חסר מקור שמור למחיר מהנייר; המחיר המותאם אינו ראיה למחיר המקורי'; }
       else if (!product) { row.capability = 'unidentified'; row.reason = 'המוצר לא זוהה בוודאות לפי קוד או ברקוד; יש לאשר את ההתאמה'; }
       else if (!(row.catalogBasePrice > 0)) { row.capability = 'missing_catalog_price'; row.reason = 'חסר מחיר במאגר'; }
@@ -10059,6 +10066,7 @@ function receiptPriceAudit() {
       if (row.capability !== 'checkable') return;
       const active = promos.filter(pr => pr && Array.isArray(pr.productIds) && pr.productIds.includes(product.id) && promoActive(pr, day)
         && (PRICE_AUDIT_SUPPLIER === 'berman' ? (promoFixedPrice(pr) > 0 || pr.type !== 'monthEnd') : pr.type !== 'monthEnd'));
+      row.hasActivePromo = active.length > 0;
       if (active.some(pr => pr.minUnit === 'carton' && !(priceAuditNumber(pr.cartonSize) > 0))) { row.capability = 'partial'; row.reason = 'חסר מספר יחידות בארגז לבדיקת תנאי המבצע'; return; }
       const triggered = active.filter(pr => entries.reduce((sum, x) => sum + (x.product && pr.productIds.includes(x.product.id) ? (x.row.quantity || 0) : 0), 0) >= promoMinUnitsP(pr));
       if (triggered.length > 1) { row.capability = 'partial'; row.reason = 'יותר ממבצע אחד בתוקף מתאים למוצר; נדרשת הכרעה במאגר'; return; }
@@ -10090,6 +10098,7 @@ function receiptPriceAudit() {
       }
       if (!allComplete) { row.capability = 'partial'; row.reason = 'הפענוח חלקי או חסר עמוד/מסמך; לא ניתן לאשר מחיר סופי או להסיק שמבצע חסר'; }
     });
+    entries.forEach(e => { e.row.basePriceCheckable = e.row.capability === 'checkable' && e.row.originalUnitPrice != null; });
     if (PRICE_AUDIT_SUPPLIER !== 'berman' && source) {
       const discount = Math.abs(priceAuditNumber(source.promoDiscountExVat ?? source.documentDiscountExVat) || 0);
       const sum = rawRows.reduce((n, r) => n + (priceAuditNumber(r.lineTotalExVat) || 0), 0), subtotal = priceAuditNumber(source.subtotalExVat);
@@ -10099,6 +10108,10 @@ function receiptPriceAudit() {
       if (discount > 0 && separate) {
         const plan = priceAuditSummaryPlan(entries, discount);
         info.summaryStatus = plan.status;
+        info.summaryPending = !plan.ok;
+        info.knownSummaryDiscount = plan.knownTotal;
+        info.summaryRemainder = r2(discount - plan.knownTotal);
+        info.summaryBlockers = plan.blockers;
         if (plan.ok) {
           plan.applied.forEach(({ entry, share, note }) => {
             const r = entry.row;
@@ -10181,6 +10194,46 @@ function receiptPriceAuditAutoOnly(a, pending) {
 }
 // כרטיסי ההחלטה נפתחים רק במסך הקליטה, כי שם יושב מאזין הלחיצות ושם אפשר
 // לסרוק. חלון הסיכום מקבל שורה אחת שמפנה לשם, כדי שלא יאשרו קליטה בלי לדעת.
+function receiptPriceSummaryHelpHtml(a, withActions) {
+  return a.documents.filter(d => d.summaryPending).map(d => {
+    const rows = a.rows.filter(r => Number(r.documentIndex) === Number(d.index));
+    const missingPromos = rows.filter(r => r.basePriceCheckable && r.printedPromo && r.productId && !r.hasActivePromo);
+    const otherBlockers = (d.summaryBlockers || []).filter(b => !rows.some(r => r.sourceIndex === b.sourceIndex && r.capability === 'unidentified'));
+    return '<div data-price-summary-help class="rounded-xl bg-amber-50 border border-amber-200 p-3 mt-3">' +
+      '<div class="font-black text-amber-900">מה נשאר להשלמת בדיקת המבצעים?</div>' +
+      (rows.some(r => r.capability === 'unidentified') ? '<div class="mt-1 text-xs font-bold">נדרש אישור זיהוי למוצר שמופיע בכרטיס שמעל הבדיקה.</div>' : '') +
+      otherBlockers.map(b => '<div class="mt-1 text-xs font-bold">' + htmlEscape(b.name) + ': ' + htmlEscape(b.reason) + '</div>').join('') +
+      '<div class="mt-2 text-xs">הנחת המבצעים בתעודה: <b>₪' + fmtMoney(d.summaryDiscount) + '</b></div>' +
+      '<div class="text-xs">הנחות מזוהות במאגר, בעיגול כל שורה: <b>₪' + fmtMoney(d.knownSummaryDiscount) + '</b></div>' +
+      '<div class="text-xs font-bold">' + (d.summaryRemainder >= 0 ? 'הנחה שעדיין צריך להסביר: ₪' : 'ההנחות במאגר גבוהות מההנחה בתעודה ב־₪') + fmtMoney(Math.abs(d.summaryRemainder)) + '</div>' +
+      missingPromos.map(r => '<div class="border-t border-amber-200 pt-2 mt-2 text-xs">' +
+        '<div class="font-black">' + htmlEscape(r.name) + '</div>' +
+        '<div>סומן כמבצע בתעודה, אך אין לו מבצע בתוקף במאגר. בדוק את אחוז ההנחה ואת התאריכים.</div>' +
+        (withActions ? receiptRowActionButton('price-add-promo', r, 'השלם מבצע למוצר', 'bg-amber-600 text-white w-full mt-2')
+          : '<div class="font-bold mt-1">חזור למסך הקליטה להשלמת המבצע.</div>') + '</div>').join('') +
+      (!missingPromos.length ? '<div class="text-xs mt-2">' + htmlEscape(d.summaryStatus) + '</div>' : '') +
+      '</div>';
+  }).join('');
+}
+function receiptOpenPricePromo(documentIndex, sourceIndex) {
+  const a = receiptPriceAudit();
+  const row = a.rows.find(r => Number(r.documentIndex) === Number(documentIndex) && Number(r.sourceIndex) === Number(sourceIndex));
+  const doc = a.documents.find(d => Number(d.index) === Number(documentIndex));
+  if (!row || !doc || !doc.summaryPending || !row.productId || !row.printedPromo || row.hasActivePromo || !row.basePriceCheckable) {
+    showToast('מצב השורה השתנה — בדוק שוב את רשימת המבצעים', null, null, 3200); return false;
+  }
+  // הצעה מחושבת נשארת הצעה. אין שמירה עד שהמשתמש בודק ושומר בעורך.
+  const ev = aiEvaluateInvoiceScan(aiScanResponse);
+  const gap = (ev.findings || []).find(f => f.type === 'promo_missing_catalog' && f.productId === row.productId);
+  promoEdit = { id: null, name: row.name, pct: gap ? gap.pct : '', start: row.date, end: row.date,
+    minQty: 1, minUnit: 'unit', cartonSize: null, productIds: [row.productId], type: 'receipt',
+    returnView: currentView, receiptNotice: (gap ? 'אחוז ההנחה המוצע (' + gap.pct + '%) חושב מהפרש ההנחות בתעודה. ' : '') +
+      'בדוק מול דף המבצעים לפני השמירה. התאריכים מוגדרים ליום התעודה וניתנים לשינוי.' };
+  promoSearch = '';
+  saveReceiptDraft();
+  setView('promoEdit');
+  return true;
+}
 function receiptPriceAuditHtml(report, options) {
   const a = report || receiptPriceAudit();
   if (a.state === 'empty') return '';
@@ -10195,7 +10248,9 @@ function receiptPriceAuditHtml(report, options) {
   const differences = a.rows.filter(r => r.result === 'difference'), missing = a.rows.filter(r => r.capability !== 'checkable');
   const money = n => n == null ? 'לא זמין' : '₪' + fmtUnitPrice(n, true);
   const autoOnly = receiptPriceAuditAutoOnly(a, pending);
-  const title = differences.length ? 'המחיר בתעודה שונה מהמחיר שבמאגר' : (a.complete ? 'המחירים שנבדקו תואמים' : autoOnly ? 'אין פער מחיר — אין צורך בפעולה' : 'בדיקת המחירים אינה מלאה');
+  const summaryPending = a.documents.some(d => d.summaryPending);
+  const baseMatches = a.rows.filter(r => r.basePriceCheckable && r.printedVsCatalog && !r.printedVsCatalog.off);
+  const title = differences.length ? 'המחיר בתעודה שונה מהמחיר שבמאגר' : summaryPending ? 'בדיקת הנחת המבצעים ממתינה להשלמה' : (a.complete ? 'המחירים שנבדקו תואמים' : autoOnly ? 'אין פער מחיר — אין צורך בפעולה' : 'בדיקת המחירים אינה מלאה');
   const cards = a.rows.map(r => { const auto = receiptAutoMatchedProduct(r); return '<article data-price-row="' + htmlEscape(r.id) + '" data-price-result="' + htmlEscape(r.result || r.capability) + '" class="border-t border-slate-200 py-3">' +
     // שורה ששויכה אוטומטית מוצגת בשם המוצר ששויך; מה שנקרא בנייר נשאר לעיון.
     '<div class="font-black text-base">' + htmlEscape(auto ? auto.product.name : r.name) + '</div>' +
@@ -10210,14 +10265,15 @@ function receiptPriceAuditHtml(report, options) {
     r.expectedOptions.map(o => '<div class="rounded-lg bg-slate-50 p-2 mt-2"><div>מחיר צפוי · ' + htmlEscape(o.label) + ': <b>' + money(o.price) + '</b></div>' +
       (r.comparisonPrice != null ? '<div>מחיר בתעודה באותו בסיס: <b>' + money(r.comparisonPrice) + '</b></div>' : '') +
       (r.result === 'difference' ? '<div>הפרש ליחידה: <b>' + money(o.unitDifference) + '</b> · הפרש לשורה: <b>' + money(o.lineDifference) + '</b></div>' : '') + '</div>').join('') +
-    '<div class="font-bold mt-2">' + htmlEscape(auto ? auto.reason : r.reason) + '</div>' +
+    '<div class="font-bold mt-2">' + htmlEscape(auto && a.documents.some(d => d.index === r.documentIndex && d.summaryPending)
+      ? 'נדרש אישור זיהוי בכרטיס שמעל הבדיקה כדי לשייך את הנחת המבצעים.' : auto ? auto.reason : r.reason) + '</div>' +
     (r.monthlyStatus ? '<div class="text-xs bg-blue-50 p-2 mt-2">' + htmlEscape(r.monthlyStatus) + '</div>' : '') + '</article>'; }).join('');
   // A review with nothing to act on folds into a single line. Open, it filled the
   // receiving screen with notices and pushed the scan button below the fold. A
   // priced gap, or a row that could not be checked, still opens by itself —
   // unless every such row was matched with the printed price and nothing waits.
   const openPanel = differences.length > 0 || (!a.complete && !autoOnly);
-  const badge = differences.length ? differences.length + '/' + a.rows.length + ' עם פער'
+  const badge = summaryPending ? baseMatches.length + '/' + a.rows.length + ' מחירי בסיס תואמים' : differences.length ? differences.length + '/' + a.rows.length + ' עם פער'
     : (missing.length && !autoOnly ? missing.length + '/' + a.rows.length + ' לא נבדקו' : a.rows.length + ' שורות');
   const panelShell = '<section data-price-audit class="rounded-xl ' + (openPanel ? 'border-2 border-amber-300' : 'border border-emerald-200')
     + ' bg-white p-2.5 mb-2 text-sm" dir="rtl" aria-label="בדיקת מחירים ומבצעים">';
@@ -10225,17 +10281,16 @@ function receiptPriceAuditHtml(report, options) {
     '><summary class="flex items-center justify-between gap-2 cursor-pointer font-black ' +
     (differences.length ? 'text-rose-800' : openPanel ? 'text-amber-900' : 'text-emerald-800') + '">' +
     '<span role="status">' + title + ' · ' + badge + '</span><i class="fa-solid fa-chevron-down hist-chevron shrink-0"></i></summary>' +
-    (autoOnly ? '<div class="mt-1">0 שורות עם פער · ' + (a.rows.length - missing.length) + ' שורות נבדקו מול המאגר · ' +
+    (summaryPending ? '<div class="mt-1">מחירי הבסיס והנחת המבצעים נבדקים בנפרד. האישורים שכבר נתת נשמרו; הנושאים שנותרו מוצגים כאן.</div>' : autoOnly ? '<div class="mt-1">0 שורות עם פער · ' + (a.rows.length - missing.length) + ' שורות נבדקו מול המאגר · ' +
         (missing.length === 1 ? 'שורה אחת שויכה למוצר בעזרת המחיר המודפס. המחיר בה זהה' : missing.length + ' שורות שויכו למוצר בעזרת המחיר המודפס. המחיר בהן זהה') +
         ' למחיר המאגר ואין עליו מבצע, אבל אינו נספר כבדיקה נפרדת — אין צורך בפעולה.</div>'
       : '<div class="mt-1">' + differences.length + ' שורות עם פער · ' + missing.length + ' שורות שלא ניתן לבדוק</div>') +
     '<div class="text-xs text-slate-600 mt-1">ללא מע״מ · אותה יחידת מוצר · פיקדון בנפרד · לפי הכמות בנייר. הספירה אינה משפיעה על בדיקה זו.</div>' +
-    // תאריך שנקרא מהנייר מקופל; תאריך שהונח פתוח, אומר שהוא הנחה, ומזמין שינוי.
-    a.documents.map(d => ((d.dateAssumed
-      ? '<div class="mt-2 rounded-lg bg-amber-50 border border-amber-200 p-2 text-xs font-bold text-amber-900">התאריך לא נקרא מהנייר. הבדיקה מניחה את היום, ' + htmlEscape(d.date) + ' — שנה אם התעודה מתאריך אחר.</div>'
-      : '<details><summary class="cursor-pointer mt-2">תאריך התעודה: ' + htmlEscape(d.date) + ' · עריכה</summary>') +
-      '<label class="block mt-2 font-bold">' + (d.dateAssumed ? 'תאריך התעודה ' : 'השלם תאריך לתעודה ') + htmlEscape(d.number || String(d.index + 1)) + '<input type="date" data-role="price-doc-date" data-doc="' + d.index + '" value="' + htmlEscape(d.date || '') + '" class="block w-full border rounded-lg p-2 mt-1" aria-label="תאריך התעודה לבדיקת מחירים"></label>' + (d.dateAssumed ? '' : '</details>')) +
-      (d.summaryDiscount ? '<div class="mt-2 text-xs">הנחה בסיכום תעודה ' + htmlEscape(d.number || String(d.index + 1)) + ': ' + money(d.summaryDiscount) + ' · ' + htmlEscape(d.summaryStatus) + '</div>' : '')).join('') +
+    // תאריך היום הוא ברירת המחדל, וכל תאריך ניתן לעריכה באותה שורה מקופלת.
+    a.documents.map(d => '<details data-price-date><summary class="cursor-pointer mt-2">תאריך התעודה: ' + htmlEscape(d.date) + ' · עריכה</summary>' +
+      '<label class="block mt-2 font-bold">תאריך התעודה ' + htmlEscape(d.number || String(d.index + 1)) + '<input type="date" data-role="price-doc-date" data-doc="' + d.index + '" value="' + htmlEscape(d.date || '') + '" class="block w-full border rounded-lg p-2 mt-1" aria-label="תאריך התעודה לבדיקת מחירים"></label></details>' +
+      (d.summaryDiscount && !d.summaryPending ? '<div class="mt-2 text-xs">הנחה בסיכום תעודה ' + htmlEscape(d.number || String(d.index + 1)) + ': ' + money(d.summaryDiscount) + ' · ' + htmlEscape(d.summaryStatus) + '</div>' : '')).join('') +
+    receiptPriceSummaryHelpHtml(a, withActions) +
     '<details data-price-details><summary class="cursor-pointer font-black py-3">פתח פירוט מחירים ומצבים לבדיקה (' + a.rows.length + ')</summary>' + cards + '</details></details></section>';
 }
 function priceAuditSetDate(index, value) {
@@ -10293,9 +10348,12 @@ function refreshPriceAuditViews() {
 // המשפחות יושבות במקום אחד, כל אחת עם מה שהנייר אומר, מה שהסריקות ראו,
 // וההחלטה שסוגרת אותה. שום החלטה אינה נוגעת במקור הנייר השמור.
 function receiptRowDecisionStamp(row) {
+  const doc = row && receiptScanDoc(row.documentIndex), source = doc && priceAuditSource(doc);
+  const raw = source && source.rows && source.rows[Number(row.sourceIndex)];
   return { unit: row && row.originalUnitPrice != null ? aiMoneyCents(row.originalUnitPrice) : null,
     comparison: row && row.comparisonPrice != null ? aiMoneyCents(row.comparisonPrice) : null,
     catalog: row && row.catalogBasePrice != null ? aiMoneyCents(row.catalogBasePrice) : null,
+    quantity: row ? priceAuditNumber(row.quantity) : null, total: raw ? priceAuditNumber(raw.lineTotalExVat) : null,
     productId: (row && row.productId) || null };
 }
 // החלטה תקפה רק כל עוד המספרים שעליהם ניתנה לא זזו. השתנה המחיר המודפס,
@@ -10304,7 +10362,11 @@ function receiptRowDecision(row) {
   const decision = row && row.id ? receiptRowDecisions[row.id] : null;
   if (!decision || !decision.stamp) return null;
   const now = receiptRowDecisionStamp(row), then = decision.stamp;
-  return now.unit === then.unit && now.comparison === then.comparison && now.catalog === then.catalog
+  // אישור קריאת השורה אינו מתבטל רק כי הושלם מבצע והמחיר המחושב השתנה.
+  // מחיר/כמות/סכום שנקראו אחרת כן מחייבים אישור חדש; תאימות לאישורים ישנים.
+  return now.unit === then.unit && (decision.type === 'row_confirmed' || now.comparison === then.comparison) && now.catalog === then.catalog
+    && (!Object.prototype.hasOwnProperty.call(then, 'quantity') || now.quantity === then.quantity)
+    && (!Object.prototype.hasOwnProperty.call(then, 'total') || now.total === then.total)
     && String(now.productId || '') === String(then.productId || '') ? decision : null;
 }
 function receiptSetRowDecision(row, type, extra) {
@@ -10499,6 +10561,9 @@ function receiptPickRowProduct(documentIndex, sourceIndex, productId) {
   const row = receiptFindAuditRow(documentIndex, sourceIndex);
   const product = (products || []).find(item => String(item.id) === String(productId));
   if (!row || !product) { showToast('המוצר או השורה כבר אינם זמינים — רענן את המסך', null, null, 3400); return false; }
+  if (aiCatalogBarcodeMatches(product.barcode, false).length !== 1) {
+    showToast('למוצר אין ברקוד ייחודי במאגר — בדוק את כרטיס המוצר לפני השיוך', null, null, 3600); return false;
+  }
   const ctx = { documentIndex: Number(documentIndex), sourceIndex: Number(sourceIndex), rowIndex: Number(row.rowIndex),
     code: String(row.code || ''), name: String(row.name || ''), unitPrice: row.originalUnitPrice, quantity: row.quantity };
   return receiptAssignRowProduct(ctx, product, product.barcode, 'picked_from_catalog');
@@ -10542,7 +10607,10 @@ function receiptRowActions(report) {
       if (receiptSamePriceModelDecision(row, dispute)) out.modelSettled += 1;
       else if (userPicked && dispute.fields.some(item => String((item && item.field) || '') === 'code')) out.userSettled += 1;
     }
-    if (receiptRowDecision(row)) { out.decided += 1; return; }
+    const summary = a.documents.find(d => Number(d.index) === Number(row.documentIndex));
+    const identityPending = row.capability === 'unidentified' && mapped && mapped.__tnuvaProductId
+      && summary && summary.summaryPending;
+    if (receiptRowDecision(row) && !identityPending) { out.decided += 1; return; }
     // זהות שאישר המשתמש ושכבר אינה נפתרת במאגר נספרת למטה כשיוך אוטומטי, לא פעמיים.
     if (userPicked && row.capability !== 'unidentified') out.userMatched += 1;
     // v103: "לא זוהה" בבדיקת המחירים פירושו גם זהות שנבחרה בעזרת המחיר (תיקון
@@ -10550,7 +10618,11 @@ function receiptRowActions(report) {
     // מוצר שהשורה שויכה אליו. עד כאן היא הוצגה כ"הקוד שבשורה אינו במאגר"
     // ושלחה את המשתמש לסרוק ארגז שכבר זוהה. שאלה נשאלת רק על שורה בלי מוצר.
     const matched = !!(mapped && mapped.__tnuvaProductId);
-    if (row.capability === 'unidentified' && matched) { out.autoMatched += 1; return; }
+    if (row.capability === 'unidentified' && matched) {
+      if (identityPending) out.unidentified.push({ row, dispute, matchedProduct: (products || []).find(p => p.id === mapped.__tnuvaProductId) || null });
+      else out.autoMatched += 1;
+      return;
+    }
     if (row.capability === 'unidentified') out.unidentified.push({ row, dispute });
     else if (row.result === 'difference' || (row.printedVsCatalog && row.printedVsCatalog.off)) out.priced.push({ row, dispute });
     else if (open) out.disputed.push({ row, dispute: open });
@@ -10613,16 +10685,22 @@ function receiptRowActionsHtml(report) {
     return parts.length ? '<section class="rounded-xl border border-emerald-200 bg-emerald-50 p-2.5 mb-2 text-sm font-bold text-emerald-900" dir="rtl">' +
       htmlEscape(parts.join(' · ')) + '.</section>' : '';
   }
-  const newCards = actions.unidentified.map(({ row, dispute }) => {
+  const newCards = actions.unidentified.map(({ row, dispute, matchedProduct }) => {
     const rival = receiptRivalCandidate(row, dispute);
     return '<article class="rounded-xl border border-violet-200 bg-white p-3 mt-2">' +
-      '<div class="text-[10px] font-black text-violet-700"><i class="fa-solid fa-circle-plus ml-1"></i>הקוד שבשורה אינו במאגר</div>' +
+      '<div class="text-[10px] font-black text-violet-700"><i class="fa-solid fa-circle-plus ml-1"></i>' +
+        (matchedProduct ? 'אשר את זיהוי המוצר להשלמת בדיקת המבצעים' : 'הקוד שבשורה אינו במאגר') + '</div>' +
       receiptRowHeadHtml(row) + receiptRowDisputeHtml(dispute) +
+      (matchedProduct ? '<div class="mt-2 text-xs font-bold text-slate-600">השורה שויכה בעזרת המחיר ל־' + htmlEscape(matchedProduct.name) +
+        '. אישור שלך מאפשר לבדוק גם את הנחת המבצעים.</div>' +
+        '<button data-role="rowfix-pick" data-doc="' + Number(row.documentIndex) + '" data-row="' + Number(row.sourceIndex) +
+        '" data-product="' + htmlEscape(String(matchedProduct.id)) + '" class="btn-tap w-full rounded-lg py-3 px-3 mt-2 text-sm font-black bg-violet-600 text-white">' +
+        'זה ' + htmlEscape(matchedProduct.name) + ' — אשר זיהוי</button>' : '') +
       (rival ? '<div class="mt-2 rounded-lg bg-emerald-50 border border-emerald-200 p-2 text-[11px] font-bold text-emerald-900">' +
         'הקוד של הקריאה השנייה, ' + htmlEscape(rival.code) + ', כן קיים במאגר: <b>' + htmlEscape(rival.product.name) + '</b> — ₪' +
         fmtUnitPrice(rival.product.price, true) + ', בדיוק המחיר שמודפס בשורה.</div>' +
         receiptRowActionButton('rowfix-rival', row, '<i class="fa-solid fa-check ml-1"></i>זה המוצר — שייך את השורה', 'bg-emerald-600 text-white w-full mt-2') : '') +
-      receiptRowCandidatesHtml(row, dispute, !!rival) +
+      (matchedProduct ? '' : receiptRowCandidatesHtml(row, dispute, !!rival)) +
       '<div class="text-[11px] font-bold text-slate-500 mt-2">אפשר לחפש במאגר גם אם המוצר לא הגיע, או לסרוק ברקוד מהמוצר. השיוך אינו מאשר קבלת כמות.</div>' +
       receiptRowActionButton('rowfix-search', row, '<i class="fa-solid fa-magnifying-glass ml-1"></i>חפש לפי שם או ברקוד', 'bg-violet-50 border border-violet-300 text-violet-900 w-full mt-2') +
       '<div class="grid grid-cols-2 gap-2 mt-2">' +
@@ -19918,6 +19996,7 @@ function renderPromoEdit() {
   const esc = s => (s == null ? '' : String(s)).replace(/"/g, '&quot;');
   app.innerHTML =
     '<div class="px-1 py-1 mb-2"><h2 class="font-black text-2xl text-slate-800">' + (isNew ? 'מבצע חדש' : 'עריכת מבצע') + '</h2></div>' +
+    (pe.receiptNotice ? '<div class="rounded-xl border border-amber-200 bg-amber-50 p-3 mb-3 text-sm font-bold text-amber-900">' + htmlEscape(pe.receiptNotice) + '</div>' : '') +
     '<div class="bg-white rounded-2xl border border-slate-200 p-4 shadow-sm space-y-3 mb-3">' +
       '<div><label class="text-[11px] text-slate-400 font-bold block mb-1">סוג מבצע</label>' +
         '<div class="flex bg-slate-100 rounded-xl p-1"><button data-role="pe-type-receipt" id="peTypeReceipt" class="flex-1 py-2.5 rounded-lg text-sm font-black">בתעודה</button><button data-role="pe-type-month" id="peTypeMonth" class="flex-1 py-2.5 rounded-lg text-sm font-black">מרכזת (סוף חודש)</button></div>' +
@@ -20001,11 +20080,12 @@ function togglePromoProduct(pid) {
 }
 async function savePromoEntity() {
   if (!promoEdit) return;
+  const editorContext = { returnView: promoEdit.returnView, receiptNotice: promoEdit.receiptNotice };
   const name = ($('promoName').value || '').trim();
   const pct = parseFloat(($('promoPct').value || '').toString().replace(',', '.'));
   const start = $('promoStart').value || '';
   const end = $('promoEnd').value || '';
-  if (!(pct > 0) || !start || !end) { showToast('מלא אחוז, תאריך התחלה ותאריך סיום', null, null, 2600); return; }
+  if (!(pct > 0 && pct <= 100) || !start || !end) { showToast('מלא אחוז בין 0 ל־100, תאריך התחלה ותאריך סיום', null, null, 2600); return; }
   if (end < start) { showToast('תאריך הסיום חייב להיות אחרי ההתחלה', null, null, 2600); return; }
   const type = (promoType === 'monthEnd') ? 'monthEnd' : 'receipt';
   let qty = 1, minUnit = 'unit', cartonSize = null;
@@ -20017,17 +20097,25 @@ async function savePromoEntity() {
   const productIds = ((promoEdit.productIds) || []).slice();
   if (!productIds.length) { showToast('הוסף לפחות מוצר אחד לסל המבצע', null, null, 2600); return; }
   const data = { name: name || ('מבצע ' + r2(pct) + '%'), pct: r2(pct), start, end, minQty: Math.max(1, qty), minUnit, cartonSize, productIds, type };
-  const id = promoEdit.id;
+  const id = promoEdit.id, savedId = id || makeOperationId('promo');
   promoEdit = null;
   let saved = false;
   if (id) saved = await runCloudTask('save promo', { op: 'update', path: dataPath('promos', id), data, operationId: makeOperationId('promo_save') });
   else {
-    const newId = makeOperationId('promo');
+    const newId = savedId;
     data.operationId = newId;
     saved = await runCloudTask('create promo', { op: 'set', path: dataPath('promos', newId), data, operationId: newId });
   }
-  if (!saved) { promoEdit = { id, ...data, productIds }; return; }
-  setView('promos');
+  if (!saved) { promoEdit = { id, ...data, productIds, ...editorContext }; return; }
+  if (editorContext.returnView) {
+    const index = promos.findIndex(p => p.id === savedId);
+    if (index >= 0) promos[index] = { ...promos[index], ...data };
+    else promos.push({ id: savedId, ...data });
+    reconcileRefreshPrices();
+    if (aiScanResponse) aiScanEvaluation = aiEvaluateInvoiceScan(aiScanResponse);
+    saveReceiptDraft();
+  }
+  setView(editorContext.returnView || 'promos');
   showToast('המבצע נשמר', null, null, 1800);
 }
 function deletePromoEntity() {
@@ -21324,6 +21412,7 @@ app.addEventListener('click', (e) => {
   if (role === 'ai-confirm-barcode-suggestion') { aiConfirmBarcodeSuggestion(parseInt(t.dataset.doc, 10), parseInt(t.dataset.row, 10)); return; }
   if (role === 'ai-confirm-name-candidate') { aiConfirmNameCandidate(parseInt(t.dataset.doc, 10), parseInt(t.dataset.row, 10), t.dataset.candidateId); return; }
   if (role === 'ai-add-unknown-product') { aiOpenUnknownProduct(parseInt(t.dataset.doc, 10), parseInt(t.dataset.row, 10)); return; }
+  if (role === 'price-add-promo') { receiptOpenPricePromo(parseInt(t.dataset.doc, 10), parseInt(t.dataset.row, 10)); return; }
   if (role === 'rowfix-search') { receiptOpenRowProductSearch(parseInt(t.dataset.doc, 10), parseInt(t.dataset.row, 10)); return; }
   if (role === 'rowfix-scan') { receiptOpenRowProductScan(parseInt(t.dataset.doc, 10), parseInt(t.dataset.row, 10)); return; }
   if (role === 'rowfix-rival') { receiptAdoptRivalCode(parseInt(t.dataset.doc, 10), parseInt(t.dataset.row, 10)); return; }
@@ -21776,7 +21865,7 @@ app.addEventListener('click', (e) => {
   else if (role === 'pe-type-receipt') setPromoType('receipt');
   else if (role === 'pe-type-month') setPromoType('monthEnd');
   else if (role === 'pe-save') savePromoEntity();
-  else if (role === 'pe-cancel') { promoEdit = null; setView('promos'); }
+  else if (role === 'pe-cancel') { const returnView = promoEdit && promoEdit.returnView; promoEdit = null; setView(returnView || 'promos'); }
   else if (role === 'pe-delete') deletePromoEntity();
   else if (role === 'health-refresh') renderHealth();
   else if (role === 'health-retry-cloud') retryCloudFailedWrites().then(() => {
