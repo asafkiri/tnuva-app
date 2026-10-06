@@ -281,7 +281,6 @@ async function appliedWithAllowance() {
 for (const [label, edit] of [
   ['typing a paper quantity', `reconcileSetNoteLive('barcode_${MILK}', String(reconcileData.find(l => l.productId === 'barcode_${MILK}').noteQty))`],
   ['stepping a paper quantity', `reconcileStepNote('barcode_${MILK}', 0)`],
-  ['reopening the comparison screen', 'openReconcile()'],
   ['a detective solution', `detectiveApplyResolvedResult({solutions: [{components: [{allocations: [{moves: [{productId: 'barcode_${MILK}', delta: 1, unit: 5.36}]}]}]}]}, 0, 'x')`],
 ]) test('the promo rounding allowance is dropped by ' + label, async () => {
   const r = await appliedWithAllowance();
@@ -296,4 +295,12 @@ test('a rolled-back apply restores the allowance that was there before', async (
   r.click('ai-apply');
   assert.match(r.run('aiScanError'), /ההחלה לא נסגרה/);
   assert.deepEqual(json(r, 'reconcilePromoRoundingGap'), {cents: 7, rows: 9});
+});
+
+test('reopening unchanged comparison preserves the verified rounding allowance with its rows', async () => {
+  const r = await appliedWithAllowance();
+  const before = json(r, 'reconcileData');
+  r.run('openReconcile()');
+  assert.deepEqual(json(r,'reconcileData'),before);
+  assert.deepEqual(json(r,'reconcilePromoRoundingGap'),{cents:-1,rows:2});
 });

@@ -13,7 +13,7 @@ function source(name) {
   assert.ok(end > firstEnd);
   return html.slice(match.index, end + 2);
 }
-const names = ['receiptUsesManualQuantities','priceAuditNumber','priceAuditDate','priceAuditCapture','priceAuditSource','priceAuditIdentity','priceAuditDocumentComplete','receiptPriceAudit','receiptPriceAuditHtml','priceAuditLegacyVisible','refreshPriceScannerNotice','receiptRememberScanResults','receiptRebuildScanResponse','receiptScanChanged','receiptScanSnapshot','receiptStorageNotice','persistReceiptDraft','receiptDraftActive','scheduleReceiptDraftSync','refreshReceiptDraftNotice','tnuvaPaperCheck', 'tnuvaResetPhotoReceipt', 'tnuvaCachedDoc', 'tnuvaPhotoReady',
+const names = ['aiIsSeparateDepositRow','aiScanPageAudit','aiScanPagesFingerprint','aiScanSendOnce','aiScanNewKey','receiptReconcileSnapshot','receiptUsesManualQuantities','priceAuditNumber','priceAuditDate','priceAuditCapture','priceAuditSource','priceAuditIdentity','priceAuditDocumentComplete','receiptPriceAudit','receiptPriceAuditHtml','priceAuditLegacyVisible','refreshPriceScannerNotice','receiptRememberScanResults','receiptRebuildScanResponse','receiptScanChanged','receiptScanSnapshot','receiptStorageNotice','persistReceiptDraft','receiptDraftActive','scheduleReceiptDraftSync','refreshReceiptDraftNotice','tnuvaPaperCheck', 'tnuvaResetPhotoReceipt', 'tnuvaCachedDoc', 'tnuvaPhotoReady',
   'tnuvaInvalidatePhotoDoc', 'tnuvaAdoptPaperAnchors', 'tnuvaStartPaperScan', 'tnuvaScanMetadata',
   'tnuvaStoreScanResults', 'tnuvaReceiptScanAudit', 'receiptDraftPayload', 'saveReceiptDraft',
   'restoreDraftScan', 'restoreReceiptDraft', 'normNote', 'noteSum', 'noteAnchorSum', 'recomputeNoteTotal',
@@ -24,7 +24,7 @@ function context(extra = {}) {
   const storage = new Map();
   const c = vm.createContext({ console, setTimeout, clearTimeout, AbortController, Date, JSON, Math, Number,
     Map, Set, Array, Object, String, Promise, Error, PRICE_AUDIT_SUPPLIER: 'tnuva', receiptPriceSaveFailed:false,
-    receiptDraftId: null, receiptDocDate: null, receiptNoteLines: null, receiptLinesConfirmed: false,
+    aiScanCutKeys:new Map(), AI_SCAN_RESUME_TTL_MS:1500000, receiptRowDecisions: {}, receiptReconcileDraft:null,receiptReconcileSession:null, receiptDraftId: null, receiptDocDate: null, receiptNoteLines: null, receiptLinesConfirmed: false,
     makeOperationId: () => 'fixture-receipt', VAT: .18, settings: {},
     db:null, receiptStorageWarning:'',receiptDraftId:null,makeOperationId:()=> 'test-' + Math.random(),receiptAnalysisCache:null,aiScanEditingImages:false,
     receiptSync:{revision:0,dirty:false},receiptSyncSignature:null,receiptCloudReady:false,receiptSyncTimer:null,receiptSyncConflict:null,receiptSyncError:'',receiptFinalizing:false,
@@ -166,11 +166,13 @@ test('photo missing summary never triggers orientation rereads', async () => {
   assert.equal(calls, 1);
   assert.equal(c.receiptPaperScanState, 'failed');
 });
-test('invoice network failures get one transport attempt; error remains visible', async () => {
-  const c = context(); let calls = 0;
-  c.fetch = async () => { calls++; throw new Error('network'); };
+test('invoice network failure uploads once and retries only collection with the same scan key', async () => {
+  const c = context(); const calls = [];
+  c.fetch = async (_url, opts) => { calls.push(JSON.parse(opts.body)); throw new Error('network'); };
   await assert.rejects(c.aiRequestSingleDocScan('fixture', [page()], {}));
-  assert.equal(calls, 1);
+  assert.equal(calls.length, 3);
+  assert.equal(calls.filter(b => b.documents).length, 1);
+  assert.ok(calls.slice(1).every(b => b.resume && b.scanKey === calls[0].scanKey));
 });
 test('new image invalidates only that document cache', () => {
   const c = context(); const a = input(), b = input();
@@ -296,7 +298,7 @@ test('actual response adapter keeps raw Tnuva paper and prevents mixed/credit ad
       fetch: async (_url, options) => {
         const sent = JSON.parse(options.body).documents[0];
         assert.equal(sent.expectedSubtotalExVat, null); assert.equal(sent.expectedLines, null);
-        return { ok: true, json: async () => ({ ...payload(), scan: { documents: [raw], warnings: [] } }) };
+        return { ok: true, status:200, text: async () => JSON.stringify({ ...payload(), scan: { documents: [raw], warnings: [] } }) };
       } });
     appFunctions(c, ['tnuvaAdaptScanPayload']);
     const response = await c.aiRequestSingleDocScan('fixture', [page()], {});
