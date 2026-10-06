@@ -669,6 +669,7 @@ let receiptOpened = false;       // האם נפתחה תעודה (שער לפנ�
 // והבדיקה הרגילה (כולל סריקת AI כשיש פער) רצה מול הספירה שכבר נעשתה.
 let receiptNoDoc = false;        // הקליטה הנוכחית נפתחה בלי תעודה
 let receiptAttachTarget = null;  // צירוף נייר לקליטה שכבר נשמרה בלי תעודה
+let receiptReconcileDraft = null, receiptReconcileSession = null;
 let reconcileData = null;        // נתוני מסך השוואת תעודה
 let reconcileDetectiveRoundingGap = null; // סטיית עיגול זעירה שאושרה בבחירת פתרון של הבלש
 // v113: סטיית העיגול שבין שורות המבצע באפליקציה (מחיר מבצע × כמות, מעוגל פעם
@@ -737,7 +738,7 @@ let receiptDupConfirmed = false; // אישור שמירה למרות חשד לכ
 const RECEIPT_DRAFT_KEY = 'tn_receipt_draft';
 let receivingDigitsMissTimer = null;
 let receivingDigitsMissNotified = '';
-const APP_VERSION = '131'; // v131: ארגז מזוהה אינו שורת פיקדון נפרדת בגלל תיאור הסריקה
+const APP_VERSION = '132'; // תיקוני ההשוואה נשמרים בטיוטה וחוזרים אחרי רענון
 // גרסה 73: מוצר בלי מחיר קופה — חלון הכמות מציג מיד את העלות ליח׳ (ללא מע״מ) ופותח שדה להקלדת המחיר שעובר בקופה, בלי לנדוד למסך המחירים
 // v40: תג גרסה קבוע בפינת המסך — לדעת בשנייה איזו גרסה באמת רצה על המכשיר
 // (עוזר במיוחד מול מטמון ה-PWA). pointer-events:none — לעולם לא חוסם מגע.
@@ -1523,6 +1524,7 @@ function readNoteEntry(required) {
 function receiptDraftPayload(includeScan) {
   const scan = receiptScanSnapshot();
   return { schemaVersion: 4, draftId: receiptDraftId, items: receiptList, notes: receiptNotes,
+    reconciliation: receiptReconcileSnapshot(),
     opened: receiptOpened, docDate: typeof receiptDocDate === 'undefined' ? null : receiptDocDate,
     dw: typeof receiptDepositWaived === 'undefined' ? false : receiptDepositWaived,
     uw: typeof receiptUnitsWaived === 'undefined' ? false : receiptUnitsWaived,
@@ -1679,6 +1681,9 @@ function restoreReceiptDraft(incoming) {
   try {
     const s = incoming ? null : localStorage.getItem(RECEIPT_DRAFT_KEY); if (!s && !incoming) return;
     const o = incoming || JSON.parse(s);
+    receiptReconcileDraft = o && o.reconciliation && o.reconciliation.version === 1
+      && o.reconciliation.draftId === o.draftId && Array.isArray(o.reconciliation.rows) ? o.reconciliation : null;
+    receiptReconcileSession = null; reconcileData = null;
     if (Array.isArray(o)) { receiptCountingMode = 'scan'; receiptList = o; receiptOpened = o.length > 0; }
     else if (o && typeof o === 'object') {
       receiptList = Array.isArray(o.items) ? o.items : [];
@@ -6475,7 +6480,72 @@ function finishReceipt() {
 }
 function hideReceiptSummary() { const m = $('receiptSummaryModal'); m.classList.add('hidden'); m.classList.remove('flex'); }
 // ===== מסך השוואת תעודה (חוסר/עודף) =====
+// תיקוני ההשוואה הם חלק מהטיוטה, גם כשהמסך נסגר. בלי תמונות ובלי סיכום לתשלום.
+function receiptReconcileSnapshot() {
+  if (!receiptDraftId) { receiptReconcileDraft = null; receiptReconcileSession = null; return null; }
+  if (reconcileData && receiptReconcileSession === receiptDraftId) {
+    receiptReconcileDraft = { version: 1, draftId: receiptDraftId, rows: reconcileData,
+      source: receiptList.map(l => ({ productId: l.productId, qty: l.qty })),
+      state: { reconcilePaperEntered, reconcileAiAudit, reconcileSupplierDiscount, reconcileSupplierPromoItems, reconcilePromoMismatchItems, reconcileSupplierCreditClaim, noteCheckRows, noteCheckQtyMode, reconcileCheckMode, noteCheckForceQty, manualAssigned, manualPromoMarks, detectiveQuestionState, reconcileDetectiveRoundingGap, reconcilePromoRoundingGap } };
+  }
+  return receiptReconcileDraft && receiptReconcileDraft.draftId === receiptDraftId ? receiptReconcileDraft : null;
+}
+function restoreReceiptReconcile() {
+  const d = receiptReconcileDraft;
+  if (!d || d.draftId !== receiptDraftId || !Array.isArray(d.rows)) return false;
+  // עותק נפרד: שינוי בספירה אחרי חזרה לקליטה לא משנה את בסיס ההשוואה שנשמר.
+  reconcileData = JSON.parse(JSON.stringify(d.rows));
+  const state = d.state || {};
+  if (Object.prototype.hasOwnProperty.call(state, 'reconcilePaperEntered')) reconcilePaperEntered = state.reconcilePaperEntered;
+  if (Object.prototype.hasOwnProperty.call(state, 'reconcileAiAudit')) reconcileAiAudit = state.reconcileAiAudit;
+  if (Object.prototype.hasOwnProperty.call(state, 'reconcileSupplierDiscount')) reconcileSupplierDiscount = state.reconcileSupplierDiscount;
+  if (Object.prototype.hasOwnProperty.call(state, 'reconcileSupplierPromoItems')) reconcileSupplierPromoItems = state.reconcileSupplierPromoItems;
+  if (Object.prototype.hasOwnProperty.call(state, 'reconcilePromoMismatchItems')) reconcilePromoMismatchItems = state.reconcilePromoMismatchItems;
+  if (Object.prototype.hasOwnProperty.call(state, 'reconcileSupplierCreditClaim')) reconcileSupplierCreditClaim = state.reconcileSupplierCreditClaim;
+  if (Object.prototype.hasOwnProperty.call(state, 'noteCheckRows')) noteCheckRows = state.noteCheckRows;
+  if (Object.prototype.hasOwnProperty.call(state, 'noteCheckQtyMode')) noteCheckQtyMode = state.noteCheckQtyMode;
+  if (Object.prototype.hasOwnProperty.call(state, 'reconcileCheckMode')) reconcileCheckMode = state.reconcileCheckMode;
+  if (Object.prototype.hasOwnProperty.call(state, 'noteCheckForceQty')) noteCheckForceQty = state.noteCheckForceQty;
+  if (Object.prototype.hasOwnProperty.call(state, 'manualAssigned')) manualAssigned = state.manualAssigned;
+  if (Object.prototype.hasOwnProperty.call(state, 'manualPromoMarks')) manualPromoMarks = state.manualPromoMarks;
+  if (Object.prototype.hasOwnProperty.call(state, 'detectiveQuestionState')) detectiveQuestionState = state.detectiveQuestionState;
+  if (Object.prototype.hasOwnProperty.call(state, 'reconcileDetectiveRoundingGap')) reconcileDetectiveRoundingGap = state.reconcileDetectiveRoundingGap;
+  if (Object.prototype.hasOwnProperty.call(state, 'reconcilePromoRoundingGap')) reconcilePromoRoundingGap = state.reconcilePromoRoundingGap;
+  const oldCounts = new Map((d.source || []).map(l => [String(l.productId), Number(l.qty) || 0]));
+  for (const item of receiptList) {
+    const id = String(item.productId), qty = Number(item.qty) || 0;
+    if (oldCounts.has(id) && oldCounts.get(id) === qty) continue;
+    const line = reconcileData.find(l => String(l.productId) === id);
+    if (line) { line.received = qty; }
+    else {
+      const p = products.find(p => String(p.id) === id), base = r2(Number(p && p.price) || 0);
+      const promo = promoForProduct(item.productId, activeReceiptDate()), on = promoTriggered(promo, activeReceiptDate());
+      const pct = on ? Number(promo.pct) || 0 : 0;
+      reconcileData.push({ productId: item.productId, name: item.name || (p && p.name) || '', barcode: item.barcode || '',
+        received: qty, noteQty: reconcilePaperEntered ? 0 : qty, price: on ? discountedUnitPrice(base, pct) : base,
+        basePrice: base, promoPct: pct, promoOn: on, checked: false });
+    }
+  }
+  for (const [id] of oldCounts) if (!receiptList.some(l => String(l.productId) === id)) {
+    const line = reconcileData.find(l => String(l.productId) === id); if (line) line.received = 0;
+  }
+  receiptReconcileSession = receiptDraftId;
+  pendingReceipt = null; // סיכום תמיד נבנה מחדש מהתיקונים, בלי קריאת AI נוספת.
+  rcStep = null;
+  // משחזרים החלטות, אך מחשבים ממצאים מחדש מקומית מול הספירה העדכנית.
+  aiAnalyzeBusy = false; aiAnalyzeResult = null; aiAnalyzeError = '';
+  if (aiScanResponse) {
+    try { aiScanEvaluation = aiEvaluateInvoiceScan(aiScanResponse); aiScanReused = true; aiScanError = ''; }
+    catch (e) { aiScanEvaluation = null; aiScanError = 'לא הצלחתי להשוות כרגע. הפענוח נשמר; חזור לספירה ונסה שוב.'; }
+  }
+  const countsChanged = JSON.stringify(d.source || []) !== JSON.stringify(receiptList.map(l => ({productId:l.productId,qty:l.qty})));
+  if (countsChanged) { reconcileAiAudit = null; reconcileDetectiveRoundingGap = null; reconcilePromoRoundingGap = null; }
+  setView('reconcile');
+  return true;
+}
 function openReconcile() {
+  if (restoreReceiptReconcile()) return;
+  receiptReconcileSession = receiptDraftId;
   const day = activeReceiptDate();
   reconcileData = receiptList.map(it => {
     const p = products.find(x => x.id === it.productId);
@@ -7739,8 +7809,9 @@ function manualTogglePromoClaim(pid) {
   if (disc <= 0) { showToast('לא נמצא הפרש מבצע בשורה', null, null, 2200); return; }
   manualPromoChoiceModal(l, base, disc, qty);
 }
-function refreshReconcile() { if (currentView === 'reconcile') renderReconcile(); }
+function refreshReconcile() { saveReceiptDraft(); if (currentView === 'reconcile') renderReconcile(); }
 function refreshReconcileHeader() {
+  saveReceiptDraft();
   const g = reconcileGap();
   const rn = $('rcReconNote'); if (rn) rn.textContent = '₪' + fmtMoney(reconcileNoteInc());
   const gp = $('rcGap'); if (gp) gp.textContent = (g > 0 ? 'חסר ' : (g < 0 ? 'עודף ' : '')) + '₪' + fmtMoney(Math.abs(g));
@@ -14422,6 +14493,7 @@ function reconcilePriceEditHtml(l) {
   return '<span class="text-[11px] text-slate-400">₪<input data-role="rc-recon-price" data-id="' + l.productId + '" type="text" inputmode="decimal" value="' + priceFieldVal(l.price) + '" class="w-14 text-center border border-slate-200 rounded px-1 py-0.5 outline-none focus:border-blue-500"> ליח׳</span>';
 }
 function renderReconcile() {
+  saveReceiptDraft();
   if (!reconcileData) { setView('receiving'); return; }
   const note = receiptNoteTotal;
   const gap = reconcileGap();
@@ -15342,6 +15414,7 @@ function reconcileSetPriceLive(productId, val) {
   const n = parseFloat((val || '').toString().replace(/[^0-9.]/g, '')); l.price = isFinite(n) ? n : 0; reconcileDetectiveRoundingGap = null; reconcilePromoRoundingGap = null; refreshReconcileHeader();
 }
 function saveReconciledReceipt(opts) {
+  saveReceiptDraft();
   opts = opts || {};
   if (!reconcileData) return;
   if (!opts.skipChecked && reconcileCheckMode) {
@@ -21217,6 +21290,7 @@ $('contactList').addEventListener('click', (e) => { const b = e.target.closest('
 $('sendModal').addEventListener('click', (e) => { const b = e.target.closest('[data-role="ret-save-only"]'); if (b) saveReturnsWithoutSending(); });
 
 app.addEventListener('input', (e) => {
+  try {
   const t = e.target;
   if (['rcNoteInput', 'rcNoteLines'].includes(t.id)) { rememberReceiptManualInput(); saveReceiptDraft(); return; }
   const role = t.getAttribute && t.getAttribute('data-role');
@@ -21359,11 +21433,13 @@ app.addEventListener('input', (e) => {
     const id = t.dataset.id; let v = t.value.replace(/[^0-9]/g, ''); if (v !== t.value) t.value = v;
     saveBoxSize(id, v);
   }
+  } finally { if (reconcileData && receiptReconcileSession === receiptDraftId) saveReceiptDraft(); }
 });
 
 $('rsBody').addEventListener('change', e => { if (e.target.dataset.role === 'price-doc-date') priceAuditSetDate(Number(e.target.dataset.doc), e.target.value); });
 $('scanPriceNotice').addEventListener('click', () => { closeScanner(); renderReceiving(); const panel = app.querySelector('[data-price-panel]'); if (panel) panel.open = true; const details = app.querySelector('[data-price-details]'); if (details) { details.open = true; details.scrollIntoView({ block: 'start' }); } });
 app.addEventListener('change', (e) => {
+  try {
   if (e.target.dataset.role === 'price-doc-date') { priceAuditSetDate(Number(e.target.dataset.doc), e.target.value); return; }
   const t = e.target;
   // v32: בסיום הקלדת כמות (blur/Enter) בנייה מלאה אחת — הפוקוס כבר עוזב את
@@ -21389,6 +21465,7 @@ app.addEventListener('change', (e) => {
     if (currentView === 'reconcile') renderReconcile();
     return;
   }
+  } finally { if (reconcileData && receiptReconcileSession === receiptDraftId) saveReceiptDraft(); }
 });
 
 app.addEventListener('keydown', (e) => {
@@ -21421,6 +21498,7 @@ app.addEventListener('keydown', (e) => {
 });
 
 app.addEventListener('click', (e) => {
+  try {
   const recBtn = e.target.closest('[data-role="rec"]');
   if (recBtn && !recBtn.disabled) {
     const id = recBtn.dataset.id; const p = products.find(x => x.id === id); const rec = parseInt(p && p.average, 10) || 0;
@@ -21974,6 +22052,7 @@ app.addEventListener('click', (e) => {
   else if (role === 'trash-clear') showConfirm('ריקון סל מחזור', 'למחוק לצמיתות את כל מה שנמצא בסל המחזור?', 'רוקן', clearTrash);
   else if (role === 'del-receipt') { const rc = receipts.find(x => x.id === id); showConfirm('מחיקת תעודה', 'למחוק את התעודה' + (rc ? ' מ-' + new Date(rc.timestamp).toLocaleDateString('he-IL') : '') + '?', 'מחק', () => delReceipt(id)); }
   else if (role === 'clear-receipts') showConfirm('ניקוי תעודות', 'למחוק את כל תעודות הקליטה? יישמר גיבוי בסל מחזור.', 'מחק הכל', () => clearAllDocs('receipts'));
+  } finally { if (reconcileData && receiptReconcileSession === receiptDraftId) saveReceiptDraft(); }
 });
 
 // ===== מצב כהה =====
