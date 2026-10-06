@@ -27,7 +27,7 @@ export function runtime(supplier, { storage = new Map(), data = fixture(supplier
       getBoundingClientRect() { return { top: 0, left: 0, width: 400, height: 600 }; } };
     nodes.set(id, n); return n;
   }
-  const currentUser = { getIdToken: async () => 'local-test-token' };
+  const currentUser = { uid:'synthetic-local-user', getIdToken: async () => 'local-test-token' };
   const context = vm.createContext({ console, queueMicrotask, URL, TextEncoder, TextDecoder, AbortController, structuredClone, Blob, Response, CompressionStream, DecompressionStream, btoa, atob,
     crypto: { randomUUID: () => 'local-' + Math.random().toString(36).slice(2) },
     localStorage: { getItem: k => storage.get(k) ?? null, setItem: (k, v) => storage.set(k, v), removeItem: k => storage.delete(k) },
@@ -67,22 +67,30 @@ export function runtime(supplier, { storage = new Map(), data = fixture(supplier
       return reply(structuredClone(data.paper));
     }
   });
+  // The event engine is the production source; native timers prevent the older scan harness's accelerated retries from looping.
+  context.doc=(_db,...parts)=>({kind:'doc',path:parts.join('/')});
+  vm.runInContext(fs.readFileSync(new URL('../shared-return-events.js',import.meta.url),'utf8'),context);
+  const createReturnEvents=context.SharedReturnEvents.create;
+  context.SharedReturnEvents={create:o=>createReturnEvents({...o,timers:{set:(fn,ms)=>{const t=setTimeout(fn,ms);t.unref();return t;},clear:clearTimeout}})};
   vm.runInContext(moduleSource, context, { filename: 'index.html', timeout: 5000 });
   context.testData = structuredClone(data); context.testWrites = writes; context.testToasts = toasts;
   const run = script => vm.runInContext(script, context, { timeout: 5000 });
   run(`currentView = 'receiving'; mainMode = 'receiving'; products = testData.products; promos = testData.promos;
     showToast = text => testToasts.push(text);
+    const originalCloudTask = runCloudTask;
     runCloudTask = async (label, task) => { testWrites.push(structuredClone(task)); return true; };
     const auditOriginalAnalyzer = aiRunAnalyzer; aiRunAnalyzer = async () => {}; openReceivingScanner = () => {};`);
+  handoffRuns.push(()=>run('returnsEvents?.stop()'));
   if (handoff) {
     cloud = cloud || fakeCloud();
     const client=cloud.client();
     for(const product of data.products) {const key='artifacts/tnuva-app-classic/public/data/products/'+product.id;if(!cloud.get(key))cloud.put(key,product);}
-    Object.assign(context,client.fs);
+    const applyPatch=(base,patch)=>{const result=structuredClone(base||{});for(const [key,value]of Object.entries(patch)){const parts=key.split('.');let to=result;for(const part of parts.slice(0,-1))to=to[part]||(to[part]={});if(value?.__returnDelete)delete to[parts.at(-1)];else to[parts.at(-1)]=structuredClone(value);}return result;};
+    Object.assign(context,client.fs,{deleteField:()=>({__returnDelete:true}),getDocsFromServer:async()=>({docs:[]}),updateDoc:async(ref,data)=>{cloud.put(ref.path,applyPatch(cloud.get(ref.path),data));}});
     context.runTransaction=async(db,fn,opts)=>{
       if(context.networkFailure)throw Object.assign(Error('offline'),{code:'unavailable'});
       const staged=[];
-      const result=await client.fs.runTransaction(db,tx=>fn({get:ref=>tx.get(ref),set:(ref,value)=>{tx.set(ref,value);if(['/receipts/','/returns/','/history/'].some(p=>ref.path.includes(p)))staged.push({op:'set',path:ref.path.split('/'),data:structuredClone(value)});}}),opts);
+      const result=await client.fs.runTransaction(db,tx=>fn({get:ref=>tx.get(ref),update:(ref,data)=>tx.set(ref,applyPatch(cloud.get(ref.path),data)),set:(ref,value)=>{tx.set(ref,value);if(['/receipts/','/returns/','/history/'].some(p=>ref.path.includes(p)))staged.push({op:'set',path:ref.path.split('/'),data:structuredClone(value)});}}),opts);
       writes.push(...staged);return result;
     };
     vm.runInContext(fs.readFileSync(new URL('../draft-handoff.js',import.meta.url),'utf8'),context);

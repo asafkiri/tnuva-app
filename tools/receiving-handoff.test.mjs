@@ -75,7 +75,7 @@ test('another local draft is kept and reopened; full storage stops replacement',
  b.context.localStorage.setItem=()=>{throw Error('quota')};assert.equal((await b.take(id(a))).reason,'storage');assert.equal(id(b),local);
 });
 test('legacy copies do not claim on start, render or automatic saves; first user edit owns',async()=>{
- const seed=make(createCloud(),{start:false});seed.receipt();const storage=new Map(seed.storage);const c=createCloud(),a=make(c,{storage:new Map(storage)}),b=make(c,{storage:new Map(storage)});await settle();await a.sync();await b.sync();assert.equal(c.paths('handoff_').length,0);
+ const seed=make(createCloud(),{start:false});seed.receipt();const storage=new Map(seed.storage);storage.delete('tn_device_id');const c=createCloud(),a=make(c,{storage:new Map(storage)}),b=make(c,{storage:new Map(storage)});await settle();await a.sync();await b.sync();assert.equal(c.paths('handoff_').length,0);
  a.run('saveReceiptDraft();renderReceiving()');await a.sync();assert.equal(c.paths('handoff_').length,0);a.change("setReceiptQty('milk','4')");await a.sync();assert.equal(b.state().away.away,'moved');assert.equal((await b.take(id(a))).ok,true);assert.equal(b.state().side.length,1);assert.deepEqual(c.paths('drafts/receipt'),[]);
 });
 test('legacy cancel is local and creates no tombstone',async()=>{
@@ -88,7 +88,7 @@ test('edit sessions carry expected record, transfer and stop stale overwrites',a
  c.put(root+'receipts/'+record.id,{...record,newer:true});assert.equal(await b.run("finishDraft('receiving','saved-test',{items:[]})"),false);assert.equal(c.get(root+'receipts/'+record.id).newer,true);
 });
 test('receiving and order are isolated; shared returns create no handoff',async()=>{
- const c=createCloud(),a=await begin(c);a.change("returnsList=[{productId:'milk',name:'בדיקה',qty:3}];saveReturnsDraft();orderState={milk:{amount:'5',unit:'unit'}};saveDraft()");await a.sync('order');assert.equal(c.paths('handoff_tnuva_').length,2);assert.equal(a.run('draftHandoffs.returns_weekly'),undefined);assert.equal(JSON.parse(a.storage.get('tn_returns_draft')).slots.weekly[0].qty,3);
+ const c=createCloud(),a=await begin(c);a.change("returnsList=[{productId:'milk',name:'בדיקה',qty:3}];saveReturnsDraft();orderState={milk:{amount:'5',unit:'unit'}};saveDraft()");await a.sync('order');assert.equal(c.paths('handoff_tnuva_').length,2);assert.equal(a.run('draftHandoffs.returns_weekly'),undefined);assert.equal(a.run('returnsEvents.view().slots.weekly.items[0].qty'),3);
 });
 test('late commit after restart keeps the later correction visible in a side copy',async()=>{
  const c=createCloud(),a=await begin(c),sid=id(a);c.commitDelayMs=1100;
