@@ -737,7 +737,7 @@ let receiptDupConfirmed = false; // אישור שמירה למרות חשד לכ
 const RECEIPT_DRAFT_KEY = 'tn_receipt_draft';
 let receivingDigitsMissTimer = null;
 let receivingDigitsMissNotified = '';
-const APP_VERSION = '130'; // v130: שיוך מוצר למבצע קיים מתוך בדיקת התעודה
+const APP_VERSION = '131'; // v131: ארגז מזוהה אינו שורת פיקדון נפרדת בגלל תיאור הסריקה
 // גרסה 73: מוצר בלי מחיר קופה — חלון הכמות מציג מיד את העלות ליח׳ (ללא מע״מ) ופותח שדה להקלדת המחיר שעובר בקופה, בלי לנדוד למסך המחירים
 // v40: תג גרסה קבוע בפינת המסך — לדעת בשנייה איזו גרסה באמת רצה על המכשיר
 // (עוזר במיוחד מול מטמון ה-PWA). pointer-events:none — לעולם לא חוסם מגע.
@@ -1036,7 +1036,7 @@ function tnuvaPaperCheck(input, pageCount) {
       if (Math.abs(Math.round(unit * qty * 100) - amount) > tolerance) problems.push('שורה ' + (index + 1) + ': כמות כפול מחיר אינה תואמת לסכום המודפס');
     }
     if (row && row.section === 'returns') { returnLines++; returnsCents += amount || 0; }
-    else { itemLines++; itemsCents += amount || 0; if (qty != null && !/פ.?קדון/.test(String(row && row.description || ''))) units += Number(qty) || 0; }
+    else { itemLines++; itemsCents += amount || 0; if (qty != null && !aiIsSeparateDepositRow(row)) units += Number(qty) || 0; }
   });
   if (Number.isInteger(printedLines) && itemLines !== printedLines) problems.push('נקראו ' + itemLines + ' שורות פריטים מול ' + printedLines + ' במונה המודפס');
   if (doc && doc.returnsPrintedLines != null && returnLines !== doc.returnsPrintedLines) problems.push('מונה שורות ההחזרות אינו תואם');
@@ -12032,6 +12032,20 @@ function aiDetectCatalogPromoGap(residualCents, aggregates, day) {
   const picked = starred.length === 1 ? starred : candidates;
   return picked.length === 1 ? picked[0] : null;
 }
+// A crate is a counted catalog item, even if OCR appends "בקבוק פקדון" to
+// its description. Only an explicitly named crate with a unique catalog code
+// (or an already resolved identity) qualifies; ordinary deposit rows keep the
+// existing separate-charge rules. No amounts or paper evidence are changed.
+function aiIsSeparateDepositRow(row, resolution) {
+  const description = String(row && row.description || '');
+  if (!/פ.?קדון/.test(description)) return false;
+  if (!/ארגז/.test(description)) return true;
+  let product = null;
+  if (resolution) product = resolution.product;
+  else if (row.code != null) product = tnuvaBuildCodeIndex().map.get(tnuvaCodeOf(row.code));
+  else product = aiResolveInvoiceBarcode(row).product;
+  return !(product && isQuickCrate(product) && !(Number(product.deposit) > 0));
+}
 function aiEvaluateInvoiceScan(payload) {
   const scan = payload && payload.scan;
   const errors = [], warnings = [], findings = [], promoCandidates = [], barcodeSuggestions = [], aggregates = new Map(), docSummaries = [], residuals = [], pendings = [], autoResolutions = [], depositRows = [];
@@ -12103,7 +12117,8 @@ function aiEvaluateInvoiceScan(payload) {
       const rowPrefix = 'תעודה ' + (index + 1) + ', שורה ' + rowNumber + ': ';
       // v176 (תיקון לפי התעודה האמיתית): שורת פיקדון נספרת בכסף בלבד —
       // סכום היחידות המודפס בתחתית התעודה אינו כולל אותה.
-      const depositNameRow = /פ.?קדון/.test(String(row.description || ''));
+      const barcodeMatch = aiResolveInvoiceBarcode(row);
+      const depositNameRow = aiIsSeparateDepositRow(row, barcodeMatch);
       const qtyRaw = row.quantity == null || row.quantity === '' ? NaN : Number(row.quantity);
       const qty = isFinite(qtyRaw) && qtyRaw >= 0 && Math.abs(qtyRaw - Math.round(qtyRaw)) < 0.001 ? Math.round(qtyRaw) : null;
       let rowUnusableReason = '';
@@ -12130,19 +12145,18 @@ function aiEvaluateInvoiceScan(payload) {
       // להם "פיקדון ליחידה" בעורך המוצר. שורת פיקדון של מוצר לא-מוגדר
       // אינה נבלעת ואינה נצברת לכמות המוצר (זה היה יוצר חוסר מדומה) —
       // היא נעצרת כשגיאה מפורשת עד שהמשתמש יגדיר את השדה.
-      if (/פ.?קדון/.test(String(row.description || '')) && qty != null && cents != null && !arithmeticError) {
-        const depositMatch = aiResolveInvoiceBarcode(row);
-        const depositProduct = depositMatch && depositMatch.product;
+      if (depositNameRow && qty != null && cents != null && !arithmeticError) {
+        const depositProduct = barcodeMatch.product;
         if (depositProduct && Number(depositProduct.deposit) > 0) {
           depositRows.push({ document: index + 1, description: String(row.description || '').trim() || 'פיקדון', productName: String(depositProduct.name || ''), qty, cents });
           warnings.push(rowPrefix + 'זוהתה שורת פיקדון של ' + depositProduct.name + ' (' + qty + ' × ₪' + fmtMoney(cents / 100 / Math.max(1, qty)) + ' = ₪' + fmtMoney(cents / 100) + ') — תצורף לתעודה כשורה נפרדת');
         } else {
+          unresolvedBarcodeRows++;
           errors.push(rowPrefix + 'שורת פיקדון' + (depositProduct ? ' של ' + depositProduct.name : '') + ' — אך למוצר לא הוגדר פיקדון. הגדר "פיקדון ליחידה" בעורך המוצר (מחירים נוספים) וסרוק שוב');
           residuals.push({ docNumber: index + 1, documentIndex: index, lineNumber: rowNumber, sourcePage: Number(row.sourcePage), rowRegion: row.rowRegion || null, description: String(row.description || '').trim(), qty, amount: cents / 100, reason: 'שורת פיקדון למוצר שלא הוגדר לו פיקדון' });
         }
         return;
       }
-      const barcodeMatch = aiResolveInvoiceBarcode(row);
       const barcode = barcodeMatch.barcode || '';
       const product = barcodeMatch.product || null;
       if (!barcode || !product) {
@@ -13007,7 +13021,7 @@ async function aiRequestSingleDocScan(token, pages, expected) {
 function aiDocRowUnits(doc) {
   const rows = doc && Array.isArray(doc.rows) ? doc.rows : [];
   return rows.reduce((sum, row) => {
-    if (/פ.?קדון/.test(String(row && row.description || ''))) return sum;
+    if (aiIsSeparateDepositRow(row)) return sum;
     return sum + (row && row.quantity != null ? (Number(row.quantity) || 0) : 0);
   }, 0);
 }
