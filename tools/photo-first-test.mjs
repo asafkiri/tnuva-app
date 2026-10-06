@@ -13,7 +13,7 @@ function source(name) {
   assert.ok(end > firstEnd);
   return html.slice(match.index, end + 2);
 }
-const names = ['aiIsSeparateDepositRow','aiScanPageAudit','aiScanPagesFingerprint','aiScanSendOnce','aiScanNewKey','receiptReconcileSnapshot','receiptUsesManualQuantities','priceAuditNumber','priceAuditDate','priceAuditCapture','priceAuditSource','priceAuditIdentity','priceAuditDocumentComplete','receiptPriceAudit','receiptPriceAuditHtml','priceAuditLegacyVisible','refreshPriceScannerNotice','receiptRememberScanResults','receiptRebuildScanResponse','receiptScanChanged','receiptScanSnapshot','receiptStorageNotice','persistReceiptDraft','receiptDraftActive','scheduleReceiptDraftSync','refreshReceiptDraftNotice','tnuvaPaperCheck', 'tnuvaResetPhotoReceipt', 'tnuvaCachedDoc', 'tnuvaPhotoReady',
+const names = ['aiIsSeparateDepositRow','aiScanPageAudit','aiScanPagesFingerprint','aiScanSendOnce','aiScanNewKey','receiptReconcileSnapshot','receiptUsesManualQuantities','priceAuditNumber','priceAuditDate','priceAuditCapture','priceAuditSource','priceAuditIdentity','priceAuditDocumentComplete','receiptPriceAudit','receiptPriceAuditHtml','priceAuditLegacyVisible','refreshPriceScannerNotice','receiptRememberScanResults','receiptRebuildScanResponse','receiptScanChanged','receiptScanSnapshot','receiptStorageNotice','persistReceiptDraft','receiptDraftActive','refreshReceiptDraftNotice','tnuvaPaperCheck', 'tnuvaResetPhotoReceipt', 'tnuvaCachedDoc', 'tnuvaPhotoReady',
   'tnuvaInvalidatePhotoDoc', 'tnuvaAdoptPaperAnchors', 'tnuvaStartPaperScan', 'tnuvaScanMetadata',
   'tnuvaStoreScanResults', 'tnuvaReceiptScanAudit', 'receiptDraftPayload', 'saveReceiptDraft',
   'restoreDraftScan', 'restoreReceiptDraft', 'normNote', 'noteSum', 'noteAnchorSum', 'recomputeNoteTotal',
@@ -23,7 +23,7 @@ const names = ['aiIsSeparateDepositRow','aiScanPageAudit','aiScanPagesFingerprin
 function context(extra = {}) {
   const storage = new Map();
   const c = vm.createContext({ console, setTimeout, clearTimeout, AbortController, Date, JSON, Math, Number,
-    Map, Set, Array, Object, String, Promise, Error, PRICE_AUDIT_SUPPLIER: 'tnuva', receiptPriceSaveFailed:false,
+    Map, Set, Array, Object, String, Promise, Error, PRICE_AUDIT_SUPPLIER: 'tnuva', canEditDraft:()=>true,handoffApplying:false,draftHandoffs:{},handoffFinalizing:{},receiptFinalizing:false,handoffChanged(){},renderDraftHandoffBanner(){}, receiptPriceSaveFailed:false,
     aiScanCutKeys:new Map(), AI_SCAN_RESUME_TTL_MS:1500000, receiptRowDecisions: {}, receiptReconcileDraft:null,receiptReconcileSession:null, receiptDraftId: null, receiptDocDate: null, receiptNoteLines: null, receiptLinesConfirmed: false,
     makeOperationId: () => 'fixture-receipt', VAT: .18, settings: {},
     db:null, receiptStorageWarning:'',receiptDraftId:null,makeOperationId:()=> 'test-' + Math.random(),receiptAnalysisCache:null,aiScanEditingImages:false,

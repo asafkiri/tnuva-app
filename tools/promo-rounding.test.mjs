@@ -82,7 +82,7 @@ async function applyAndSave(r) {
   assert.equal(r.run('aiScanError'), '', 'apply rolled back');
   assert.ok(r.run('!!pendingReceipt'), 'no pending receipt');
   const pending = json(r, 'pendingReceipt');
-  r.run('flushReceiptDraftToCloud=async()=>{receiptSync.dirty=false;return true;}');
+
   await r.run('confirmReceipt()');
   const saved = r.writes.find(w => w.path?.includes('receipts'))?.data;
   assert.ok(saved, 'receipt was not written');

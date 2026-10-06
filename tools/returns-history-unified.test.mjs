@@ -154,6 +154,7 @@ test('מסנן שנבחר בביקור קודם אינו מסתיר חזרות: 
   assert.ok(app(c).includes('data-id="ret-gap"') && app(c).includes('data-id="ret-ok"'));
   // שמירה בלי שליחה נוחתת במסך התעודות — והתעודה שנשמרה עכשיו (ממתינה) חייבת להיראות גם אם קודם סוננו "הושלמו"
   c.run("receiptHistoryFilter = 'done'; currentView = 'returns'; sendCtx = { type: 'returns', items: " + JSON.stringify(LINES) + ', totalExVat: ' + SENT_EX + ', totalIncVat: ' + SENT_EX + ' }');
+  c.run('returnsList=structuredClone(sendCtx.items);saveReturnsDraft();sendCtx.operationId=returnsDraftIds[returnsSlot]');
   await c.run('saveReturnsWithoutSending()');
   assert.equal(c.run('currentView'), 'receiptsHistory');
   assert.equal(c.run('receiptHistoryFilter'), 'all', 'הנחיתה אחרי שמירה מראה את כל התעודות');
