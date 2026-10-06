@@ -115,3 +115,9 @@ test('old blind queued saves are quarantined, restored with corrections, and nev
 test('offline cancellation cannot close the draft subsequently taken by another phone',async()=>{
  const c=createCloud(),a=await begin(c),sid=id(a);a.online(false);a.run("cancelLocalDraft('receiving');handoffEmpty('receiving')");const b=make(c);await settle();assert.equal((await b.take(sid)).ok,true);a.online(true);await a.sync();assert.equal(c.get(path('receiving',sid)).state,'open');assert.equal(c.get(path('receiving',sid)).deviceId,b.storage.get('tn_device_id'));
 });
+
+test('the former owner cannot add photos or trigger the old live camera, including an already open modal',async()=>{
+ const {a}=await pair();const before=json(a,'aiScanDocuments');let prepared=0;a.context.aiCompressInvoiceImage=async()=>{prepared++;return {dataUrl:'synthetic'};};
+ await a.run("aiAddInvoiceFiles(0,[{}]);aiOpenLiveCamera(0);aiLiveCamTakePhoto();aiRemoveInvoicePage(0,0);aiConfirmOrientationReview();aiCancelOrientationReview()");assert.equal(prepared,0);assert.deepEqual(json(a,'aiScanDocuments'),before);assert.equal(a.requests.length,0);
+ let blocked=false;a.context.cameraEvent={type:'click',target:{closest:selector=>selector.includes('#aiLiveCamModal')?{}:null},preventDefault:()=>blocked=true,stopImmediatePropagation(){}};a.run('guardDraftEvent(cameraEvent)');assert.equal(blocked,true);
+});

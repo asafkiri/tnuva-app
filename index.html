@@ -741,7 +741,7 @@ let receiptDupConfirmed = false; // אישור שמירה למרות חשד לכ
 const RECEIPT_DRAFT_KEY = 'tn_receipt_draft';
 let receivingDigitsMissTimer = null;
 let receivingDigitsMissNotified = '';
-const APP_VERSION = '134'; // טיוטה מקומית, גיבוי והעברה מפורשת
+const APP_VERSION = '135'; // טיוטה מקומית, גיבוי והעברה מפורשת
 // גרסה 73: מוצר בלי מחיר קופה — חלון הכמות מציג מיד את העלות ליח׳ (ללא מע״מ) ופותח שדה להקלדת המחיר שעובר בקופה, בלי לנדוד למסך המחירים
 // v40: תג גרסה קבוע בפינת המסך — לדעת בשנייה איזו גרסה באמת רצה על המכשיר
 // (עוזר במיוחד מול מטמון ה-PWA). pointer-events:none — לעולם לא חוסם מגע.
@@ -1954,7 +1954,7 @@ function startDraftHandoffs() {
         applyPayload:text=>handoffApply(kind,text),emptyDraft:()=>handoffEmpty(kind),
         reviveDraft:text=>{const p=JSON.parse(text),id=makeOperationId(kind);p.draftId=id;p.attach=null;if(p.reconciliation)p.reconciliation.draftId=id;handoffApply(kind,JSON.stringify(p));return id;},
         deviceName:()=>actionDeviceLabel(),recordSaved:id=>(kind==='receiving'?receipts:kind==='order'?history:returns).some(x=>x.id===id),
-        onChange:st=>{if(st.away&&kind==='receiving'&&aiScanBusy){aiScanRunId++;aiScanBusy=false;}renderDraftHandoffBanner();},onNotice:handoffNotice,
+        onChange:st=>{if(st.away&&kind==='receiving'){if(aiScanBusy){aiScanRunId++;aiScanBusy=false;}aiCloseOrientationReview();aiCloseLiveCamera();}renderDraftHandoffBanner();},onNotice:handoffNotice,
         // אין בתנובה מסמכי נייר עצמאיים שנמחקים בביטול. תוצאת local של המודול זהה לביטול שאושר.
         onClosed:()=>{},
         finishedLate:sid=>{if(handoffDraft(kind).sessionId===sid){handoffEmpty(kind);setView(kind==='order'?'history':'receiptsHistory');showToast('התעודה נשמרה ✓');}},
@@ -2017,7 +2017,7 @@ async function draftHandoffAction(action,kind,id) {
 function handoffEventKind(t) {
   if(!t||!t.closest)return null;
   if(t.closest('#draftHandoffBanner'))return null;
-  if(t.closest('#receiptSummaryModal,#receiptQuantityModal,#aiOrientationModal,#aiLiveCameraModal'))return 'receiving';
+  if(t.closest('#receiptSummaryModal,#receiptQuantityModal,#aiOrientationModal,#aiLiveCamModal'))return 'receiving';
   if(t.closest('#sendModal'))return sendCtx&&sendCtx.type==='returns'?null:'order';
   if(t.closest('#scanModal'))return scanPurpose==='receiving'?'receiving':null;
   if(t.closest('#qtyModal'))return qtyTarget==='receipt'?'receiving':null;
@@ -9682,6 +9682,7 @@ function aiCloseOrientationReview() {
   if (overlay) { overlay.classList.add('hidden'); overlay.classList.remove('flex'); }
 }
 async function aiRotateOrientationReview(deltaTurns) {
+  if(!canEditDraft('receiving'))return;
   const session = aiOrientationSession, location = session && aiOrientationLocation(session.page);
   if (!location || aiOrientationBusy || session.reviewOnly) return;
   aiSetOrientationBusy(true);
@@ -9706,6 +9707,7 @@ async function aiRotateOrientationReview(deltaTurns) {
   } finally { aiSetOrientationBusy(false); }
 }
 async function aiConfirmOrientationReview() {
+  if(!canEditDraft('receiving'))return;
   const location = aiOrientationSession && aiOrientationLocation(aiOrientationSession.page);
   if (!location || aiOrientationBusy) return;
   if (aiOrientationSession.reviewOnly) { aiCloseOrientationReview(); return; }
@@ -9730,6 +9732,7 @@ async function aiConfirmOrientationReview() {
   setTimeout(aiOpenNextUnconfirmedOrientation, 0);
 }
 function aiCancelOrientationReview() {
+  if(!canEditDraft('receiving'))return;
   const location = aiOrientationSession && aiOrientationLocation(aiOrientationSession.page);
   if (!location || aiOrientationBusy) return;
   if (aiOrientationSession.reviewOnly) { aiCloseOrientationReview(); return; }
@@ -9745,6 +9748,7 @@ function aiAllPagesOrientationConfirmed(documents) {
   return list.length > 0 && list.every(doc => doc.pages.length > 0 && doc.pages.every(page => page.orientationConfirmed === true));
 }
 async function aiAddInvoiceFiles(docIndex, files) {
+  if(!canEditDraft('receiving'))return;
   const doc = aiScanDocuments[docIndex]; if (!doc || !files || !files.length || aiScanBusy) return;
   const slots = Math.max(0, 8 - aiScanDocuments.reduce((n, d) => n + (d === doc ? d.pages.length : d.pages.length || d.restoredPageCount || 0), 0));
   if (!slots) { showToast('ניתן לצרף עד 8 עמודים בסריקה אחת', null, null, 3000); return; }
@@ -9785,6 +9789,7 @@ function aiLiveCameraSupported() {
 }
 function aiLiveCamSetStatus(text) { const el = $('aiLiveCamStatus'); if (el) el.textContent = text; }
 async function aiOpenLiveCamera(docIndex) {
+  if(!canEditDraft('receiving'))return;
   if (!aiLiveCameraSupported() || aiScanBusy || aiLiveCamState) return;
   const modal = $('aiLiveCamModal'); if (!modal) return;
   modal.classList.remove('hidden'); modal.classList.add('flex');
@@ -9977,6 +9982,7 @@ function aiRotateBlobClockwise(bitmap) {
   });
 }
 async function aiLiveCamTakePhoto() {
+  if(!canEditDraft('receiving'))return;
   const state = aiLiveCamState; if (!state || state.shooting) return;
   state.shooting = true;
   aiLiveCamSetStatus('מצלם ברזולוציה מלאה…');
@@ -10022,11 +10028,13 @@ async function aiLiveCamTakePhoto() {
   if (shoot) shoot.addEventListener('click', aiLiveCamTakePhoto);
 })();
 function aiRemoveInvoicePage(docIndex, pageIndex) {
+  if(!canEditDraft('receiving'))return;
   const doc = aiScanDocuments[docIndex]; if (!doc || aiScanBusy) return;
   tnuvaInvalidatePhotoDoc(doc);
   doc.pages.splice(pageIndex, 1); receiptScanChanged(); refreshScanHost();
 }
 async function aiRotateInvoicePage(docIndex, pageIndex) {
+  if(!canEditDraft('receiving'))return;
   const doc = aiScanDocuments[docIndex], page = doc && doc.pages[pageIndex];
   if (!page || aiScanBusy) return;
   aiScanBusy = true; aiScanProgressText = 'מסובב את עמוד ' + (pageIndex + 1) + '…'; aiScanError = ''; refreshScanHost();
