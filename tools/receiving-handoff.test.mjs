@@ -87,10 +87,8 @@ test('edit sessions carry expected record, transfer and stop stale overwrites',a
  const sid=a.run("handoffDraft('receiving').sessionId");assert.match(sid,/^edit_/);a.change("setReceiptQty('milk','4')");await a.sync();const b=make(c);await settle();assert.equal((await b.take(sid)).ok,true);assert.equal(b.run('receiptAttachTarget.expectedReceipt.items[0].qty'),9);
  c.put(root+'receipts/'+record.id,{...record,newer:true});assert.equal(await b.run("finishDraft('receiving','saved-test',{items:[]})"),false);assert.equal(c.get(root+'receipts/'+record.id).newer,true);
 });
-test('receiving, both return slots and order have separate local keys and handoff paths',async()=>{
- const c=createCloud(),a=await begin(c);a.change("returnsList=[{productId:'milk',name:'בדיקה',qty:3}];saveReturnsDraft();switchReturnsSlot('daily');returnsList=[{productId:'coffee',name:'בדיקה 2',qty:2}];saveReturnsDraft();orderState={milk:{amount:'5',unit:'unit'}};saveDraft()");
- for(const kind of ['returns_weekly','returns_daily','order'])await a.sync(kind);
- assert.equal(c.paths('handoff_tnuva_').length,4);const b=make(c);await settle();const daily=a.run('returnsDraftIds.daily');assert.equal((await b.take(daily,'returns_daily')).ok,true);assert.equal(b.run('returnsList[0].qty'),2);assert.equal(b.run('returnsSlot'),'daily');assert.equal(b.run('receiptList.length'),0);
+test('receiving and order are isolated; shared returns create no handoff',async()=>{
+ const c=createCloud(),a=await begin(c);a.change("returnsList=[{productId:'milk',name:'בדיקה',qty:3}];saveReturnsDraft();orderState={milk:{amount:'5',unit:'unit'}};saveDraft()");await a.sync('order');assert.equal(c.paths('handoff_tnuva_').length,2);assert.equal(a.run('draftHandoffs.returns_weekly'),undefined);assert.equal(JSON.parse(a.storage.get('tn_returns_draft')).slots.weekly[0].qty,3);
 });
 test('late commit after restart keeps the later correction visible in a side copy',async()=>{
  const c=createCloud(),a=await begin(c),sid=id(a);c.commitDelayMs=1100;
