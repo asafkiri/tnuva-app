@@ -552,7 +552,7 @@ import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebas
 import { getAuth, signInAnonymously, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
 import {
   initializeFirestore, getFirestore, persistentLocalCache, persistentMultipleTabManager,
-  collection, onSnapshot, doc, getDoc, deleteDoc, addDoc, updateDoc, setDoc, writeBatch, query, orderBy, limit, getDocs, where, runTransaction, getDocFromServer
+  collection, onSnapshot, doc, getDoc, deleteDoc, addDoc, updateDoc, setDoc, writeBatch, query, orderBy, limit, getDocs, where, runTransaction, getDocFromServer, getDocsFromServer
 } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
 
 const firebaseConfig = {
@@ -648,6 +648,7 @@ let advanceTimer = null;
 let dragState = null;
 const RETURNS_DRAFT_KEY = 'tn_returns_draft';
 let returnsDraftTimer = null;
+let returnsLiveReady=false,returnsLiveStarting=null,returnsRecoveryCloud={};
 
 // ===== מצב קליטת תעודות =====
 let receiptCountingMode = 'scan'; // 'scan' | 'manual'; saved with this receipt draft
@@ -740,7 +741,7 @@ let receiptDupConfirmed = false; // אישור שמירה למרות חשד לכ
 const RECEIPT_DRAFT_KEY = 'tn_receipt_draft';
 let receivingDigitsMissTimer = null;
 let receivingDigitsMissNotified = '';
-const APP_VERSION = '133'; // טיוטה מקומית, גיבוי והעברה מפורשת
+const APP_VERSION = '134'; // טיוטה מקומית, גיבוי והעברה מפורשת
 // גרסה 73: מוצר בלי מחיר קופה — חלון הכמות מציג מיד את העלות ליח׳ (ללא מע״מ) ופותח שדה להקלדת המחיר שעובר בקופה, בלי לנדוד למסך המחירים
 // v40: תג גרסה קבוע בפינת המסך — לדעת בשנייה איזו גרסה באמת רצה על המכשיר
 // (עוזר במיוחד מול מטמון ה-PWA). pointer-events:none — לעולם לא חוסם מגע.
@@ -933,14 +934,17 @@ function restoreDraft() {
   draftReady=true;
 }
 function saveReturnsDraft() {
-  if(!handoffApplying && !canEditDraft('returns_'+returnsSlot,true))return false;
   returnsSlots[returnsSlot] = returnsList;
   returnsDocDates[returnsSlot] = returnsDocDate || '';
-  if (returnsList.length && !returnsDraftIds[returnsSlot]) returnsDraftIds[returnsSlot] = makeOperationId('returns');
+  if (!returnsDraftIds[returnsSlot]) returnsDraftIds[returnsSlot] = makeOperationId('returns');
   returnsDraftUpdatedAt = Date.now();
-  const snapshot = { schemaVersion: 2, draftIds: returnsDraftIds, slots: returnsSlots, dates: returnsDocDates, notes: returnsDraftNotes, active: returnsSlot, updatedAt: returnsDraftUpdatedAt };
+  const snapshot = { schemaVersion: 2, draftIds: returnsDraftIds, slots: returnsSlots, dates: returnsDocDates, notes:returnsDraftNotes, v133Recovery:returnsRecoveryCloud, active: returnsSlot, updatedAt: returnsDraftUpdatedAt };
   try { localStorage.setItem(RETURNS_DRAFT_KEY, JSON.stringify(snapshot)); } catch (e) { showToast('לא ניתן לשמור את טיוטת החזרות במכשיר', null, null, 3200); }
-  for(const slot of ['weekly','daily'])handoffChanged('returns_'+slot);
+  if (!db || !returnsLiveReady) return;
+  clearTimeout(returnsDraftTimer);
+  returnsDraftTimer = setTimeout(() => {
+    runCloudTaskSilent('save returns draft', { op: 'set', path: dataPath('drafts', 'returns'), data: snapshot, merge: false, operationId: 'returns_draft' });
+  }, 700);
 }
 function restoreReturnsDraft() {
   try {
@@ -970,6 +974,92 @@ function switchReturnsSlot(slot) {
   saveReturnsDraft();
   renderReturns();
 }
+// מעבר קדימה מ־133 בלבד. ההחזרות עצמן חוזרות למנגנון הלייב הקיים, לפי סעיף 9 המעודכן.
+function returnsRecoveryLocal(){try{return JSON.parse(localStorage.getItem('tn_returns_v133_recovery')||'{}');}catch(e){return {};}}
+function keepReturnsRecovery(){
+  const copies=returnsRecoveryLocal();
+  for(const slot of ['weekly','daily']){const items=slot===returnsSlot?returnsList:returnsSlots[slot];if(items.length){const id=returnsDraftIds[slot]||makeOperationId('returns');copies['local_'+id]={draftId:id,slot,items:cloneSafe(items),date:returnsDocDates[slot]||'',note:returnsDraftNotes[slot]||''};}}
+  localStorage.setItem('tn_returns_v133_recovery',JSON.stringify(copies));
+}
+function returnsRecoveryHtml(){
+ const copies={...returnsRecoveryCloud,...returnsRecoveryLocal()};
+ return Object.entries(copies).filter(([id,p])=>handoffCanonical(p.items)!==handoffCanonical(returnsSlots[p.slot]||[])).map(([id,p])=>'<div class="p-3 mb-2 rounded-xl bg-amber-50 text-sm">עותק החזרות שנשמר לפני עדכון 134 ('+(p.items||[]).length+' שורות)<button class="btn-tap block" data-return-recovery="'+htmlEscape(id)+'">פתח את העותק</button></div>').join('');
+}
+function openReturnsRecovery(id){
+ const p=({...returnsRecoveryCloud,...returnsRecoveryLocal()})[id];if(!p)return;
+ if(returnsSlots[p.slot]?.length){showToast('סיים קודם את ההחזרה הפתוחה. העותק נשאר שמור כאן.');return;}
+ returnsSlot=p.slot;returnsList=cloneSafe(p.items);returnsSlots[p.slot]=returnsList;returnsDraftIds[p.slot]=makeOperationId('returns');returnsDocDate=p.date||'';returnsDraftNotes[p.slot]=p.note||'';saveReturnsDraft();renderReturns();
+}
+async function migrateReturns133(){
+ if(!navigator.onLine)throw Error('offline');
+ const offers=[];for(const slot of ['weekly','daily']){const snap=await getDocsFromServer(query(collection(db,'artifacts',appId,'public','data','drafts'),where('openKey','==','tnuva:returns_'+slot)));for(const d of snap.docs)offers.push({slot,id:d.id});}
+ const hadLocal133=['weekly','daily'].some(slot=>['claim','away'].some(t=>{try{const x=JSON.parse(localStorage.getItem('tn_handoff_returns_'+slot+'_'+t)||'null');return x&&x.sessionId===returnsDraftIds[slot];}catch(e){return false;}}));
+ for(const slot of ['weekly','daily'])if(returnsDraftIds[slot]&&['claim','away'].some(t=>localStorage.getItem('tn_handoff_returns_'+slot+'_'+t))){const id='handoff_tnuva_returns_'+slot+'_'+returnsDraftIds[slot];if(!offers.some(o=>o.id===id))offers.push({slot,id});}
+ if(!offers.length&&!hadLocal133)return;
+ keepReturnsRecovery(); // אם האחסון מלא לא מוחקים ולא מפעילים כתיבה ישנה.
+ const ref=doc(db,...dataPath('drafts','returns'));let cancelled=false;
+ let deadline;const timer=setTimeout(()=>{cancelled=true;},12000),check=()=>{if(cancelled)throw Error('timeout');};
+ try{
+  const result=await Promise.race([runTransaction(db,async tx=>{
+   const snap=await tx.get(ref);check();const before=snap.exists()?snap.data():{};
+   const next={...before,schemaVersion:2,slots:{weekly:[],daily:[],...before.slots},draftIds:{...before.draftIds},dates:{...before.dates},notes:{...before.notes},v133Recovery:{...before.v133Recovery}},entries=[];
+   for(const offer of offers){const hRef=doc(db,...dataPath('drafts',offer.id)),hSnap=await tx.get(hRef);check();if(!hSnap.exists())continue;const h=hSnap.data();if(h.migratedTo||!['open','saved'].includes(h.state))continue;const rec=await tx.get(doc(db,...dataPath('returns',h.recordId)));check();entries.push({offer,hRef,h,exists:rec.exists()});}
+   for(const {offer,hRef,h,exists} of entries){
+    const p=h.payload?JSON.parse(h.payload):null,slot=offer.slot;
+    if(exists&&next.draftIds[slot]===h.recordId){next.slots[slot]=[];next.draftIds[slot]=null;}
+    if(!exists&&p){if(!next.slots[slot].length||next.draftIds[slot]===h.recordId){next.slots[slot]=p.items;next.draftIds[slot]=p.draftId;next.dates[slot]=p.date||'';next.notes[slot]=p.note||'';}else next.v133Recovery[h.sessionId]=p;}
+    tx.set(hRef,{...h,state:exists?'saved':'canceled',openKey:null,payload:null,migratedTo:'returns-live-v134',updatedAt:Date.now()});
+   }
+   if(entries.length){next.updatedAt=Date.now();tx.set(ref,next);}check();return next;
+  },{maxAttempts:1}),new Promise((_,reject)=>{deadline=setTimeout(()=>reject(Error('timeout')),12500);})]);
+  // אף מצב מקומי אינו משתנה עד שהטרנזקציה אושרה; העותק שלפני המעבר נשאר נגיש.
+  if(hadLocal133||offers.length){keepReturnsRecovery();localStorage.setItem(RETURNS_DRAFT_KEY,JSON.stringify(result));restoreReturnsDraft();returnsRecoveryCloud=result.v133Recovery||{};}
+ }finally{cancelled=true;clearTimeout(timer);clearTimeout(deadline);}
+}
+function startReturnsLive(){
+ if(!db||returnsLiveReady)return Promise.resolve();if(returnsLiveStarting)return returnsLiveStarting;
+ returnsLiveStarting=(async()=>{try{await migrateReturns133();returnsLiveReady=true;
+  // טיוטת חזרות משותפת — מסונכרנת בין כל המכשירים בזמן אמת
+  const rdRef = doc(db, 'artifacts', appId, 'public', 'data', 'drafts', 'returns');
+  onSnapshot(rdRef, (snap) => {
+    if (snap.metadata.hasPendingWrites) return; // הד של כתיבה מקומית — מתעלמים
+    const d = snap.data();
+    if (!d) return;
+    returnsRecoveryCloud=d.v133Recovery||{};
+    const remoteUpdatedAt = Number(d.updatedAt) || 0;
+    if (remoteUpdatedAt && remoteUpdatedAt <= returnsDraftUpdatedAt) return;
+    if (d.slots) {
+      // מחילים slots + active + dates אטומית, כדי שיומית ושבועית לא יתערבבו.
+      returnsSlots = {
+        weekly: Array.isArray(d.slots.weekly) ? d.slots.weekly : [],
+        daily: Array.isArray(d.slots.daily) ? d.slots.daily : []
+      };
+      returnsSlot = d.active === 'daily' ? 'daily' : 'weekly';
+      returnsDraftNotes={weekly:String(d.notes&&d.notes.weekly||''),daily:String(d.notes&&d.notes.daily||'')};
+      returnsDocDates = { weekly: String((d.dates && d.dates.weekly) || ''), daily: String((d.dates && d.dates.daily) || '') };
+      returnsDraftIds = { weekly: (d.draftIds && d.draftIds.weekly) || d.draftId || returnsDraftIds.weekly || null, daily: (d.draftIds && d.draftIds.daily) || returnsDraftIds.daily || null };
+    } else if (Array.isArray(d.items)) {
+      // מעבר מהמבנה הישן: הרשימה הישנה הייתה שבועית.
+      returnsSlots = { weekly: d.items, daily: [] };
+      returnsSlot = 'weekly';
+      returnsDocDates = { weekly: '', daily: '' };
+    } else return;
+    returnsDraftUpdatedAt = remoteUpdatedAt;
+    returnsList = returnsSlots[returnsSlot];
+    returnsDocDate = returnsDocDates[returnsSlot] || '';
+    try { localStorage.setItem(RETURNS_DRAFT_KEY, JSON.stringify({ schemaVersion: 2, draftIds: returnsDraftIds, slots: returnsSlots, dates: returnsDocDates, notes:returnsDraftNotes, active: returnsSlot, updatedAt: returnsDraftUpdatedAt })); } catch (e) {}
+    if (currentView === 'returns' && !isDragging) {
+      const a = document.activeElement;
+      if (!(a && app.contains(a) && (a.tagName === 'INPUT' || a.tagName === 'SELECT'))) refreshReturnsList();
+    }
+    updateCart();
+  }, console.error);
+
+
+ }catch(e){showToast('ההחזרות שמורות בטלפון. מחכה לחיבור להשלמת עדכון 134.',null,null,5000);}
+ finally{returnsLiveStarting=null;renderDraftHandoffBanner();}})();return returnsLiveStarting;
+}
+
 function parseNoteVal(v) {
   let s = (v || '').toString().trim().replace(/\s/g, '').replace(/[^0-9.,]/g, '');
   if (!s) return null;
@@ -1758,9 +1848,9 @@ function receiptDraftNoticeHtml() { return receiptStorageWarning ? '<div class="
 function refreshReceiptDraftNotice() { const n=$('rcDraftStatus'); if(n)n.innerHTML=receiptDraftNoticeHtml();renderDraftHandoffBanner(); }
 // טיוטות מקומיות; המודול המשותף בלבד כותב גיבויים ובעלות בענן.
 const HANDOFF_APP = 'tnuva', HANDOFF_PREFIX = 'tn';
-const handoffLabels = { receiving: 'קליטה', returns_weekly: 'החזרה שבועית', returns_daily: 'החזרה יומית', order: 'הזמנה' };
+const handoffLabels = { receiving: 'קליטה', order: 'הזמנה' };
 function handoffSession(p) { return p.attach && p.attach.id ? p.attach.sessionId || ('edit_' + p.attach.id + '_legacy') : p.draftId; }
-function handoffKind() { return ['receiving','reconcile'].includes(currentView) ? 'receiving' : currentView === 'returns' ? 'returns_' + returnsSlot : currentView === 'order' ? 'order' : null; }
+function handoffKind() { return ['receiving','reconcile'].includes(currentView) ? 'receiving' : currentView === 'order' ? 'order' : null; }
 function handoffCanonical(v) { return JSON.stringify(v, (k, x) => x && typeof x === 'object' && !Array.isArray(x) ? Object.fromEntries(Object.keys(x).sort().map(k => [k,x[k]])) : x); }
 function handoffWithoutImages(v) {
   // מסירים לפני הקידוד. גם מקור פענוח לא יכול להבריח צילום לענן.
@@ -1853,9 +1943,8 @@ function startDraftHandoffs() {
   let fsApi;try{fsApi={doc,collection,query,where,onSnapshot,runTransaction,getDocFromServer};}catch(e){return;}
   // מזהה קבוע גם לטיוטות ישנות מאוד; נשמר לפני המאזינים, בלי לתבוע בעלות.
   if(!receiptDraftId && receiptDraftActive(receiptDraftPayload(false))) {receiptDraftId=makeOperationId('receipt');saveReceiptDraft();}
-  for(const slot of ['weekly','daily']) if(returnsSlots[slot].length&&!returnsDraftIds[slot])returnsDraftIds[slot]='legacy_returns_'+slot+'_'+handoffHash(handoffCanonical(returnsSlots[slot]));
   if(Object.values(orderState).some(x=>x&&hasEnteredAmount(x.amount))&&!orderDraftId)orderDraftId=makeOperationId('order');
-  saveDraft();saveReturnsDraft();
+  saveDraft();
   for(const kind of Object.keys(handoffLabels)) {
     const collectionName=kind==='receiving'?'receipts':kind==='order'?'history':'returns';
     const h=DraftHandoff.create({app:HANDOFF_APP,kind,prefix:HANDOFF_PREFIX,db,fs:fsApi,rootPath:['artifacts',appId,'public','data'],recordCollection:collectionName,appVersion:APP_VERSION,
@@ -1895,7 +1984,7 @@ async function finishDraft(kind,id,data,preparingReceipt=false) {
 function cancelLocalDraft(kind) {if(!canEditDraft(kind))return false;const h=draftHandoffs[kind];if(h)h.cancel({});return true;}
 function renderDraftHandoffBanner() {
   const el=$('draftHandoffBanner');if(!el)return;
-  const kind=handoffKind(),h=kind&&draftHandoffs[kind];el.innerHTML=h?draftHandoffBannerHtml(kind,h.state()):'';
+  const kind=handoffKind(),h=kind&&draftHandoffs[kind];el.innerHTML=currentView==='returns'?returnsRecoveryHtml():h?draftHandoffBannerHtml(kind,h.state()):'';
 }
 function draftHandoffBannerHtml(kind,st) {
   const label=handoffLabels[kind],who=n=>n?'בטלפון ״'+htmlEscape(n)+'״':'בטלפון אחר';
@@ -1929,9 +2018,9 @@ function handoffEventKind(t) {
   if(!t||!t.closest)return null;
   if(t.closest('#draftHandoffBanner'))return null;
   if(t.closest('#receiptSummaryModal,#receiptQuantityModal,#aiOrientationModal,#aiLiveCameraModal'))return 'receiving';
-  if(t.closest('#sendModal'))return sendCtx&&sendCtx.type==='returns'?'returns_'+returnsSlot:'order';
-  if(t.closest('#scanModal'))return scanPurpose==='receiving'?'receiving':scanPurpose==='returns'?'returns_'+returnsSlot:null;
-  if(t.closest('#qtyModal'))return qtyTarget==='receipt'?'receiving':qtyTarget==='returns'?'returns_'+returnsSlot:null;
+  if(t.closest('#sendModal'))return sendCtx&&sendCtx.type==='returns'?null:'order';
+  if(t.closest('#scanModal'))return scanPurpose==='receiving'?'receiving':null;
+  if(t.closest('#qtyModal'))return qtyTarget==='receipt'?'receiving':null;
   return t.closest('#app,#confirmModal,#cartBtn')?handoffKind():null;
 }
 function guardDraftEvent(e) {
@@ -1948,11 +2037,11 @@ function guardDraftEvent(e) {
   }
 }
 // תור ישן מופרד לפני כל ניסיון שליחה. אף כתיבה ממנו לא נוגעת בטיוטה הישנה או דורסת רשומה.
-function legacyDraftTask(task){return !!(task&&(task.receiptDraftGuard||(task.path&&['receipts','returns','history'].includes(task.path.at(-2))&&task.op==='set')||(task.path&&task.path.at(-2)==='drafts'&&['receipt','returns'].includes(task.path.at(-1)))));}
+function legacyDraftTask(task){return !!(task&&(task.receiptDraftGuard||(task.path&&['receipts','history'].includes(task.path.at(-2))&&task.op==='set')||(task.path&&task.path.at(-2)==='drafts'&&['receipt'].includes(task.path.at(-1)))));}
 function quarantineLegacyDraftWrites() {
   const key=HANDOFF_PREFIX+'_handoff_legacy_writes';
   let saved=[];try{saved=JSON.parse(localStorage.getItem(key)||'[]');}catch(e){}
-  const finalNames=['save receipt before clearing draft','save receipt','save returns before send','save returns without sending','save order before send'];
+  const finalNames=['save receipt before clearing draft','save receipt','save order before send'];
   const isOld=x=>legacyDraftTask(x.task)&&(finalNames.includes(x.actionName)||x.task.receiptDraftGuard||x.task.path.at(-2)==='drafts');
   const old=cloudFailedWrites.filter(isOld);
   if(!old.length)return;
@@ -2112,6 +2201,7 @@ function startListeners() {
     }
   }, console.error);
 
+  startReturnsLive();
   const rcRef = collection(db, 'artifacts', appId, 'public', 'data', 'receipts');
   const rcQ = query(rcRef, orderBy('timestamp', 'desc'), limit(100));
   onSnapshot(rcQ, (snap) => {
@@ -3485,7 +3575,6 @@ function renderReturnsResults(q) {
   box.classList.remove('hidden');
 }
 function addReturn(productId) {
-  if (!canEditDraft('returns_'+returnsSlot)) return;
   const p = products.find(x => x.id === productId); if (!p) return;
   if (!p.barcode) { openBarcodePrompt(productId, false); return; }
   const existing = returnsList.find(it => it.productId === productId);
@@ -3498,14 +3587,12 @@ function addReturn(productId) {
   updateCart();
 }
 function changeReturnQty(id, d) {
-  if (!canEditDraft('returns_'+returnsSlot)) return;
   const it = returnsList.find(x => x.productId === id); if (!it) return;
   it.qty = Math.max(1, (it.qty || 1) + d);
   const span = $('retqty-' + id); if (span) span.textContent = it.qty;
   saveReturnsDraft();
 }
 function removeReturn(id) {
-  if (!canEditDraft('returns_'+returnsSlot)) return;
   const idx = returnsList.findIndex(x => x.productId === id);
   if (idx < 0) return;
   const removed = returnsList[idx];
@@ -3573,7 +3660,6 @@ function updateManualReturnTotal() {
   const el = $('mr_total'); if (el) el.textContent = (price > 0 && qty > 0) ? (qty + ' × ₪' + fmtMoney(price) + ' = ₪' + fmtMoney(r2(price * qty)) + ' (ללא מע״מ)') : '';
 }
 function addManualReturn() {
-  if (!canEditDraft('returns_'+returnsSlot)) return;
   const nEl = $('mr_name'); const name = ((nEl && nEl.value) || '').trim();
   const price = mrPriceVal(), qty = mrQtyVal();
   if (!name) { showToast('הזן שם מוצר', null, null, 2000); const i = $('mr_name'); if (i) i.focus(); return; }
@@ -3587,7 +3673,6 @@ function addManualReturn() {
   updateCart();
 }
 function openReturnsSend() {
-  if (!canEditDraft('returns_'+returnsSlot)) return;
   if (!returnsList.length) return;
   const deIn = $('retDocDate'); if (deIn && deIn.value) returnsDocDate = deIn.value;
   const day = returnsDocDate || todayStr();
@@ -4322,7 +4407,7 @@ function buildMessage(items, note) {
 }
 // v25: בתנובה החזרות נמסרות לרוב ביד — וואטסאפ הוא אופציה, לא שער.
 async function saveReturnsWithoutSending() {
-  if (!canEditDraft('returns_'+returnsSlot)) return;
+  if(!returnsLiveReady){await startReturnsLive();if(!returnsLiveReady)return;}
   if (!sendCtx || sendCtx.type !== 'returns' || sendCtx.resendExisting) { hideSend(); return; }
   const items = sendCtx.items || [];
   if (!items.length) { hideSend(); return; }
@@ -4335,7 +4420,7 @@ async function saveReturnsWithoutSending() {
     totalIncVat: (sendCtx && sendCtx.totalIncVat) || 0,
     operationId: opId
   };
-  const saved = await finishDraft('returns_'+returnsSlot,opId,data);
+  const saved = await runCloudTask('save returns without sending', { op: 'set', path: dataPath('returns', opId), data, operationId: opId });
   if (!saved) return;
   returnsList = []; returnsSlots[returnsSlot] = returnsList; returnsDocDate = ''; returnsDocDates[returnsSlot] = ''; returnsDraftIds[returnsSlot] = null; returnsDraftNotes[returnsSlot]='';saveReturnsDraft();
   sendCtx = null; hideSend(); receiptHistoryFilter = 'all'; setView('receiptsHistory'); // v122: התעודה שנשמרה עכשיו חייבת להיראות בראש המסך — בלי מסנן ישן
@@ -4415,6 +4500,7 @@ function openReturnsResend(r) {
 }
 function hideSend() { const m = $('sendModal'); m.classList.add('hidden'); m.classList.remove('flex'); }
 async function performSend(contact) {
+  if(sendCtx?.type==='returns'&&!sendCtx.resendExisting&&!returnsLiveReady){await startReturnsLive();if(!returnsLiveReady)return;}
   if (!sendCtx || !sendCtx.items.length) return;
   const { type, items, resetCurrent } = sendCtx;
   const note = ($('orderNote') ? $('orderNote').value.trim() : '');
@@ -4437,7 +4523,7 @@ async function performSend(contact) {
       totalIncVat: (sendCtx && sendCtx.totalIncVat) || 0,
       operationId: opId
     };
-    const saved = await finishDraft('returns_'+returnsSlot,opId,data);
+    const saved = await runCloudTask('save returns before send', { op: 'set', path: dataPath('returns', opId), data, operationId: opId });
     if (!saved) return;
     const msg = buildReturnsMessage(items, note);
     const url = 'https://wa.me/' + phone + '?text=' + encodeURIComponent(msg);
@@ -5021,7 +5107,7 @@ function showCloudFailDetails() {
 }
 async function executeCloudTask(task) {
   if (!db || !task) throw new Error('אין חיבור לענן');
-  if (task.receiptDraftGuard || (task.path && task.path.at(-2)==='drafts' && ['receipt','returns'].includes(task.path.at(-1)))) throw Error('כתיבת סנכרון ישנה נעצרה — העבודה נשמרה בטלפון');
+  if (task.receiptDraftGuard || (task.path && task.path.at(-2)==='drafts' && ['receipt'].includes(task.path.at(-1)))) throw Error('כתיבת סנכרון ישנה נעצרה — העבודה נשמרה בטלפון');
   if (Array.isArray(task.tasks)) { for (const t of task.tasks) await executeCloudTask(t); return; }
   if (task.op === 'batch') {
     const batch = writeBatch(db);
@@ -5103,7 +5189,7 @@ async function retryCloudFailedWrites() {
   try {
     const list = cloudFailedWrites.slice().reverse(); // הישן קודם
     for (const item of list) {
-      if(legacyDraftTask(item.task) && ['save receipt before clearing draft','save receipt','save returns before send','save returns without sending','save order before send','save returns draft'].includes(item.actionName)){fail++;continue;}
+      if(legacyDraftTask(item.task) && ['save receipt before clearing draft','save receipt','save order before send'].includes(item.actionName)){fail++;continue;}
       try {
         const retryTask = retryTaskWithoutStaleUnitWrites(item);
         if (!retryTask) { clearPendingUnitIntentForTask(item.actionName, item.task); removeCloudFailedWrite(item.id); ok++; continue; }
@@ -5655,7 +5741,6 @@ function returnsDigitsPick(pid) {
   promptQty(p, 'returns');
 }
 function addScannedToReturns(p) {
-  if (!canEditDraft('returns_'+returnsSlot)) return;
   const ex = returnsList.find(it => it.productId === p.id);
   if (ex) ex.qty += 1;
   else returnsList.push({ productId: p.id, name: p.name, barcode: p.barcode || '', qty: 1 });
@@ -22191,8 +22276,9 @@ if ('serviceWorker' in navigator) {
 }
 
 for (const event of ['click','input','change','beforeinput','keydown'])document.addEventListener(event,guardDraftEvent,true);
-$('draftHandoffBanner').addEventListener('click',e=>{const b=e.target.closest('[data-handoff]');if(b)draftHandoffAction(b.dataset.handoff,b.dataset.kind,b.dataset.session);});
+$('draftHandoffBanner').addEventListener('click',e=>{const b=e.target.closest('[data-handoff]');if(b)draftHandoffAction(b.dataset.handoff,b.dataset.kind,b.dataset.session);const r=e.target.closest('[data-return-recovery]');if(r)openReturnsRecovery(r.dataset.returnRecovery);});
 window.addEventListener('online',recoverLegacyDraftWrites);
+window.addEventListener('online',startReturnsLive);
 </script>
 </body>
 </html>

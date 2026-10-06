@@ -17,7 +17,7 @@ function boundary(){
   const [host,port]=emulator.split(':');sdk.connectFirestoreEmulator(db,host,Number(port));
   const p=phone(createCloud(),{start:false,timeouts:{backup:3000,finish:3000,take:3000,close:3000,read:3000}});
   const doc=(_db,...parts)=>sdk.doc(db,'runs',run,...parts),collection=(_db,...parts)=>sdk.collection(db,'runs',run,...parts);
-  Object.assign(p.context,{doc,collection,query:sdk.query,where:sdk.where,onSnapshot:sdk.onSnapshot,getDocFromServer:sdk.getDocFromServer,
+  Object.assign(p.context,{doc,collection,query:sdk.query,where:sdk.where,onSnapshot:sdk.onSnapshot,getDocFromServer:sdk.getDocFromServer,getDocsFromServer:sdk.getDocsFromServer,
    runTransaction:(_db,fn,opts)=>sdk.runTransaction(db,t=>fn({get:r=>t.get(r),set:(r,d)=>t.set(r,structuredClone(d))}),opts)});
   p.run('startDraftHandoffs()');clients.push({p,app,db});
   p.read=async key=>{const s=await sdk.getDocFromServer(doc(null,...(root+key).split('/')));return s.exists()?s.data():null;};
@@ -43,4 +43,14 @@ test('real SDK: product price, log and final receipt commit together; stale prod
   await a.put('products/milk',{name:'מוצר בדיקה',price:7});await a.run('confirmReceipt()');assert.equal((await a.list('receipts')).length,0);assert.equal((await a.list('actionLog')).length,0);assert.equal(a.run('receiptList.length'),1);
   await a.put('products/milk',{name:'מוצר בדיקה',price:5});await a.run('confirmReceipt()');assert.equal((await a.list('receipts')).length,1);assert.equal((await a.read('products/milk')).price,6);assert.equal((await a.list('actionLog')).length,1);
  }finally{await c.close();}
+});
+
+test('real SDK: v133 returns move atomically to live while the local count remains recoverable',async()=>{
+ const b=boundary();try{const p=b.make();p.context.setTimeout=(fn,ms)=>{const t=setTimeout(fn,ms);t.unref();return t;};p.context.clearTimeout=clearTimeout;
+ const payload={schemaVersion:1,draftId:'return-133',slot:'weekly',items:[{productId:'milk',qty:4}],date:'2026-10-06',note:''};
+ await p.put('drafts/returns',{schemaVersion:2,draftIds:{weekly:'return-133'},slots:{weekly:[{productId:'milk',qty:9}],daily:[]},dates:{},active:'weekly',updatedAt:1});
+ await p.put('drafts/handoff_tnuva_returns_weekly_return-133',{handoff:1,app:'tnuva',kind:'returns_weekly',openKey:'tnuva:returns_weekly',sessionId:'return-133',recordId:'return-133',deviceId:'B',gen:2,state:'open',payload:JSON.stringify(payload)});
+ p.run("returnsLiveReady=false;returnsDraftIds.weekly='return-133';returnsList=[{productId:'milk',qty:9}];returnsSlots.weekly=returnsList;saveReturnsDraft()");
+ await p.run('migrateReturns133()');assert.equal((await p.read('drafts/returns')).slots.weekly[0].qty,4);assert.equal((await p.read('drafts/handoff_tnuva_returns_weekly_return-133')).state,'canceled');assert.equal(p.run("returnsRecoveryLocal()['local_return-133'].items[0].qty"),9);
+ }finally{await b.close();}
 });

@@ -88,7 +88,7 @@ export function runtime(supplier, { storage = new Map(), data = fixture(supplier
     vm.runInContext(fs.readFileSync(new URL('../draft-handoff.js',import.meta.url),'utf8'),context);
     const create=context.DraftHandoff.create;
     context.DraftHandoff={create:o=>create({...o,timeouts:{debounce:5,retry:1000},timers:{set:(fn,ms)=>{const t=setTimeout(fn,ms);t.unref();return t;},clear:clearTimeout}})};
-    run('startDraftHandoffs()');
+    run('startDraftHandoffs();returnsLiveReady=true');
     handoffRuns.push(()=>run('Object.values(draftHandoffs).forEach(h=>h.stop())'));
   }
   async function scan(count = 1) {
