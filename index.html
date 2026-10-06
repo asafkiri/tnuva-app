@@ -546,13 +546,14 @@
     </div>
 
     <script src="./draft-handoff.js"></script>
+    <script src="./shared-return-events.js"></script>
 <script type="module">
 // ===== Firebase (מפתח הענן של גלוברנס) =====
 import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
 import { getAuth, signInAnonymously, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
 import {
   initializeFirestore, getFirestore, persistentLocalCache, persistentMultipleTabManager,
-  collection, onSnapshot, doc, getDoc, deleteDoc, addDoc, updateDoc, setDoc, writeBatch, query, orderBy, limit, getDocs, where, runTransaction, getDocFromServer, getDocsFromServer
+  collection, onSnapshot, doc, getDoc, deleteDoc, addDoc, updateDoc, setDoc, writeBatch, query, orderBy, limit, getDocs, where, runTransaction, getDocFromServer, getDocsFromServer, deleteField
 } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
 
 const firebaseConfig = {
@@ -635,7 +636,6 @@ let returnsSlot = 'weekly';
 let returnsDocDate = '';
 let returnsDocDates = { weekly: '', daily: '' };
 let returnsDraftNotes = { weekly: '', daily: '' };
-let returnsDraftUpdatedAt = 0;
 let returnsDraftIds = { weekly: null, daily: null };
 let returns = [];
 let pendingBarcodeProductId = null, pendingBarcodeEdit = false;
@@ -647,8 +647,8 @@ const avgTimers = {};
 let advanceTimer = null;
 let dragState = null;
 const RETURNS_DRAFT_KEY = 'tn_returns_draft';
-let returnsDraftTimer = null;
 let returnsLiveReady=false,returnsLiveStarting=null,returnsRecoveryCloud={};
+let returnsEvents=null,returnsSending=false,returnsSyncState={pending:0,ready:false,error:null};
 
 // ===== מצב קליטת תעודות =====
 let receiptCountingMode = 'scan'; // 'scan' | 'manual'; saved with this receipt draft
@@ -741,7 +741,7 @@ let receiptDupConfirmed = false; // אישור שמירה למרות חשד לכ
 const RECEIPT_DRAFT_KEY = 'tn_receipt_draft';
 let receivingDigitsMissTimer = null;
 let receivingDigitsMissNotified = '';
-const APP_VERSION = '136'; // טיוטה מקומית, גיבוי והעברה מפורשת
+const APP_VERSION = '137'; // טיוטה מקומית, גיבוי והעברה מפורשת
 // גרסה 73: מוצר בלי מחיר קופה — חלון הכמות מציג מיד את העלות ליח׳ (ללא מע״מ) ופותח שדה להקלדת המחיר שעובר בקופה, בלי לנדוד למסך המחירים
 // v40: תג גרסה קבוע בפינת המסך — לדעת בשנייה איזו גרסה באמת רצה על המכשיר
 // (עוזר במיוחד מול מטמון ה-PWA). pointer-events:none — לעולם לא חוסם מגע.
@@ -933,131 +933,72 @@ function restoreDraft() {
   try { const raw=JSON.parse(localStorage.getItem(ORDER_DRAFT_KEY)||'{}');orderState=raw.schemaVersion===1?raw.items||{}:raw;orderDraftId=raw.schemaVersion===1?raw.draftId||null:null;orderDraftNote=raw.schemaVersion===1?raw.note||'':''; } catch(e) {}
   draftReady=true;
 }
-function saveReturnsDraft() {
-  returnsSlots[returnsSlot] = returnsList;
-  returnsDocDates[returnsSlot] = returnsDocDate || '';
-  if (!returnsDraftIds[returnsSlot]) returnsDraftIds[returnsSlot] = makeOperationId('returns');
-  returnsDraftUpdatedAt = Date.now();
-  const snapshot = { schemaVersion: 2, draftIds: returnsDraftIds, slots: returnsSlots, dates: returnsDocDates, notes:returnsDraftNotes, v133Recovery:returnsRecoveryCloud, active: returnsSlot, updatedAt: returnsDraftUpdatedAt };
-  try { localStorage.setItem(RETURNS_DRAFT_KEY, JSON.stringify(snapshot)); } catch (e) { showToast('לא ניתן לשמור את טיוטת החזרות במכשיר', null, null, 3200); }
-  if (!db || !returnsLiveReady) return;
-  clearTimeout(returnsDraftTimer);
-  returnsDraftTimer = setTimeout(() => {
-    runCloudTaskSilent('save returns draft', { op: 'set', path: dataPath('drafts', 'returns'), data: snapshot, merge: false, operationId: 'returns_draft' });
-  }, 700);
+function returnsEventSnapshot(){
+  returnsSlots[returnsSlot]=returnsList;returnsDocDates[returnsSlot]=returnsDocDate||'';
+  return Object.fromEntries(['weekly','daily'].map(slot=>[slot,{items:cloneSafe(returnsSlots[slot]||[]),date:returnsDocDates[slot]||'',note:returnsDraftNotes[slot]||''}]));
 }
-function restoreReturnsDraft() {
-  try {
-    const s = localStorage.getItem(RETURNS_DRAFT_KEY); if (!s) return;
-    const a = JSON.parse(s);
-    if (Array.isArray(a)) { returnsSlots = { weekly: a, daily: [] }; returnsSlot = 'weekly'; } // טיוטה ישנה
-    else if (a && a.slots) {
-      returnsSlots = { weekly: Array.isArray(a.slots.weekly) ? a.slots.weekly : [], daily: Array.isArray(a.slots.daily) ? a.slots.daily : [] };
-      returnsSlot = a.active === 'daily' ? 'daily' : 'weekly';
-      returnsDraftNotes = {weekly:String(a.notes&&a.notes.weekly||''),daily:String(a.notes&&a.notes.daily||'')};
-      returnsDocDates = { weekly: String((a.dates && a.dates.weekly) || ''), daily: String((a.dates && a.dates.daily) || '') };
-      returnsDraftUpdatedAt = Number(a.updatedAt) || 0;
-      returnsDraftIds = { weekly: (a.draftIds && a.draftIds.weekly) || a.draftId || null, daily: (a.draftIds && a.draftIds.daily) || null };
-    }
-    returnsList = returnsSlots[returnsSlot];
-    returnsDocDate = returnsDocDates[returnsSlot] || '';
-  } catch (e) {}
+function applyReturnsEvents(view,state){
+  returnsLiveReady=!!state.ready;returnsSyncState=state;
+  for(const slot of ['weekly','daily']){const x=view.slots[slot]||{};returnsSlots[slot]=cloneSafe(x.items||[]);returnsDocDates[slot]=x.date||'';returnsDraftNotes[slot]=x.note||'';returnsDraftIds[slot]=null;}
+  returnsList=returnsSlots[returnsSlot];returnsDocDate=returnsDocDates[returnsSlot]||'';
+  queueMicrotask(()=>{const dateInput=$('retDocDate');if(dateInput&&document.activeElement!==dateInput)dateInput.value=returnsDocDate;const noteInput=$('orderNote');if(sendCtx?.type==='returns'&&!sendCtx.resendExisting&&noteInput&&document.activeElement!==noteInput)noteInput.value=returnsDraftNotes[sendCtx.sourceSlot||returnsSlot]||'';if(currentView==='returns'&&!isDragging)refreshReturnsList();const el=$('returnsEventStatus');if(el)el.textContent=returnsEventStatusText();updateCart();});
 }
-function switchReturnsSlot(slot) {
-  if (slot !== 'weekly' && slot !== 'daily') return;
-  if (slot === returnsSlot) return;
-  returnsSlots[returnsSlot] = returnsList;
-  returnsDocDates[returnsSlot] = returnsDocDate || '';
-  returnsSlot = slot;
-  returnsList = returnsSlots[returnsSlot];
-  returnsDocDate = returnsDocDates[returnsSlot] || '';
-  saveReturnsDraft();
-  renderReturns();
+function ensureReturnsEvents(){
+  if(returnsEvents)return returnsEvents;
+  let deviceId;try{deviceId=localStorage.getItem('tn_device_id');if(!deviceId){deviceId=makeOperationId('phone');localStorage.setItem('tn_device_id',deviceId);}}catch(e){}
+  returnsEvents=SharedReturnEvents.create({app:'tnuva',prefix:'tn',deviceId,storage:localStorage,slots:['weekly','daily'],db,
+    fs:{runTransaction:(...args)=>runTransaction(...args),onSnapshot:(...args)=>onSnapshot(...args),updateDoc:(...args)=>updateDoc(...args),deleteField:(...args)=>deleteField(...args)},
+    ref:doc(db,...dataPath('drafts','returns_events_tnuva_v1')),legacyRef:doc(db,...dataPath('drafts','returns')),recordRef:id=>doc(db,...dataPath('returns',id)),
+    legacy:legacyReturnsToEvents,onChange:applyReturnsEvents});
+  applyReturnsEvents(returnsEvents.view(),returnsEvents.state());
+  return returnsEvents;
 }
-// מעבר קדימה מ־133 בלבד. ההחזרות עצמן חוזרות למנגנון הלייב הקיים, לפי סעיף 9 המעודכן.
+function saveReturnsDraft(){
+  const next=returnsEventSnapshot(),engine=ensureReturnsEvents();let ok=true;
+  for(const slot of ['weekly','daily'])if(!engine.change(slot,next[slot]))ok=false;
+  if(!ok)showToast('אין מקום לשמור את הסריקה בטלפון. פנה מקום ונסה שוב; הרשימה הקודמת נשמרה.');
+  return ok;
+}
+function restoreReturnsDraft(){
+  try{const raw=JSON.parse(localStorage.getItem(RETURNS_DRAFT_KEY)||'null');if(raw){returnsSlot=localStorage.getItem('tn_returns_active_slot')==='daily'?'daily':'weekly';
+    if(raw.schemaVersion!==3){const copies=returnsRecoveryLocal();for(const slot of ['weekly','daily']){const items=Array.isArray(raw)?(slot==='weekly'?raw:[]):raw.slots?.[slot]||(slot==='weekly'?raw.items:[])||[];if(items.length){const id=raw.draftIds?.[slot]||raw.draftId||'legacy_'+slot;copies['local_'+id]={draftId:id,slot,items,date:raw.dates?.[slot]||'',note:raw.notes?.[slot]||''};}}localStorage.setItem('tn_returns_v133_recovery',JSON.stringify(copies));}
+  }}catch(e){showToast('לא ניתן לגבות את טיוטת ההחזרות הישנה. היא נשארה בטלפון.');}
+  // אין העלאה של צילום מצב ישן; רק התור המקומי של האירועים חוזר לעבודה.
+  ensureReturnsEvents();
+}
+function switchReturnsSlot(slot){if(!['weekly','daily'].includes(slot)||slot===returnsSlot)return;saveReturnsDraft();returnsSlot=slot;try{localStorage.setItem('tn_returns_active_slot',slot);}catch(e){}returnsList=returnsSlots[slot];returnsDocDate=returnsDocDates[slot]||'';renderReturns();}
 function returnsRecoveryLocal(){try{return JSON.parse(localStorage.getItem('tn_returns_v133_recovery')||'{}');}catch(e){return {};}}
 function keepReturnsRecovery(){
-  const copies=returnsRecoveryLocal();
-  for(const slot of ['weekly','daily']){const items=slot===returnsSlot?returnsList:returnsSlots[slot];if(items.length){const id=returnsDraftIds[slot]||makeOperationId('returns');copies['local_'+id]={draftId:id,slot,items:cloneSafe(items),date:returnsDocDates[slot]||'',note:returnsDraftNotes[slot]||''};}}
+  const copies=returnsRecoveryLocal();for(const slot of ['weekly','daily']){const items=slot===returnsSlot?returnsList:returnsSlots[slot];if(items.length){const id=returnsDraftIds[slot]||makeOperationId('returns');copies['local_'+id]={draftId:id,slot,items:cloneSafe(items),date:returnsDocDates[slot]||'',note:returnsDraftNotes[slot]||''};}}
   localStorage.setItem('tn_returns_v133_recovery',JSON.stringify(copies));
 }
+function returnsEventStatusText(){return returnsSyncState.error?'הסריקות שמורות בטלפון; החיבור לענן מתעכב.':returnsSyncState.pending?'נשמר בטלפון · '+returnsSyncState.pending+' שינויים ממתינים לענן':returnsSyncState.ready?'כל הסריקות מגובות ומשותפות בין הטלפונים':'בודק את הרשימה המשותפת; אפשר לסרוק בטלפון.';}
 function returnsRecoveryHtml(){
  const copies={...returnsRecoveryCloud,...returnsRecoveryLocal()};
- return Object.entries(copies).filter(([id,p])=>handoffCanonical(p.items)!==handoffCanonical(returnsSlots[p.slot]||[])).map(([id,p])=>'<div class="p-3 mb-2 rounded-xl bg-amber-50 text-sm">עותק החזרות שנשמר לפני עדכון 134 ('+(p.items||[]).length+' שורות)<button class="btn-tap block" data-return-recovery="'+htmlEscape(id)+'">פתח את העותק</button></div>').join('');
+ return Object.entries(copies).filter(([id,p])=>handoffCanonical(p.items)!==handoffCanonical(returnsSlots[p.slot]||[])).map(([id,p])=>'<details class="p-3 mb-2 rounded-xl bg-amber-50 text-sm"><summary>עותק מקומי מלפני עדכון ההחזרות ('+(p.items||[]).length+' שורות) — לעיון בלבד</summary><p>ייתכן שהפריטים כבר נשלחו. העותק אינו מצטרף לרשימה.</p>'+((p.items||[]).map(x=>'<div>'+htmlEscape(x.name||x.productId||'מוצר')+' · '+htmlEscape(String(x.qty||0))+' יח׳</div>').join(''))+'</details>').join('');
 }
-function openReturnsRecovery(id){
- const p=({...returnsRecoveryCloud,...returnsRecoveryLocal()})[id];if(!p)return;
- if(returnsSlots[p.slot]?.length){showToast('סיים קודם את ההחזרה הפתוחה. העותק נשאר שמור כאן.');return;}
- returnsSlot=p.slot;returnsList=cloneSafe(p.items);returnsSlots[p.slot]=returnsList;returnsDraftIds[p.slot]=makeOperationId('returns');returnsDocDate=p.date||'';returnsDraftNotes[p.slot]=p.note||'';saveReturnsDraft();renderReturns();
-}
-async function migrateReturns133(){
- if(!navigator.onLine)throw Error('offline');
- const offers=[];for(const slot of ['weekly','daily']){const snap=await getDocsFromServer(query(collection(db,'artifacts',appId,'public','data','drafts'),where('openKey','==','tnuva:returns_'+slot)));for(const d of snap.docs)offers.push({slot,id:d.id});}
- const hadLocal133=['weekly','daily'].some(slot=>['claim','away'].some(t=>{try{const x=JSON.parse(localStorage.getItem('tn_handoff_returns_'+slot+'_'+t)||'null');return x&&x.sessionId===returnsDraftIds[slot];}catch(e){return false;}}));
- for(const slot of ['weekly','daily'])if(returnsDraftIds[slot]&&['claim','away'].some(t=>localStorage.getItem('tn_handoff_returns_'+slot+'_'+t))){const id='handoff_tnuva_returns_'+slot+'_'+returnsDraftIds[slot];if(!offers.some(o=>o.id===id))offers.push({slot,id});}
- if(!offers.length&&!hadLocal133)return;
- keepReturnsRecovery(); // אם האחסון מלא לא מוחקים ולא מפעילים כתיבה ישנה.
- const ref=doc(db,...dataPath('drafts','returns'));let cancelled=false;
- let deadline;const timer=setTimeout(()=>{cancelled=true;},12000),check=()=>{if(cancelled)throw Error('timeout');};
- try{
-  const result=await Promise.race([runTransaction(db,async tx=>{
-   const snap=await tx.get(ref);check();const before=snap.exists()?snap.data():{};
-   const next={...before,schemaVersion:2,slots:{weekly:[],daily:[],...before.slots},draftIds:{...before.draftIds},dates:{...before.dates},notes:{...before.notes},v133Recovery:{...before.v133Recovery}},entries=[];
-   for(const offer of offers){const hRef=doc(db,...dataPath('drafts',offer.id)),hSnap=await tx.get(hRef);check();if(!hSnap.exists())continue;const h=hSnap.data();if(h.migratedTo||!['open','saved'].includes(h.state))continue;const rec=await tx.get(doc(db,...dataPath('returns',h.recordId)));check();entries.push({offer,hRef,h,exists:rec.exists()});}
-   for(const {offer,hRef,h,exists} of entries){
-    const p=h.payload?JSON.parse(h.payload):null,slot=offer.slot;
-    if(exists&&next.draftIds[slot]===h.recordId){next.slots[slot]=[];next.draftIds[slot]=null;}
-    if(!exists&&p){if(!next.slots[slot].length||next.draftIds[slot]===h.recordId){next.slots[slot]=p.items;next.draftIds[slot]=p.draftId;next.dates[slot]=p.date||'';next.notes[slot]=p.note||'';}else next.v133Recovery[h.sessionId]=p;}
-    tx.set(hRef,{...h,state:exists?'saved':'canceled',openKey:null,payload:null,migratedTo:'returns-live-v134',updatedAt:Date.now()});
-   }
-   if(entries.length){next.updatedAt=Date.now();tx.set(ref,next);}check();return next;
-  },{maxAttempts:1}),new Promise((_,reject)=>{deadline=setTimeout(()=>reject(Error('timeout')),12500);})]);
-  // אף מצב מקומי אינו משתנה עד שהטרנזקציה אושרה; העותק שלפני המעבר נשאר נגיש.
-  if(hadLocal133||offers.length){keepReturnsRecovery();localStorage.setItem(RETURNS_DRAFT_KEY,JSON.stringify(result));restoreReturnsDraft();returnsRecoveryCloud=result.v133Recovery||{};}
- }finally{cancelled=true;clearTimeout(timer);clearTimeout(deadline);}
+function openReturnsRecovery(){showToast('העותק הישן נשמר לעיון בלבד, כדי לא לשלוח שוב פריטים שכבר נשלחו.');}
+async function legacyReturnsToEvents(tx,before){
+  before=before||{};const slots={},writes=[],recoveries={...before.v133Recovery};
+  const offers=[];for(const slot of ['weekly','daily']){const found=await getDocsFromServer(query(collection(db,'artifacts',appId,'public','data','drafts'),where('openKey','==','tnuva:returns_'+slot)));for(const d of found.docs)offers.push({slot,id:d.id});}
+
+  for(const slot of ['weekly','daily'])for(const kind of ['claim','away']){try{const known=JSON.parse(localStorage.getItem('tn_handoff_returns_'+slot+'_'+kind)||'null');if(known?.sessionId){const id='handoff_tnuva_returns_'+slot+'_'+known.sessionId;if(!offers.some(x=>x.id===id))offers.push({slot,id});}}catch(e){}}
+  // קריאה של הרשומה הישנה מגינה מטיוטה שנשלחה אבל הניקוי שלה לא הספיק.
+  for(const slot of ['weekly','daily']){const id=before.draftIds?.[slot]||(slot==='weekly'?before.draftId:null),record=id?await tx.get(doc(db,...dataPath('returns',id))):null;
+    slots[slot]={draftId:id||'legacy_'+slot,items:record?.exists()?[]:cloneSafe(before.slots?.[slot]||(slot==='weekly'?before.items:[])||[]),date:before.dates?.[slot]||'',note:before.notes?.[slot]||''};
+  }
+  for(const offer of offers){const ref=doc(db,...dataPath('drafts',offer.id)),s=await tx.get(ref);if(!s.exists())continue;const h=s.data();if(h.migratedTo||!['open','saved'].includes(h.state))continue;
+    const saved=await tx.get(doc(db,...dataPath('returns',h.recordId))),p=h.payload?JSON.parse(h.payload):null,slot=offer.slot;
+    if(saved.exists()&&slots[slot].draftId===h.recordId)slots[slot].items=[];
+    if(!saved.exists()&&p){if(!slots[slot].items.length||slots[slot].draftId===h.recordId)slots[slot]={draftId:p.draftId||h.recordId,items:p.items||[],date:p.date||'',note:p.note||''};else recoveries[h.sessionId]=p;}
+    writes.push({ref,data:{...h,state:saved.exists()?'saved':'canceled',openKey:null,payload:null,migratedTo:'returns-events-v137'}});
+  }
+  if(Object.keys(recoveries).length){const local=returnsRecoveryLocal();localStorage.setItem('tn_returns_v133_recovery',JSON.stringify({...local,...recoveries}));}
+  return {slots,writes};
 }
 function startReturnsLive(){
- if(!db||returnsLiveReady)return Promise.resolve();if(returnsLiveStarting)return returnsLiveStarting;
- returnsLiveStarting=(async()=>{try{await migrateReturns133();returnsLiveReady=true;
-  // טיוטת חזרות משותפת — מסונכרנת בין כל המכשירים בזמן אמת
-  const rdRef = doc(db, 'artifacts', appId, 'public', 'data', 'drafts', 'returns');
-  onSnapshot(rdRef, (snap) => {
-    if (snap.metadata.hasPendingWrites) return; // הד של כתיבה מקומית — מתעלמים
-    const d = snap.data();
-    if (!d) return;
-    returnsRecoveryCloud=d.v133Recovery||{};
-    const remoteUpdatedAt = Number(d.updatedAt) || 0;
-    if (remoteUpdatedAt && remoteUpdatedAt <= returnsDraftUpdatedAt) return;
-    if (d.slots) {
-      // מחילים slots + active + dates אטומית, כדי שיומית ושבועית לא יתערבבו.
-      returnsSlots = {
-        weekly: Array.isArray(d.slots.weekly) ? d.slots.weekly : [],
-        daily: Array.isArray(d.slots.daily) ? d.slots.daily : []
-      };
-      returnsSlot = d.active === 'daily' ? 'daily' : 'weekly';
-      returnsDraftNotes={weekly:String(d.notes&&d.notes.weekly||''),daily:String(d.notes&&d.notes.daily||'')};
-      returnsDocDates = { weekly: String((d.dates && d.dates.weekly) || ''), daily: String((d.dates && d.dates.daily) || '') };
-      returnsDraftIds = { weekly: (d.draftIds && d.draftIds.weekly) || d.draftId || returnsDraftIds.weekly || null, daily: (d.draftIds && d.draftIds.daily) || returnsDraftIds.daily || null };
-    } else if (Array.isArray(d.items)) {
-      // מעבר מהמבנה הישן: הרשימה הישנה הייתה שבועית.
-      returnsSlots = { weekly: d.items, daily: [] };
-      returnsSlot = 'weekly';
-      returnsDocDates = { weekly: '', daily: '' };
-    } else return;
-    returnsDraftUpdatedAt = remoteUpdatedAt;
-    returnsList = returnsSlots[returnsSlot];
-    returnsDocDate = returnsDocDates[returnsSlot] || '';
-    try { localStorage.setItem(RETURNS_DRAFT_KEY, JSON.stringify({ schemaVersion: 2, draftIds: returnsDraftIds, slots: returnsSlots, dates: returnsDocDates, notes:returnsDraftNotes, active: returnsSlot, updatedAt: returnsDraftUpdatedAt })); } catch (e) {}
-    if (currentView === 'returns' && !isDragging) {
-      const a = document.activeElement;
-      if (!(a && app.contains(a) && (a.tagName === 'INPUT' || a.tagName === 'SELECT'))) refreshReturnsList();
-    }
-    updateCart();
-  }, console.error);
-
-
- }catch(e){showToast('ההחזרות שמורות בטלפון. מחכה לחיבור להשלמת עדכון 134.',null,null,5000);}
- finally{returnsLiveStarting=null;renderDraftHandoffBanner();}})();return returnsLiveStarting;
+  if(!db)return Promise.resolve();if(returnsLiveStarting)return returnsLiveStarting;
+  returnsLiveStarting=ensureReturnsEvents().start().finally(()=>{returnsLiveStarting=null;});return returnsLiveStarting;
 }
 
 function parseNoteVal(v) {
@@ -2039,7 +1980,18 @@ function guardDraftEvent(e) {
 }
 // תור ישן מופרד לפני כל ניסיון שליחה. אף כתיבה ממנו לא נוגעת בטיוטה הישנה או דורסת רשומה.
 function legacyDraftTask(task){return !!(task&&(task.receiptDraftGuard||(task.path&&['receipts','history'].includes(task.path.at(-2))&&task.op==='set')||(task.path&&task.path.at(-2)==='drafts'&&['receipt'].includes(task.path.at(-1)))));}
+function legacyReturnsTask(task){
+  if(!task)return false;
+  if(task.path?.at(-2)==='drafts'&&task.path?.at(-1)==='returns')return true;
+  return [...(task.tasks||[]),...(task.writes||[])].some(legacyReturnsTask);
+}
+function quarantineLegacyReturnsWrites(){
+  const old=cloudFailedWrites.filter(x=>legacyReturnsTask(x.task)||['save returns without sending','save returns before send','return items to open list'].includes(x.actionName));
+  if(!old.length)return;
+  try{const key='tn_returns_legacy_writes_v137',saved=JSON.parse(localStorage.getItem(key)||'[]');localStorage.setItem(key,JSON.stringify([...saved,...old.filter(x=>!saved.some(y=>x.id===y.id))]));cloudFailedWrites=cloudFailedWrites.filter(x=>!old.includes(x));saveCloudFailedWrites();}catch(e){showToast('תור ההחזרות הישן נעצר. פנה מקום כדי לשמור את העותק המקומי.');}
+}
 function quarantineLegacyDraftWrites() {
+  quarantineLegacyReturnsWrites();
   const key=HANDOFF_PREFIX+'_handoff_legacy_writes';
   let saved=[];try{saved=JSON.parse(localStorage.getItem(key)||'[]');}catch(e){}
   const finalNames=['save receipt before clearing draft','save receipt','save order before send'];
@@ -2665,7 +2617,7 @@ function trashCard(it) {
       '</div>' +
     '</div>' +
     '<div class="flex gap-2 mt-4">' +
-      '<button data-role="trash-restore" data-id="' + htmlEscape(it.trashId) + '" class="btn-tap flex-1 py-2.5 rounded-xl font-black bg-green-600 text-white flex items-center justify-center gap-2"><i class="fa-solid fa-rotate-left"></i> שחזר</button>' +
+      (it.reason==='return-to-open-list'?'<div class="text-xs text-slate-500 flex-1">הפריטים הוחזרו לרשימה הפתוחה; לא ניתן לשחזר כאן את התעודה</div>':'<button data-role="trash-restore" data-id="' + htmlEscape(it.trashId) + '" class="btn-tap flex-1 py-2.5 rounded-xl font-black bg-green-600 text-white flex items-center justify-center gap-2"><i class="fa-solid fa-rotate-left"></i> שחזר</button>') +
       '<button data-role="trash-delete" data-id="' + htmlEscape(it.trashId) + '" class="btn-tap px-4 py-2.5 rounded-xl font-black bg-red-50 text-red-600 flex items-center justify-center gap-2"><i class="fa-solid fa-trash-can"></i></button>' +
     '</div>' +
   '</div>';
@@ -2701,12 +2653,13 @@ function mergeRestorePlan(it, currentTarget) {
 async function restoreTrashItem(trashId) {
   const it = trash.find(x => x.trashId === trashId);
   if (!it || !it.collectionName || !it.originalId || !it.data) { showToast('לא ניתן לשחזר את הרשומה הזאת', null, null, 3000); return; }
+  if(it.reason==='return-to-open-list'){showToast('הפריטים הוחזרו לרשימה הפתוחה; לא ניתן לשחזר כאן את התעודה');return;}
   if (it.reason === 'merge-return' && it.mergeTargetId && it.mergeTargetBackup) {
     const plan = mergeRestorePlan(it, returns.find(x => x.id === it.mergeTargetId));
     if (plan.mode === 'blocked-credited') { showToast('התעודה המאוחדת כבר אומתה — בטל קודם את אימות הזיכוי שלה ואז שחזר.', null, null, 4500); return; }
     if (plan.mode === 'blocked-newer-merge') { showToast('בוצע לתעודה מיזוג נוסף מאוחר יותר — שחזר קודם את רשומת המיזוג החדשה יותר בסל.', null, null, 4500); return; }
     const writes = [{ op: 'set', path: dataPath('returns', it.originalId), data: cloneSafe({ ...it.data, id: it.originalId }) }];
-    if (plan.mode === 'full-unmerge') writes.push({ op: 'set', path: dataPath('returns', it.mergeTargetId), data: cloneSafe({ ...it.mergeTargetBackup, id: it.mergeTargetId }) });
+    if (plan.mode === 'full-unmerge') writes.push({ op: 'set', path: dataPath('returns', it.mergeTargetId), expected:cloneSafe(returns.find(x=>x.id===it.mergeTargetId)), data: cloneSafe({ ...it.mergeTargetBackup, id: it.mergeTargetId }) });
     writes.push({ op: 'delete', path: dataPath('trash', trashId) });
     const okMerge = await runCloudTask('restore merged return pair', { op: 'batch', operationId: makeOperationId('trash_restore'), writes });
     if (okMerge) showToast(plan.mode === 'full-unmerge' ? 'המיזוג בוטל — שתי התעודות שוחזרו למצבן שלפני המיזוג ✓' : 'תעודת המקור שוחזרה ✓', null, null, 2800);
@@ -2977,6 +2930,7 @@ async function exportFullBackup() {
       localDrafts: {
         order: readLocalJson(ORDER_DRAFT_KEY, null),
         returns: readLocalJson(RETURNS_DRAFT_KEY, null),
+        returnEvents: readLocalJson('tn_return_events_v1', null),
         receipt: readLocalJson(RECEIPT_DRAFT_KEY, null)
       }
     };
@@ -3054,10 +3008,15 @@ async function applyBackupToCloud(payload) {
     for (const c of BACKUP_COLLECTIONS) {
       const ref = collection(db, 'artifacts', appId, 'public', 'data', c.name);
       const existing = await getDocs(ref);
+      if(c.name==='returns'){
+        for(const [id,data] of Object.entries(payload.collections?.returns||{}))await runTransaction(db,async tx=>{const ledger=await tx.get(doc(db,...dataPath('drafts','returns_events_tnuva_v1')));if(ledger.data()?.protectedRecords?.[id])return;const target=doc(db,...dataPath('returns',id)),snap=await tx.get(target);if(!snap.exists()){tx.set(target,cloneSafe(data));restored++;}});
+        continue;
+      }
       const ops = [];
-      existing.docs.forEach(dd => ops.push({ type: 'delete', ref: dd.ref }));
+      const protectedIds=new Set(existing.docs.filter(dd=>c.name==='drafts'&&dd.id==='returns_events_tnuva_v1'||c.name==='returns'&&dd.data().returnEventSend).map(dd=>dd.id));
+      existing.docs.forEach(dd => {if(!protectedIds.has(dd.id))ops.push({ type: 'delete', ref: dd.ref });});
       const docsObj = cloneSafe((payload.collections && payload.collections[c.name]) || {});
-      Object.keys(docsObj).forEach(id => ops.push({ type: 'set', ref: doc(db, 'artifacts', appId, 'public', 'data', c.name, id), data: cloneSafe(docsObj[id]) }));
+      Object.keys(docsObj).filter(id=>!protectedIds.has(id)&&!(c.name==='drafts'&&id==='returns_events_tnuva_v1')).forEach(id => ops.push({ type: 'set', ref: doc(db, 'artifacts', appId, 'public', 'data', c.name, id), data: cloneSafe(docsObj[id]) }));
       restored += await commitBackupOpQueue(ops, 'משחזר: ' + c.label);
     }
     showToast('השחזור הסתיים ✓ הנתונים יתעדכנו מהענן בעוד רגע', null, null, 4500);
@@ -3540,7 +3499,7 @@ function renderReturns() {
   const dCnt = (returnsSlot === 'daily' ? returnsList : returnsSlots.daily).length;
   const slotBtn = (key, label, cnt) =>
     '<button data-role="ret-slot" data-slot="' + key + '" class="btn-tap flex-1 py-2.5 rounded-lg font-black text-sm ' + (returnsSlot === key ? 'bg-white shadow text-emerald-800' : 'text-slate-500') + '">' + label + (cnt ? ' <span class="text-[10px] bg-rose-100 text-rose-700 rounded-full px-1.5">' + cnt + '</span>' : '') + '</button>';
-  app.innerHTML = histBar +
+  app.innerHTML = histBar + '<div id="returnsEventStatus" class="text-xs text-slate-500 mb-2">'+htmlEscape(returnsEventStatusText())+'</div>'+
     '<div class="flex bg-slate-100 rounded-xl p-1 mb-3 gap-1">' + slotBtn('weekly', 'חזרה שבועית', wCnt) + slotBtn('daily', 'ארגזים יומיים', dCnt) + '</div>' +
     '<button data-role="ret-scan" class="btn-tap w-full bg-blue-600 text-white rounded-2xl py-4 text-lg font-black flex items-center justify-center gap-2 mb-2 shadow-lg"><i class="fa-solid fa-barcode text-xl"></i> סרוק פריט</button>' +
     // v16: אותו מראה בדיוק ככפתור הארגזים בקליטה — אותה פעולה בשני המסכים,
@@ -3602,7 +3561,7 @@ function removeReturn(id) {
   refreshReturnsList();
   updateCart();
   showToast('הוסר מהחזרות', 'בטל', () => {
-    returnsList.splice(Math.min(idx, returnsList.length), 0, removed);
+    const current=returnsList.find(x=>x.productId===removed.productId);if(current)current.qty+=removed.qty;else returnsList.splice(Math.min(idx,returnsList.length),0,removed);
     saveReturnsDraft();
     if (currentView === 'returns') refreshReturnsList();
     updateCart();
@@ -3673,13 +3632,11 @@ function addManualReturn() {
   if (currentView === 'returns') refreshReturnsList();
   updateCart();
 }
-function openReturnsSend() {
-  if (!returnsList.length) return;
-  const deIn = $('retDocDate'); if (deIn && deIn.value) returnsDocDate = deIn.value;
-  const day = returnsDocDate || todayStr();
+function buildReturnsSubmission(draft,id,sentTo,slot){
+  const day = draft.date || todayStr();
   // v208: תנובה מזכה חזרות לפי מחיר המבצע של החודש, לא לפי מחיר מלא —
   // מבצע שפעיל בתאריך התעודה מוזיל את מחיר הזיכוי (גם כשהוגדר creditPrice).
-  const items = returnsList.map(it => {
+  const items = draft.items.map(it => {
     if (it.manual) { const unit = r2(Number(it.unitPrice) || 0); return { name: it.name, barcode: it.barcode || '', qty: it.qty, unitPrice: unit, lineTotal: lineTotalFromUnit(unit, it.qty) }; }
     const p = products.find(x => x.id === it.productId);
     const ci = returnCreditInfo(p, day);
@@ -3689,7 +3646,7 @@ function openReturnsSend() {
   }); // מחיר זיכוי גובר על מחיר קנייה בחזרות
   // v167: מוצר עם פיקדון מוגדר — הבקבוקים חוזרים לספק, והפיקדון חוזר
   // אלינו: שורת פיקדון נפרדת בזיכוי, כמו שהיא מופיעה בתעודות הספק.
-  returnsList.forEach(it => {
+  draft.items.forEach(it => {
     if (it.manual) return;
     const p = products.find(x => x.id === it.productId);
     const dep = Number(p && p.deposit) || 0;
@@ -3697,10 +3654,28 @@ function openReturnsSend() {
     items.push({ name: 'פיקדון · ' + it.name, barcode: '', qty: it.qty, unitPrice: dep, lineTotal: r2(dep * it.qty), isDeposit: true });
   });
   const ex = r2(items.reduce((a, l) => a + l.lineTotal, 0));
-  const returnVatRate = vatRateForNewDocument(returnsDocDate || todayStr());
-  if (!returnsDraftIds[returnsSlot]) { returnsDraftIds[returnsSlot] = makeOperationId('returns'); saveReturnsDraft(); }
-  sendCtx = { type: 'returns', items, resetCurrent: false, vatPct: r2(returnVatRate * 100), totalExVat: ex, totalIncVat: r2(ex * (1 + returnVatRate)), operationId: returnsDraftIds[returnsSlot], sourceSlot: returnsSlot };
-  renderSendModal(items, 'רשימת חזרות', 'returns');
+  const returnVatRate = vatRateForNewDocument(draft.date || todayStr());
+  return {timestamp:Date.now(),date:todayStr(),docDate:draft.date||todayStr(),vatPct:r2(returnVatRate*100),returnKind:slot,sentTo,note:draft.note||'',items,credited:false,totalExVat:ex,totalIncVat:r2(ex*(1+returnVatRate)),operationId:id};
+}
+function openReturnsSend(){
+  if(!returnsList.length)return;
+  if(!saveReturnsDraft())return;
+  const slot=returnsSlot,draft={items:returnsList,date:returnsDocDate,note:returnsDraftNotes[slot]},preview=buildReturnsSubmission(draft,'','',slot);
+  sendCtx={type:'returns',...preview,resetCurrent:false,sourceSlot:slot,eventsEpoch:ensureReturnsEvents().epoch(slot)};
+  renderSendModal(preview.items,'רשימת חזרות','returns');
+}
+async function finishReturnsSubmission(sentTo){
+  if(returnsSending||!sendCtx||sendCtx.type!=='returns'||sendCtx.resendExisting)return null;
+  const ctx=sendCtx,slot=ctx.sourceSlot||returnsSlot;
+  if(!saveReturnsDraft())return null;
+  returnsSending=true;
+  try{await startReturnsLive();const result=await ensureReturnsEvents().finish(slot,(draft,id)=>buildReturnsSubmission(draft,id,sentTo,slot),{expectedEpoch:ctx.eventsEpoch});
+    if(!result.ok){showToast('ההחזרה לא נשלחה. הסריקות שמורות; נסה שוב כשיש חיבור.');return null;}
+    sendCtx=null;hideSend();receiptHistoryFilter='all';setView('receiptsHistory');
+    if(result.already||result.empty){showToast('ההחזרה כבר נסגרה בטלפון אחר. הסריקות החדשות נשארו לרשימה הבאה.');return null;}
+    logAction('returns','שמירת תעודת החזרה','ההחזרה נשמרה עם כל האירועים שאושרו בענן',{recordId:result.id,returnKind:slot,units:result.record.items.filter(x=>!x.isDeposit).reduce((n,x)=>n+(Number(x.qty)||0),0)});
+    return result.record;
+  }finally{returnsSending=false;}
 }
 function buildReturnsMessage(items, note) {
   const d = new Date();
@@ -4407,26 +4382,10 @@ function buildMessage(items, note) {
   return m;
 }
 // v25: בתנובה החזרות נמסרות לרוב ביד — וואטסאפ הוא אופציה, לא שער.
-async function saveReturnsWithoutSending() {
-  if(!returnsLiveReady){await startReturnsLive();if(!returnsLiveReady)return;}
-  if (!sendCtx || sendCtx.type !== 'returns' || sendCtx.resendExisting) { hideSend(); return; }
-  const items = sendCtx.items || [];
-  if (!items.length) { hideSend(); return; }
-  const opId = sendCtx.operationId || returnsDraftIds[returnsSlot] || (sendCtx.operationId = makeOperationId('returns'));
-  const deIn = $('retDocDate'); if (deIn && deIn.value) returnsDocDate = deIn.value;
-  const data = {
-    timestamp: Date.now(), date: todayStr(), docDate: (returnsDocDate || todayStr()), vatPct: (sendCtx && sendCtx.vatPct) || r2(VAT * 100), returnKind: returnsSlot,
-    sentTo: 'נמסר ידנית', note:returnsDraftNotes[returnsSlot]||'', items, credited: false,
-    totalExVat: (sendCtx && sendCtx.totalExVat) || 0,
-    totalIncVat: (sendCtx && sendCtx.totalIncVat) || 0,
-    operationId: opId
-  };
-  const saved = await runCloudTask('save returns without sending', { op: 'set', path: dataPath('returns', opId), data, operationId: opId });
-  if (!saved) return;
-  returnsList = []; returnsSlots[returnsSlot] = returnsList; returnsDocDate = ''; returnsDocDates[returnsSlot] = ''; returnsDraftIds[returnsSlot] = null; returnsDraftNotes[returnsSlot]='';saveReturnsDraft();
-  sendCtx = null; hideSend(); receiptHistoryFilter = 'all'; setView('receiptsHistory'); // v122: התעודה שנשמרה עכשיו חייבת להיראות בראש המסך — בלי מסנן ישן
-  showToast('תעודת החזרה נשמרה — בלי שליחה', null, null, 2600);
+async function saveReturnsWithoutSending(){
+  if(await finishReturnsSubmission('נמסר ידנית'))showToast('תעודת החזרה נשמרה — בלי שליחה',null,null,2600);
 }
+
 function renderContactPicker() {
   const c = $('contactList'); if (!c) return;
   if (!contacts.length) { c.innerHTML = '<div class="text-center p-4 text-slate-500">לא הוגדרו אנשי קשר. הוסף בהגדרות.</div>'; return; }
@@ -4501,7 +4460,6 @@ function openReturnsResend(r) {
 }
 function hideSend() { const m = $('sendModal'); m.classList.add('hidden'); m.classList.remove('flex'); }
 async function performSend(contact) {
-  if(sendCtx?.type==='returns'&&!sendCtx.resendExisting&&!returnsLiveReady){await startReturnsLive();if(!returnsLiveReady)return;}
   if (!sendCtx || !sendCtx.items.length) return;
   const { type, items, resetCurrent } = sendCtx;
   const note = ($('orderNote') ? $('orderNote').value.trim() : '');
@@ -4515,21 +4473,9 @@ async function performSend(contact) {
       sendCtx = null; hideSend(); window.location.href = url;
       return;
     }
-    const opId = sendCtx.operationId || returnsDraftIds[returnsSlot] || (sendCtx.operationId = makeOperationId('returns'));
-    const deIn = $('retDocDate'); if (deIn && deIn.value) returnsDocDate = deIn.value;
-    const data = {
-      timestamp: Date.now(), date: todayStr(), docDate: (returnsDocDate || todayStr()), vatPct: (sendCtx && sendCtx.vatPct) || r2(VAT * 100), returnKind: returnsSlot,
-      sentTo: contact.name, note, items, credited: false,
-      totalExVat: (sendCtx && sendCtx.totalExVat) || 0,
-      totalIncVat: (sendCtx && sendCtx.totalIncVat) || 0,
-      operationId: opId
-    };
-    const saved = await runCloudTask('save returns before send', { op: 'set', path: dataPath('returns', opId), data, operationId: opId });
-    if (!saved) return;
-    const msg = buildReturnsMessage(items, note);
-    const url = 'https://wa.me/' + phone + '?text=' + encodeURIComponent(msg);
-    returnsList = []; returnsSlots[returnsSlot] = returnsList; returnsDocDate = ''; returnsDocDates[returnsSlot] = ''; returnsDraftIds[returnsSlot] = null; returnsDraftNotes[returnsSlot]='';saveReturnsDraft();
-    sendCtx = null; hideSend(); receiptHistoryFilter = 'all'; setView('receiptsHistory'); window.location.href = url; // v122: התעודה שנשלחה עכשיו חייבת להיראות בראש המסך — בלי מסנן ישן
+    const record=await finishReturnsSubmission(contact.name);if(!record)return;
+    const msg=buildReturnsMessage(record.items,record.note);
+    window.location.href='https://wa.me/'+phone+'?text='+encodeURIComponent(msg);
     return;
   }
   saveDraft();
@@ -5106,10 +5052,18 @@ function showCloudFailDetails() {
   const msg = 'יש ' + cloudFailedWrites.length + ' פעולות שלא קיבלו אישור מהענן. הפעולה האחרונה: ' + (first.actionName || 'שמירה') + '. שגיאה: ' + (first.error || 'לא ידוע') + '. לנסות לשמור שוב עכשיו?';
   showConfirm('פעולות שלא נשמרו', msg, 'נסה שוב', retryCloudFailedWrites);
 }
+function returnRestoreSame(a,b){const left=cloneSafe(a),right=cloneSafe(b);delete left.id;delete right.id;return handoffCanonical(left)===handoffCanonical(right);}
 async function executeCloudTask(task) {
   if (!db || !task) throw new Error('אין חיבור לענן');
+  if (task.operationId?.startsWith('ret_to_open'))throw Error('העברה ישנה של החזרה נשמרה בצד לבדיקה');
+  if (legacyReturnsTask(task))throw Error('כתיבת טיוטת החזרות ישנה נעצרה — נשמר עותק בטלפון');
   if (task.receiptDraftGuard || (task.path && task.path.at(-2)==='drafts' && ['receipt'].includes(task.path.at(-1)))) throw Error('כתיבת סנכרון ישנה נעצרה — העבודה נשמרה בטלפון');
   if (Array.isArray(task.tasks)) { for (const t of task.tasks) await executeCloudTask(t); return; }
+  if(task.op==='set'&&task.path?.at(-2)==='returns')return runTransaction(db,async tx=>{const ledger=await tx.get(doc(db,...dataPath('drafts','returns_events_tnuva_v1')));if(ledger.data()?.protectedRecords?.[task.path.at(-1)])throw Error('פריטים מהתעודה כבר הוחזרו לרשימה; השחזור נעצר');const ref=doc(db,...task.path),s=await tx.get(ref);if(s.exists()){if(returnRestoreSame(s.data(),task.data))return;throw Error('קיימת כבר תעודת החזרה חדשה יותר; השחזור נעצר');}tx.set(ref,task.data||{});});
+  if(task.op==='batch'&&(task.writes||[]).some(w=>w.op==='set'&&w.path?.at(-2)==='returns'))return runTransaction(db,async tx=>{
+    const ledger=await tx.get(doc(db,...dataPath('drafts','returns_events_tnuva_v1')));const checked=new Map();for(const w of task.writes||[])if(w.op==='set'&&w.path?.at(-2)==='returns'){if(ledger.data()?.protectedRecords?.[w.path.at(-1)])throw Error('פריטים מהתעודה כבר הוחזרו לרשימה; השחזור נעצר');const snap=await tx.get(doc(db,...w.path));if(snap.exists()&&!returnRestoreSame(snap.data(),w.data)&&!(w.expected&&returnRestoreSame(snap.data(),w.expected)))throw Error('התעודה השתנתה מאז פתיחת השחזור; השחזור נעצר');checked.set(w,snap.exists()&&returnRestoreSame(snap.data(),w.data));}
+    for(const w of task.writes||[]){const ref=doc(db,...w.path);if(w.op==='set'){if(!checked.get(w))tx.set(ref,w.data||{});}else if(w.op==='update')tx.update(ref,w.data||{});else if(w.op==='delete')tx.delete(ref);}
+  });
   if (task.op === 'batch') {
     const batch = writeBatch(db);
     (task.writes || []).forEach(w => {
@@ -5138,6 +5092,7 @@ async function executeCloudTask(task) {
   }
   if (task.op === 'create-if-absent') {
     return runTransaction(db, async (transaction) => {
+      if(task.path?.at(-2)==='returns'){const ledger=await transaction.get(doc(db,...dataPath('drafts','returns_events_tnuva_v1')));if(ledger.data()?.protectedRecords?.[task.path.at(-1)])throw Error('פריטים מהתעודה כבר הוחזרו לרשימה; השחזור נעצר');}
       const existing = await transaction.get(ref);
       if (existing.exists()) {
         const err = new Error('הפריט כבר קיים');
@@ -5190,6 +5145,7 @@ async function retryCloudFailedWrites() {
   try {
     const list = cloudFailedWrites.slice().reverse(); // הישן קודם
     for (const item of list) {
+      if(legacyReturnsTask(item.task)||['save returns without sending','save returns before send','return items to open list'].includes(item.actionName)){fail++;continue;}
       if(legacyDraftTask(item.task) && ['save receipt before clearing draft','save receipt','save order before send'].includes(item.actionName)){fail++;continue;}
       try {
         const retryTask = retryTaskWithoutStaleUnitWrites(item);
@@ -16096,36 +16052,27 @@ async function retReturnApply(docId, lines, takes, ov) {
   });
   const totalUnits = Array.from(takeByName.values()).reduce((a, b) => a + b, 0);
   if (!totalUnits) { if (ov) ov.remove(); return; }
-  // קודם הענן — אם העדכון נכשל, שום דבר לא זז ואין כפילות בין התעודה לרשימה
-  if (outItems.length) {
-    const ex = r2(outItems.reduce((a, l) => a + (Number(l.lineTotal) || 0), 0));
-    const returnVatRate = vatRateForDoc(r);
-    const updateData = { items: outItems, vatPct: r2(returnVatRate * 100), totalExVat: ex, totalIncVat: r2(ex * (1 + returnVatRate)) };
-    const saved = await runCloudTask('return items to open list', { op: 'update', path: dataPath('returns', docId), data: updateData, operationId: makeOperationId('ret_to_open') });
-    if (!saved) { if (btn) { delete btn.dataset.busy; btn.innerHTML = '<i class="fa-solid fa-rotate-left"></i> החזר ' + totalUnits + ' יח׳ לרשימה הפתוחה'; } return; }
-    Object.assign(r, updateData);
-  } else {
-    // הכל חזר — התעודה נמחקת עם גיבוי לסל המחזור; אם המחיקה נכשלה, שום דבר לא זז
-    const backup = { ...r };
-    const ok = await hardDeleteDocWithBackup('returns', docId, backup, 'delete-return');
-    if (!ok) { if (btn) { delete btn.dataset.busy; btn.innerHTML = '<i class="fa-solid fa-rotate-left"></i> החזר ' + totalUnits + ' יח׳ לרשימה הפתוחה'; } return; }
-  }
-  // מיזוג לרשימה השבועית הפתוחה — פריט קיים מקבל תוספת כמות
-  const target = returnsSlots.weekly;
-  let added = 0;
-  takeByName.forEach((take, name) => {
-    const src = lines.find(l => l.name === name);
-    const p = src && src.barcode ? findProductByBarcode(src.barcode) : null;
-    if (p) {
-      const ex0 = target.find(it => it.productId === p.id);
-      if (ex0) ex0.qty = (Number(ex0.qty) || 0) + take;
-      else target.push({ productId: p.id, name: p.name, barcode: p.barcode || '', qty: take });
-    } else {
-      target.push({ productId: 'manual_' + Date.now() + '_' + Math.floor(Math.random() * 1000), name: name, qty: take, unitPrice: Number(src && src.unitPrice) || 0, manual: true });
-    }
-    added++;
-  });
-  saveReturnsDraft();
+  // ההפחתה מהתעודה והוספת האירועים מתבצעות יחד; ניסיון חוזר אינו מחזיר פעמיים.
+  const expected=cloneSafe(r);delete expected.id;
+  const signature=handoffCanonical({docId,expected,takes}),key='tn_return_move_intent';let intent;
+  try{const saved=JSON.parse(localStorage.getItem(key)||'null');intent=saved?.signature===signature?saved:{signature,id:makeOperationId('return_move')};localStorage.setItem(key,JSON.stringify(intent));}catch(e){showToast('אין מקום לשמור את הפעולה בטלפון. שום פריט לא זז.');if(btn)delete btn.dataset.busy;return;}
+  const trashId='returns_'+docId+'_'+intent.id,recordRef=doc(db,...dataPath('returns',docId));
+  const result=await ensureReturnsEvents().mutate([recordRef],(snapshots,view)=>{
+    const live=snapshots[0];if(!live.exists()||!returnRestoreSame(live.data(),expected)||live.data().credited)throw Error('התעודה השתנתה בטלפון אחר. פתח אותה מחדש.');
+    const writes=[],target=cloneSafe(view.slots.weekly.items);
+    if(outItems.length){const ex=r2(outItems.reduce((a,l)=>a+(Number(l.lineTotal)||0),0)),rate=vatRateForDoc(r);writes.push({op:'update',ref:recordRef,data:{items:outItems,vatPct:r2(rate*100),totalExVat:ex,totalIncVat:r2(ex*(1+rate))}});}
+    else{writes.push({ref:doc(db,...dataPath('trash',trashId)),data:{collectionName:'returns',originalId:docId,data:live.data(),deletedAt:Date.now(),reason:'return-to-open-list'}},{op:'delete',ref:recordRef});}
+    takeByName.forEach((take,name)=>{const src=lines.find(l=>l.name===name),p=src?.barcode?findProductByBarcode(src.barcode):null;
+      const item=p?{productId:p.id,name:p.name,barcode:p.barcode||'',qty:take}:{productId:'manual_'+intent.id+'_'+handoffHash(name),name,qty:take,unitPrice:Number(src?.unitPrice)||0,manual:true};
+      const old=target.find(x=>x.productId===item.productId);if(old)old.qty+=take;else target.push(item);
+    });
+    return {changes:{weekly:{...view.slots.weekly,items:target}},writes,result:{units:totalUnits}};
+  },{key:intent.id});
+  if(!result.ok){showToast(result.error||'הפעולה לא נשמרה. שום פריט לא זז.');if(btn){delete btn.dataset.busy;btn.textContent='נסה שוב';}return;}
+  if(outItems.length){const ex=r2(outItems.reduce((a,l)=>a+(Number(l.lineTotal)||0),0)),rate=vatRateForDoc(r);Object.assign(r,{returnEventMutationId:result.mutationId,items:outItems,vatPct:r2(rate*100),totalExVat:ex,totalIncVat:r2(ex*(1+rate))});}
+  else returns=returns.filter(x=>x.id!==docId);
+  try{localStorage.removeItem(key);}catch(e){}
+  const added=takeByName.size;
   logAction('returns', 'החזרת פריטים לרשימה הפתוחה', added + ' פריטים · ' + totalUnits + ' יח׳ חזרו מתעודת ' + dDisp(r.docDate || r.date || '') + ' לרשימת החזרות השבועית' + (outItems.length ? '' : ' · התעודה נמחקה (הוחזר הכל)'), { docId: docId, types: added, units: totalUnits, docDeleted: !outItems.length });
   if (ov) ov.remove();
   buzz(18);
@@ -21424,6 +21371,7 @@ $('receiptRowProductSearchModal').addEventListener('keydown', e => {
 $('searchInput').addEventListener('input', (e) => { $('clearSearch').classList.toggle('hidden', !e.target.value); applySearch(e.target.value); });
 $('clearSearch').addEventListener('click', () => { $('searchInput').value = ''; $('clearSearch').classList.add('hidden'); applySearch(''); });
 $('contactList').addEventListener('click', (e) => { const b = e.target.closest('[data-role="send-to"]'); if (!b) return; const ct = contacts.find(x => x.id === b.dataset.id); if (ct) performSend(ct); });
+$('sendModal').addEventListener('input',e=>{if(e.target.id==='orderNote'&&sendCtx?.type==='returns'&&!sendCtx.resendExisting){returnsDraftNotes[sendCtx.sourceSlot||returnsSlot]=e.target.value;saveReturnsDraft();}});
 $('sendModal').addEventListener('click', (e) => { const b = e.target.closest('[data-role="ret-save-only"]'); if (b) saveReturnsWithoutSending(); });
 
 app.addEventListener('input', (e) => {
@@ -21440,6 +21388,7 @@ app.addEventListener('input', (e) => {
   }
   if (role === 'device-name') { setDeviceNameLocal(t.value); return; }
   if (t.id === 'returnsSearch') { renderReturnsResults(t.value); return; }
+  if (t.id === 'orderNote' && sendCtx?.type==='returns' && !sendCtx.resendExisting) { returnsDraftNotes[sendCtx.sourceSlot||returnsSlot]=t.value; saveReturnsDraft(); return; }
   if (t.id === 'retDocDate') { returnsDocDate = t.value || ''; saveReturnsDraft(); refreshReturnsList(); return; } // v208: תג המבצע ברשימה תלוי בתאריך התעודה
   if (t.id === 'rcDocDate') { receiptDocDate = t.value || null; saveReceiptDraft(); return; }
   if (t.id === 'retDigits') { refreshReturnsDigits(t.value); return; }
