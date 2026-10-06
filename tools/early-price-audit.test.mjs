@@ -197,7 +197,7 @@ for(const [label,unit,count] of [['shortage only',5,9],['price only',6,10],['pri
  c.expectedUploads=uploadCount;record(label+' final summary',c,c.node('rsBody').innerHTML);
  // Complete through actual persistence API; two dairy apps require a synced
  // draft, covered independently by their existing transaction integration suite.
- if(supplier!=='berman')c.run('flushReceiptDraftToCloud=async()=>{receiptSync.dirty=false;return true;}');
+
  await c.run('confirmReceipt()');
  const saved=c.writes.find(w=>w.path?.includes('receipts'))?.data;assert.ok(saved);
  assert.equal(saved.priceAudit.rows.length,1);assert.equal(saved.priceAudit.rows[0].originalUnitPrice,unit);
