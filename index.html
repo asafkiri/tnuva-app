@@ -741,7 +741,7 @@ let receiptDupConfirmed = false; // אישור שמירה למרות חשד לכ
 const RECEIPT_DRAFT_KEY = 'tn_receipt_draft';
 let receivingDigitsMissTimer = null;
 let receivingDigitsMissNotified = '';
-const APP_VERSION = '135'; // טיוטה מקומית, גיבוי והעברה מפורשת
+const APP_VERSION = '136'; // טיוטה מקומית, גיבוי והעברה מפורשת
 // גרסה 73: מוצר בלי מחיר קופה — חלון הכמות מציג מיד את העלות ליח׳ (ללא מע״מ) ופותח שדה להקלדת המחיר שעובר בקופה, בלי לנדוד למסך המחירים
 // v40: תג גרסה קבוע בפינת המסך — לדעת בשנייה איזו גרסה באמת רצה על המכשיר
 // (עוזר במיוחד מול מטמון ה-PWA). pointer-events:none — לעולם לא חוסם מגע.
@@ -1957,6 +1957,7 @@ function startDraftHandoffs() {
         onChange:st=>{if(st.away&&kind==='receiving'){if(aiScanBusy){aiScanRunId++;aiScanBusy=false;}aiCloseOrientationReview();aiCloseLiveCamera();}renderDraftHandoffBanner();},onNotice:handoffNotice,
         // אין בתנובה מסמכי נייר עצמאיים שנמחקים בביטול. תוצאת local של המודול זהה לביטול שאושר.
         onClosed:()=>{},
+        log:(title,details,meta)=>logAction('draft-handoff',title,details,{...meta,kind}),
         finishedLate:sid=>{if(handoffDraft(kind).sessionId===sid){handoffEmpty(kind);setView(kind==='order'?'history':'receiptsHistory');showToast('התעודה נשמרה ✓');}},
         finishReads:async(tx,ctx)=>{
           const plan=handoffFinishPlans[kind]||{prices:[],data:{}}, prices=[];
