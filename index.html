@@ -419,6 +419,27 @@
       </div>
     </div>
 
+    <!-- שיוך שורת תעודה למוצר גם כשהמוצר לא הגיע ואין מה לסרוק -->
+    <div id="receiptRowProductSearchModal" role="dialog" aria-modal="true" aria-labelledby="receiptRowProductSearchTitle" dir="rtl" class="hidden fixed inset-0 bg-slate-900/60 backdrop-blur-sm items-center justify-center p-3 z-[70]">
+      <div class="bg-white rounded-2xl shadow-2xl w-full max-w-md max-h-[90dvh] flex flex-col overflow-hidden">
+        <div class="p-4 border-b border-slate-100 shrink-0">
+          <div class="flex items-center justify-between gap-2">
+            <h3 id="receiptRowProductSearchTitle" class="font-black text-lg text-slate-800">חפש לפי שם או ברקוד</h3>
+            <button data-role="rowfix-search-close" class="btn-tap rounded-lg bg-slate-100 px-3 py-2 font-bold text-slate-600" aria-label="סגור חיפוש מוצרים">סגור</button>
+          </div>
+          <div id="receiptRowProductSearchRow" class="rounded-xl bg-slate-50 p-2 mt-2 text-sm"></div>
+          <p class="text-xs font-bold text-slate-600 mt-2">הבחירה מזהה את המוצר בתעודה בלבד ואינה מוסיפה כמות שהתקבלה. אם המוצר לא הגיע, החוסר ייבדק בהשוואת הכמויות.</p>
+          <label for="receiptRowProductSearchInput" class="block text-xs font-bold text-slate-600 mt-3 mb-1">שם מוצר, ברקוד או קוד מהתעודה</label>
+          <input id="receiptRowProductSearchInput" type="search" inputmode="search" autocomplete="off" class="w-full border-2 border-slate-200 rounded-xl p-3 text-base font-bold outline-none focus:border-violet-500" placeholder="אפשר גם חלק מהשם או מהברקוד">
+          <div id="receiptRowProductSearchStatus" role="status" aria-live="polite" class="text-xs font-bold text-slate-500 mt-2"></div>
+        </div>
+        <div id="receiptRowProductSearchResults" class="p-3 overflow-y-auto min-h-0 space-y-2"></div>
+        <div class="p-3 border-t border-slate-100 shrink-0">
+          <button data-role="rowfix-search-new" class="btn-tap w-full rounded-xl py-3 px-2 text-sm font-black bg-slate-100 text-slate-700">המוצר לא במאגר — צור מוצר חדש</button>
+        </div>
+      </div>
+    </div>
+
     <!-- כרטיס מוצר מאוחד — יצירה ועריכה -->
     <div id="prodModal" class="hidden fixed inset-0 bg-slate-900/60 backdrop-blur-sm items-center justify-center p-4 z-[70]">
       <div class="bg-white rounded-3xl shadow-2xl w-full max-w-sm overflow-hidden max-h-[92vh] flex flex-col">
@@ -716,7 +737,7 @@ let receiptDupConfirmed = false; // אישור שמירה למרות חשד לכ
 const RECEIPT_DRAFT_KEY = 'tn_receipt_draft';
 let receivingDigitsMissTimer = null;
 let receivingDigitsMissNotified = '';
-const APP_VERSION = '127'; // v127: אותו סדר לפי חוזק המוצרים גם בבחירת מבצעים לשלט
+const APP_VERSION = '128'; // v128: חיפוש מוצר לשורת תעודה גם בלי מוצר פיזי לסריקה
 // גרסה 73: מוצר בלי מחיר קופה — חלון הכמות מציג מיד את העלות ליח׳ (ללא מע״מ) ופותח שדה להקלדת המחיר שעובר בקופה, בלי לנדוד למסך המחירים
 // v40: תג גרסה קבוע בפינת המסך — לדעת בשנייה איזו גרסה באמת רצה על המכשיר
 // (עוזר במיוחד מול מטמון ה-PWA). pointer-events:none — לעולם לא חוסם מגע.
@@ -756,6 +777,7 @@ let productCreateId = null, prodAfterSaveTarget = null, productEditorScanReturn 
 let aiUnknownProductCreateContext = null; // שורת AI בטוחה שממתינה ליצירת מוצר, ללא קריאה נוספת
 let receiptRowDecisions = {};    // v97: החלטות המשתמש על שורות התעודה — ראו receiptRowActions
 let tnuvaRowProductContext = null; // שורת תעודה שממתינה לסריקת ברקוד או ליצירת מוצר
+let receiptRowProductSearchContext = null; // חיפוש מזהה בלבד — אינו מאשר קבלת כמות
 let promoUnitMode = 'unit'; // יחידת סף המבצע: 'unit' | 'carton'
 let promos = [], promoEdit = null, promoSearch = ''; // מבצעי סל
 let promoType = 'receipt'; // סוג מבצע בעורך: 'receipt' (בתעודה) | 'monthEnd' (מרכזת)
@@ -10601,7 +10623,8 @@ function receiptRowActionsHtml(report) {
         fmtUnitPrice(rival.product.price, true) + ', בדיוק המחיר שמודפס בשורה.</div>' +
         receiptRowActionButton('rowfix-rival', row, '<i class="fa-solid fa-check ml-1"></i>זה המוצר — שייך את השורה', 'bg-emerald-600 text-white w-full mt-2') : '') +
       receiptRowCandidatesHtml(row, dispute, !!rival) +
-      '<div class="text-[11px] font-bold text-slate-500 mt-2">' + (rival ? 'או ס' : 'ס') + 'רוק את הברקוד מהמוצר עצמו: אם הוא במאגר השורה תשויך אליו, ואם לא — ייפתח כרטיס מוצר חדש מלא עם השם והמחיר מהנייר.</div>' +
+      '<div class="text-[11px] font-bold text-slate-500 mt-2">אפשר לחפש במאגר גם אם המוצר לא הגיע, או לסרוק ברקוד מהמוצר. השיוך אינו מאשר קבלת כמות.</div>' +
+      receiptRowActionButton('rowfix-search', row, '<i class="fa-solid fa-magnifying-glass ml-1"></i>חפש לפי שם או ברקוד', 'bg-violet-50 border border-violet-300 text-violet-900 w-full mt-2') +
       '<div class="grid grid-cols-2 gap-2 mt-2">' +
         receiptRowActionButton('rowfix-scan', row, '<i class="fa-solid fa-barcode ml-1"></i>סרוק ברקוד מהמוצר', rival ? 'bg-white border border-violet-300 text-violet-800' : 'bg-violet-600 text-white') +
         receiptRowActionButton('rowfix-new', row, '<i class="fa-solid fa-plus ml-1"></i>מוצר חדש בלי סריקה', 'bg-white border border-violet-300 text-violet-800') +
@@ -10611,6 +10634,7 @@ function receiptRowActionsHtml(report) {
     '<article class="rounded-xl border border-amber-300 bg-white p-3 mt-2">' +
       '<div class="text-[10px] font-black text-amber-800"><i class="fa-solid fa-code-compare ml-1"></i>הסריקות נחלקו על השורה</div>' +
       receiptRowHeadHtml(row) + receiptRowDisputeHtml(dispute) +
+      receiptRowActionButton('rowfix-search', row, '<i class="fa-solid fa-magnifying-glass ml-1"></i>חפש לפי שם או ברקוד', 'bg-amber-50 border border-amber-300 text-amber-900 w-full mt-2') +
       '<div class="grid grid-cols-2 gap-2 mt-2">' +
         receiptRowActionButton('rowfix-confirm', row, '<i class="fa-solid fa-check ml-1"></i>השורה נכונה', 'bg-amber-600 text-white') +
         receiptRowActionButton('rowfix-scan', row, '<i class="fa-solid fa-barcode ml-1"></i>סרוק ברקוד מהמוצר', 'bg-white border border-amber-300 text-amber-800') +
@@ -10637,6 +10661,7 @@ function receiptRowActionsHtml(report) {
       '<div class="grid grid-cols-1 gap-2 mt-2">' +
         receiptRowActionButton('rowfix-price-doc', row, '<i class="fa-solid fa-check ml-1"></i>המחיר בתעודה נכון — אשר לתעודה הזאת', 'bg-rose-600 text-white') +
         (canUpdate ? receiptRowActionButton('rowfix-price-catalog', row, 'עדכן את מחיר המאגר ל-₪' + fmtUnitPrice(row.originalUnitPrice, true), 'bg-white border border-rose-300 text-rose-800') : '') +
+        receiptRowActionButton('rowfix-search', row, '<i class="fa-solid fa-magnifying-glass ml-1"></i>חפש לפי שם או ברקוד', 'bg-white border border-slate-300 text-slate-700') +
         receiptRowActionButton('rowfix-scan', row, '<i class="fa-solid fa-barcode ml-1"></i>זה מוצר אחר — סרוק את הברקוד', 'bg-white border border-slate-300 text-slate-700') +
       '</div></article>';
   }).join('');
@@ -10678,6 +10703,98 @@ function receiptConfirmRowPrice(documentIndex, sourceIndex, mode) {
     else { saveReceiptDraft(); refreshPriceAuditViews(); }
     showToast('מחיר המאגר עודכן ל-₪' + fmtUnitPrice(price, true), null, null, 2800);
   });
+  return true;
+}
+// החיפוש אינו מסונן לפי מחיר: מטרתו לזהות מוצר גם כשמחיר התעודה שנוי במחלוקת.
+function receiptRowProductSearchMatches(query) {
+  const clean = value => String(value == null ? '' : value).normalize('NFKC').toLowerCase()
+    .replace(/[\u0591-\u05C7]/g, '').replace(/["'׳״.,()\-\/]/g, ' ').replace(/\s+/g, ' ').trim();
+  const text = clean(query), tokens = text.split(' ').filter(Boolean);
+  const digits = /^[\d\s-]+$/.test(String(query || '').trim()) ? normalizeBarcode(query) : '';
+  return (products || []).filter(product => {
+    if (!product || product.hidden) return false;
+    const barcode = normalizeBarcode(product.barcode || '');
+    const code = String(product.code || product.supplierItemCode || '');
+    return !text || (digits && (barcode.includes(digits) || code.includes(digits)))
+      || tokens.every(token => clean(product.name).includes(token));
+  }).sort((left, right) => {
+    const exact = product => digits && (normalizeBarcode(product.barcode || '') === digits || tnuvaCodeOf(product.barcode) === digits) ? 1 : 0;
+    return exact(right) - exact(left) || String(left.name || '').localeCompare(String(right.name || ''), 'he');
+  });
+}
+function receiptRowProductSearchStamp(row) {
+  const doc = row && receiptScanDoc(row.documentIndex);
+  const mapped = doc && Array.isArray(doc.rows) ? doc.rows[Number(row.rowIndex)] : null;
+  return JSON.stringify([receiptDraftId, aiScanRunId, row && row.id, row && row.sourceIndex, mapped,
+    doc && doc.__tnuvaPaper]);
+}
+function receiptRowProductSearchCurrentRow() {
+  const ctx = receiptRowProductSearchContext;
+  const row = ctx && receiptFindAuditRow(ctx.documentIndex, ctx.sourceIndex);
+  if (!row || receiptRowProductSearchStamp(row) !== ctx.stamp) {
+    receiptCloseRowProductSearch();
+    showToast('שורת התעודה השתנתה — פתח את החיפוש מחדש', null, null, 3500);
+    return null;
+  }
+  return row;
+}
+function receiptRenderRowProductSearch() {
+  const query = $('receiptRowProductSearchInput').value;
+  const matches = receiptRowProductSearchMatches(query);
+  const shown = matches.slice(0, 60);
+  $('receiptRowProductSearchStatus').textContent = matches.length > shown.length
+    ? 'מוצגים ' + shown.length + ' מתוך ' + matches.length + ' מוצרים — הקלד כדי לצמצם'
+    : matches.length ? matches.length + ' מוצרים נמצאו' : 'לא נמצא מוצר — נסה מילה אחרת או ספרות מהברקוד';
+  $('receiptRowProductSearchResults').innerHTML = shown.map(product => {
+    const barcode = normalizeBarcode(product.barcode || '');
+    const valid = /^\d{6,20}$/.test(barcode);
+    return '<button data-role="rowfix-search-pick" data-product="' + htmlEscape(String(product.id)) + '"' +
+      (valid ? '' : ' disabled') + ' class="btn-tap w-full text-right rounded-xl border border-slate-200 p-3 ' +
+      (valid ? 'bg-white hover:border-violet-400 text-slate-800' : 'bg-slate-50 text-slate-400') + '">' +
+      '<span class="block font-black">' + htmlEscape(product.name || '') + '</span>' +
+      '<span class="block text-xs font-bold text-slate-500 mt-1">ברקוד: <bdi>' + htmlEscape(barcode || 'ללא ברקוד') + '</bdi>' +
+      (Number(product.price) > 0 ? ' · מחיר במאגר: ₪' + fmtUnitPrice(product.price, true) : '') + '</span>' +
+      '<span class="block text-xs font-bold mt-1">' + (valid ? 'בחר מוצר זה לשורת התעודה' : 'צריך להשלים ברקוד בכרטיס המוצר לפני השיוך') + '</span></button>';
+  }).join('');
+}
+function receiptOpenRowProductSearch(documentIndex, sourceIndex) {
+  const row = receiptFindAuditRow(documentIndex, sourceIndex);
+  if (!row) { showToast('השורה כבר אינה בבדיקה — רענן את המסך', null, null, 3200); return false; }
+  receiptRowProductSearchContext = { documentIndex: Number(documentIndex), sourceIndex: Number(sourceIndex),
+    stamp: receiptRowProductSearchStamp(row), returnFocus: document.activeElement };
+  $('receiptRowProductSearchRow').innerHTML = receiptRowHeadHtml(row);
+  $('receiptRowProductSearchInput').value = '';
+  receiptRenderRowProductSearch();
+  $('receiptRowProductSearchModal').classList.remove('hidden');
+  $('receiptRowProductSearchModal').classList.add('flex');
+  $('receiptRowProductSearchInput').focus();
+  return true;
+}
+function receiptCloseRowProductSearch() {
+  const ctx = receiptRowProductSearchContext;
+  receiptRowProductSearchContext = null;
+  $('receiptRowProductSearchModal').classList.add('hidden');
+  $('receiptRowProductSearchModal').classList.remove('flex');
+  if (ctx && ctx.returnFocus && ctx.returnFocus.isConnected) ctx.returnFocus.focus();
+}
+function receiptSelectSearchedRowProduct(productId) {
+  const row = receiptRowProductSearchCurrentRow();
+  if (!row) return false;
+  const product = (products || []).find(item => !item.hidden && String(item.id) === String(productId));
+  const barcode = normalizeBarcode(product && product.barcode || '');
+  if (!product || !/^\d{6,20}$/.test(barcode)) {
+    showToast('המוצר אינו זמין לשיוך או שאין לו ברקוד מלא', null, null, 3200);
+    receiptRenderRowProductSearch(); return false;
+  }
+  if (aiCatalogBarcodeMatches(barcode, false).length !== 1) {
+    showToast('הברקוד קיים ביותר ממוצר אחד במאגר — תקן את הכפילות לפני השיוך', null, null, 4200);
+    return false;
+  }
+  const ctx = { documentIndex: row.documentIndex, sourceIndex: row.sourceIndex, rowIndex: row.rowIndex };
+  const saved = receiptAssignRowProduct(ctx, product, barcode, 'picked_from_catalog');
+  if (!saved) return false;
+  receiptCloseRowProductSearch();
+  showToast('המוצר שויך לתעודה בלבד. הכמות שהתקבלה לא השתנתה; אם נשארה שאלה על מחיר או כמות, אשר אותה מול התעודה.', null, null, 5500);
   return true;
 }
 function receiptOpenRowProductScan(documentIndex, sourceIndex) {
@@ -20888,6 +21005,29 @@ $('aiOrientationRestore').addEventListener('click', aiRestoreOriginalImage);
 $('aiOrientationCancel').addEventListener('click', aiCancelOrientationReview);
 $('toastBtn').addEventListener('click', doUndo);
 $('closeSend').addEventListener('click', hideSend);
+$('receiptRowProductSearchInput').addEventListener('input', receiptRenderRowProductSearch);
+$('receiptRowProductSearchModal').addEventListener('click', e => {
+  const button = e.target.closest('[data-role]');
+  const role = button && button.dataset.role;
+  if (e.target === $('receiptRowProductSearchModal') || role === 'rowfix-search-close') {
+    receiptCloseRowProductSearch(); return;
+  }
+  if (role === 'rowfix-search-pick') { receiptSelectSearchedRowProduct(button.dataset.product); return; }
+  if (role === 'rowfix-search-new') {
+    const row = receiptRowProductSearchCurrentRow();
+    if (!row) return;
+    receiptCloseRowProductSearch();
+    receiptOpenRowNewProduct(row.documentIndex, row.sourceIndex);
+  }
+});
+$('receiptRowProductSearchModal').addEventListener('keydown', e => {
+  if (e.key === 'Escape') { e.preventDefault(); receiptCloseRowProductSearch(); return; }
+  if (e.key !== 'Tab') return;
+  const nodes = [...$('receiptRowProductSearchModal').querySelectorAll('button:not([disabled]), input')];
+  const first = nodes[0], last = nodes[nodes.length - 1];
+  if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus(); }
+  else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
+});
 $('searchInput').addEventListener('input', (e) => { $('clearSearch').classList.toggle('hidden', !e.target.value); applySearch(e.target.value); });
 $('clearSearch').addEventListener('click', () => { $('searchInput').value = ''; $('clearSearch').classList.add('hidden'); applySearch(''); });
 $('contactList').addEventListener('click', (e) => { const b = e.target.closest('[data-role="send-to"]'); if (!b) return; const ct = contacts.find(x => x.id === b.dataset.id); if (ct) performSend(ct); });
@@ -21184,6 +21324,7 @@ app.addEventListener('click', (e) => {
   if (role === 'ai-confirm-barcode-suggestion') { aiConfirmBarcodeSuggestion(parseInt(t.dataset.doc, 10), parseInt(t.dataset.row, 10)); return; }
   if (role === 'ai-confirm-name-candidate') { aiConfirmNameCandidate(parseInt(t.dataset.doc, 10), parseInt(t.dataset.row, 10), t.dataset.candidateId); return; }
   if (role === 'ai-add-unknown-product') { aiOpenUnknownProduct(parseInt(t.dataset.doc, 10), parseInt(t.dataset.row, 10)); return; }
+  if (role === 'rowfix-search') { receiptOpenRowProductSearch(parseInt(t.dataset.doc, 10), parseInt(t.dataset.row, 10)); return; }
   if (role === 'rowfix-scan') { receiptOpenRowProductScan(parseInt(t.dataset.doc, 10), parseInt(t.dataset.row, 10)); return; }
   if (role === 'rowfix-rival') { receiptAdoptRivalCode(parseInt(t.dataset.doc, 10), parseInt(t.dataset.row, 10)); return; }
   if (role === 'rowfix-pick') { receiptPickRowProduct(parseInt(t.dataset.doc, 10), parseInt(t.dataset.row, 10), t.dataset.product); return; }
