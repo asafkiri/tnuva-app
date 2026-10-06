@@ -737,7 +737,7 @@ let receiptDupConfirmed = false; // אישור שמירה למרות חשד לכ
 const RECEIPT_DRAFT_KEY = 'tn_receipt_draft';
 let receivingDigitsMissTimer = null;
 let receivingDigitsMissNotified = '';
-const APP_VERSION = '129'; // v129: חסימות בדיקת מבצעים ניתנות לטיפול ותאריך היום מקופל
+const APP_VERSION = '130'; // v130: שיוך מוצר למבצע קיים מתוך בדיקת התעודה
 // גרסה 73: מוצר בלי מחיר קופה — חלון הכמות מציג מיד את העלות ליח׳ (ללא מע״מ) ופותח שדה להקלדת המחיר שעובר בקופה, בלי לנדוד למסך המחירים
 // v40: תג גרסה קבוע בפינת המסך — לדעת בשנייה איזו גרסה באמת רצה על המכשיר
 // (עוזר במיוחד מול מטמון ה-PWA). pointer-events:none — לעולם לא חוסם מגע.
@@ -5001,6 +5001,20 @@ async function executeCloudTask(task) {
     return;
   }
   const ref = doc(db, ...task.path);
+  if (task.op === 'promo-add-product') {
+    return runTransaction(db, async transaction => {
+      const existing = await transaction.get(ref);
+      const product = await transaction.get(doc(db, ...task.productPath));
+      const pr = existing.exists() ? existing.data() : null;
+      if (!pr || !product.exists() || product.data().hidden || !receiptExistingPromoEligible(pr, task.day)
+          || receiptExistingPromoTerms(pr) !== task.terms) {
+        const error = new Error('המבצע או המוצר השתנו — בחר מחדש את המבצע'); error.code = 'stale-promo'; throw error;
+      }
+      // קריאה בתוך transaction שומרת גם מוצרים שנוספו ממכשיר אחר.
+      if (pr.productIds.includes(task.productId)) return;
+      transaction.set(ref, { ...pr, productIds: [...pr.productIds, task.productId] });
+    });
+  }
   if (task.op === 'create-if-absent') {
     return runTransaction(db, async (transaction) => {
       const existing = await transaction.get(ref);
@@ -5050,7 +5064,7 @@ async function retryCloudFailedWrites() {
   if (cloudWriteInFlight) { showToast('פעולה קודמת עדיין נשמרת — המתן רגע', null, null, 2500); return; }
   cloudWriteInFlight = true;
   showCloudBusy('שומר פעולות שנכשלו...');
-  let ok = 0, fail = 0, duplicate = 0;
+  let ok = 0, fail = 0, duplicate = 0, stalePromo = 0;
   try {
     const list = cloudFailedWrites.slice().reverse(); // הישן קודם
     for (const item of list) {
@@ -5065,13 +5079,15 @@ async function retryCloudFailedWrites() {
       }
       catch (e) {
         if (e && e.code === 'duplicate-barcode') { removeCloudFailedWrite(item.id); duplicate++; continue; }
+        if (e && e.code === 'stale-promo') { removeCloudFailedWrite(item.id); stalePromo++; continue; }
         item.error = errText(e); item.tries = (item.tries || 0) + 1; item.updatedAt = Date.now(); fail++;
       }
     }
     saveCloudFailedWrites();
-    const retryMessage = fail
+    const retryMessage = (fail
       ? ('נשמרו ' + ok + ', נשארו ' + fail + ' פעולות שלא נשמרו' + (duplicate ? ' · ' + duplicate + ' נחסמו: הפריט כבר קיים' : ''))
-      : (duplicate ? (duplicate + ' פעולות נחסמו: הפריט כבר קיים') : 'כל הפעולות נשמרו לענן ✓');
+      : (duplicate ? (duplicate + ' פעולות נחסמו: הפריט כבר קיים') : stalePromo ? 'נשמרו ' + ok + ' פעולות' : 'כל הפעולות נשמרו לענן ✓')) +
+      (stalePromo ? ' · ' + stalePromo + ' שיוכים בוטלו כי המבצע או המוצר השתנו — בחר מחדש' : '');
     showToast(retryMessage, null, null, 4000);
   } finally {
     cloudWriteInFlight = false;
@@ -5135,6 +5151,7 @@ async function mustCloudWrite(actionName, fn, opts) {
     ]);
     return true;
   } catch (e) {
+    if (e && e.code === 'stale-promo') { showToast(e.message, null, null, 4500); return false; }
     if (e && e.code === 'duplicate-barcode') {
       if (typeof opts.onDuplicateBarcode === 'function') opts.onDuplicateBarcode(e);
       return false;
@@ -10209,11 +10226,75 @@ function receiptPriceSummaryHelpHtml(a, withActions) {
       missingPromos.map(r => '<div class="border-t border-amber-200 pt-2 mt-2 text-xs">' +
         '<div class="font-black">' + htmlEscape(r.name) + '</div>' +
         '<div>סומן כמבצע בתעודה, אך אין לו מבצע בתוקף במאגר. בדוק את אחוז ההנחה ואת התאריכים.</div>' +
-        (withActions ? receiptRowActionButton('price-add-promo', r, 'השלם מבצע למוצר', 'bg-amber-600 text-white w-full mt-2')
+        (withActions ? receiptExistingPromoPickerHtml(r) + receiptRowActionButton('price-add-promo', r, 'פתח מבצע חדש למוצר', 'bg-white border border-amber-300 text-amber-900 w-full mt-2')
           : '<div class="font-bold mt-1">חזור למסך הקליטה להשלמת המבצע.</div>') + '</div>').join('') +
       (!missingPromos.length ? '<div class="text-xs mt-2">' + htmlEscape(d.summaryStatus) + '</div>' : '') +
       '</div>';
   }).join('');
+}
+function receiptExistingPromoEligible(pr, day) {
+  return !!(pr && pr.type !== 'monthEnd' && Array.isArray(pr.productIds) && promoActive(pr, day)
+    && Number(pr.pct) > 0 && Number(pr.pct) <= 100
+    && (pr.minUnit !== 'carton' || Number(pr.cartonSize) > 0));
+}
+function receiptExistingPromoTerms(pr) {
+  return JSON.stringify([pr.name || '', Number(pr.pct), pr.start || '', pr.end || '',
+    Number(pr.minQty) || 1, pr.minUnit || 'unit', Number(pr.cartonSize) || null, pr.type || 'receipt']);
+}
+function receiptExistingPromoChoices(row) {
+  const names = pr => [pr.name, ...pr.productIds.map(id => ((products || []).find(p => p.id === id) || {}).name || '')].join(' ');
+  return (promos || []).filter(pr => receiptExistingPromoEligible(pr, row.date) && !pr.productIds.includes(row.productId))
+    .sort((a, b) => receiptNameScore(row.name, names(b)) - receiptNameScore(row.name, names(a))
+      || String(a.name || '').localeCompare(String(b.name || ''), 'he'));
+}
+function receiptExistingPromoPickerHtml(row) {
+  const choices = receiptExistingPromoChoices(row);
+  return '<details data-existing-promo-picker class="mt-2 rounded-xl border border-amber-300 overflow-hidden">' +
+    '<summary class="btn-tap cursor-pointer bg-amber-600 text-white p-3 text-center text-sm font-black">שייך למבצע קיים</summary>' +
+    '<div class="p-2 bg-white"><div class="text-xs font-bold text-slate-600 mb-2">בחר את המבצע של המוצר. מוצגים מבצעים בתוקף בתאריך התעודה.</div>' +
+    '<div class="max-h-80 overflow-y-auto space-y-2">' + (choices.length ? choices.map(pr => {
+      const names = pr.productIds.map(id => ((products || []).find(p => p.id === id) || {}).name).filter(Boolean);
+      return '<button data-role="price-link-promo" data-doc="' + Number(row.documentIndex) + '" data-row="' + Number(row.sourceIndex) +
+        '" data-promo="' + htmlEscape(String(pr.id)) + '" class="btn-tap w-full text-right rounded-lg border border-amber-200 p-3 text-slate-800">' +
+        '<span class="block font-black text-sm">' + htmlEscape(pr.name || 'מבצע') + ' · ' + Number(pr.pct) + '%</span>' +
+        '<span class="block text-xs mt-1">' + htmlEscape(pr.start) + ' עד ' + htmlEscape(pr.end) + ' · ' +
+        htmlEscape(promoMinLabelP(pr) || 'מיחידה אחת') + '</span>' +
+        '<span class="block text-xs text-slate-500 mt-1">בסל: ' + htmlEscape(names.slice(0, 3).join(', ')) +
+        (names.length > 3 ? ' ועוד ' + (names.length - 3) : '') + '</span></button>';
+    }).join('') : '<div class="p-2 text-sm font-bold">אין מבצע קיים בתוקף לתאריך הזה. אפשר לפתוח מבצע חדש למטה.</div>') + '</div></div></details>';
+}
+function receiptPricePromoRow(documentIndex, sourceIndex) {
+  const a = receiptPriceAudit();
+  const row = a.rows.find(r => Number(r.documentIndex) === Number(documentIndex) && Number(r.sourceIndex) === Number(sourceIndex));
+  const document = a.documents.find(d => Number(d.index) === Number(documentIndex));
+  return row && document && document.summaryPending && row.productId && row.printedPromo && !row.hasActivePromo && row.basePriceCheckable ? row : null;
+}
+function receiptLinkExistingPromo(documentIndex, sourceIndex, promoId) {
+  const row = receiptPricePromoRow(documentIndex, sourceIndex);
+  const pr = row && receiptExistingPromoChoices(row).find(p => String(p.id) === String(promoId));
+  if (!row || !pr) { showToast('מצב המוצר או המבצע השתנה — בחר מחדש', null, null, 3500); return false; }
+  const stamp = receiptRowProductSearchStamp(row), terms = receiptExistingPromoTerms(pr);
+  showConfirm('שיוך למבצע קיים', 'להוסיף את "' + row.name + '" למבצע "' + pr.name + '" (' + pr.pct + '%), בתוקף מ־' +
+    pr.start + ' עד ' + pr.end + '? תנאי הכמות: ' + (promoMinLabelP(pr) || 'מיחידה אחת') + '.', 'שייך וחשב מחדש', async () => {
+    const fresh = receiptPricePromoRow(documentIndex, sourceIndex);
+    const selected = (promos || []).find(p => String(p.id) === String(promoId));
+    if (!fresh || receiptRowProductSearchStamp(fresh) !== stamp || !selected || !receiptExistingPromoEligible(selected, fresh.date)
+        || receiptExistingPromoTerms(selected) !== terms) {
+      showToast('מצב השורה או תנאי המבצע השתנו — בחר מחדש', null, null, 3500); return false;
+    }
+    const saved = await runCloudTask('link receipt product to promo', { op: 'promo-add-product', path: dataPath('promos', selected.id),
+      productPath: dataPath('products', fresh.productId), productId: fresh.productId, day: fresh.date, terms,
+      operationId: makeOperationId('promo_link') });
+    if (!saved) return false;
+    const current = (promos || []).find(p => String(p.id) === String(promoId));
+    if (current && !current.productIds.includes(fresh.productId)) current.productIds.push(fresh.productId);
+    reconcileRefreshPrices();
+    if (aiScanResponse) aiScanEvaluation = aiEvaluateInvoiceScan(aiScanResponse);
+    saveReceiptDraft(); refreshScanHost(); refreshPriceAuditViews();
+    showToast('המוצר שויך למבצע הקיים והבדיקה חושבה מחדש', null, null, 3000);
+    return true;
+  });
+  return true;
 }
 function receiptOpenPricePromo(documentIndex, sourceIndex) {
   const a = receiptPriceAudit();
@@ -21412,6 +21493,7 @@ app.addEventListener('click', (e) => {
   if (role === 'ai-confirm-barcode-suggestion') { aiConfirmBarcodeSuggestion(parseInt(t.dataset.doc, 10), parseInt(t.dataset.row, 10)); return; }
   if (role === 'ai-confirm-name-candidate') { aiConfirmNameCandidate(parseInt(t.dataset.doc, 10), parseInt(t.dataset.row, 10), t.dataset.candidateId); return; }
   if (role === 'ai-add-unknown-product') { aiOpenUnknownProduct(parseInt(t.dataset.doc, 10), parseInt(t.dataset.row, 10)); return; }
+  if (role === 'price-link-promo') { receiptLinkExistingPromo(parseInt(t.dataset.doc, 10), parseInt(t.dataset.row, 10), t.dataset.promo); return; }
   if (role === 'price-add-promo') { receiptOpenPricePromo(parseInt(t.dataset.doc, 10), parseInt(t.dataset.row, 10)); return; }
   if (role === 'rowfix-search') { receiptOpenRowProductSearch(parseInt(t.dataset.doc, 10), parseInt(t.dataset.row, 10)); return; }
   if (role === 'rowfix-scan') { receiptOpenRowProductScan(parseInt(t.dataset.doc, 10), parseInt(t.dataset.row, 10)); return; }

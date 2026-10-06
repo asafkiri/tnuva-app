@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { runtime } from './receipt-scan-harness.mjs';
+import { runtime, fakeCloud } from './receipt-scan-harness.mjs';
 
 // Synthetic document reproducing the two independent blockers: a price-assisted
 // identity and an unconfigured starred promotion. No private backup is embedded.
@@ -148,4 +148,99 @@ test('an obsolete missing-promo button cannot open or create a duplicate promo',
   assert.equal(c.run('receiptOpenPricePromo(0,3)'), false);
   assert.equal(c.run('currentView'), 'receiving');
   assert.equal(c.writes.length, 0);
+});
+
+// Existing promotions retain their identity, dates, percentage, thresholds and
+// original members; only the missing product's membership is added.
+test('existing-promo picker uses the document date and excludes expired, future, monthly and invalid groups', async () => {
+  const c = await scan(); confirmIdentity(c);
+  c.run(`promos.push(
+    {...promos[0],id:'expired',end:'2026-09-30'},
+    {...promos[0],id:'future',start:'2026-11-01',end:'2026-11-30'},
+    {...promos[0],id:'monthly',type:'monthEnd'},
+    {...promos[0],id:'broken',minUnit:'carton',cartonSize:null}
+  );todayStr=()=> '2026-12-01';priceAuditSetDate(0,'2026-10-06');`);
+  assert.deepEqual(read(c,'receiptExistingPromoChoices(receiptFindAuditRow(0,3)).map(p=>p.id)'), ['known']);
+  assert.match(view(c), /שייך למבצע קיים/);
+  assert.match(view(c), /פתח מבצע חדש למוצר/);
+  assert.match(view(c), /data-role="price-link-promo"[^>]*data-promo="known"/);
+  assert.doesNotMatch(view(c), /data-promo="(?:expired|future|monthly|broken)"/);
+});
+
+test('linking to an existing promo keeps its terms and members and completes the price check', async () => {
+  const c = await scan(); confirmIdentity(c);
+  const before = read(c,'promos[0]'), paper = raw(c), received = c.run('JSON.stringify(receiptList)');
+  c.click('price-link-promo',null,{doc:'0',row:'3',promo:'known'});
+  assert.match(c.node('confirmMsg').textContent,/מבצע ידוע.*15%.*2026-10-01.*2026-10-31/);
+  assert.equal(c.writes.length,0,'selection is reviewable before saving');
+  assert.equal(await c.run('confirmCb()'),true);
+  assert.equal(c.writes.length,1);
+  assert.equal(c.writes[0].op,'promo-add-product');
+  const after = read(c,'promos[0]');
+  assert.deepEqual(after,{...before,productIds:[...before.productIds,'hazelnut']});
+  assert.equal(c.run('promos.length'),1,'no extra promotion is created');
+  assert.equal(audit(c).complete,true);
+  assert.equal(read(c,'receiptRowActions().decided'),1);
+  assert.equal(raw(c),paper);assert.equal(c.run('JSON.stringify(receiptList)'),received);
+  assert.equal(c.requests.filter(r=>r.url.endsWith('/scan')).length,1);
+});
+
+test('cancelling, changed terms and failed writes do not add membership', async () => {
+  const c = await scan(); confirmIdentity(c);
+  c.run("receiptLinkExistingPromo(0,3,'known');hideConfirm()");
+  assert.equal(c.writes.length,0);
+  c.run("receiptLinkExistingPromo(0,3,'known');promos[0].pct=20");
+  assert.equal(await c.run('confirmCb()'),false);
+  assert.equal(c.writes.length,0);
+  c.run("promos[0].pct=15;receiptLinkExistingPromo(0,3,'known');runCloudTask=async()=>false");
+  assert.equal(await c.run('confirmCb()'),false);
+  assert.deepEqual(read(c,'promos[0].productIds'),fixture.promos[0].productIds);
+  assert.equal(audit(c).complete,false);
+});
+
+async function membershipTransaction() {
+  const c = await scan(); confirmIdentity(c);
+  c.run("receiptLinkExistingPromo(0,3,'known')");await c.run('confirmCb()');
+  const task = c.writes[0], cloud = fakeCloud();
+  c.context.doc = (_db,...path)=>path.join('/');
+  c.context.runTransaction = (_db,fn)=>cloud.transaction(fn,c.context);
+  c.context.membershipTask = task;
+  const promoPath=task.path.join('/'),productPath=task.productPath.join('/');
+  cloud.documents.set(promoPath,structuredClone({...fixture.promos[0],productIds:[...fixture.promos[0].productIds,'added-elsewhere']}));
+  cloud.documents.set(productPath,structuredClone(products.find(p=>p.id==='hazelnut')));
+  return {c,cloud,promoPath,productPath};
+}
+
+test('the cloud transaction preserves a member added by another device and is idempotent on retry',async()=>{
+  const {c,cloud,promoPath}=await membershipTransaction();
+  const before=structuredClone(cloud.documents.get(promoPath));
+  await c.run('executeCloudTask(membershipTask)');
+  assert.deepEqual(cloud.documents.get(promoPath),{...before,productIds:[...before.productIds,'hazelnut']});
+  await c.run('executeCloudTask(membershipTask)');
+  assert.equal(cloud.documents.get(promoPath).productIds.filter(x=>x==='hazelnut').length,1);
+});
+
+test('cloud-side changed terms or deleted entities reject an old membership choice without recreating data',async()=>{
+  const {c,cloud,promoPath,productPath}=await membershipTransaction();
+  const original=structuredClone(cloud.documents.get(promoPath));
+  cloud.documents.set(promoPath,{...original,pct:20});
+  await assert.rejects(c.run('executeCloudTask(membershipTask)'),e=>e.code==='stale-promo');
+  assert.equal(cloud.documents.get(promoPath).productIds.includes('hazelnut'),false);
+  cloud.documents.set(promoPath,original);cloud.documents.delete(productPath);
+  await assert.rejects(c.run('executeCloudTask(membershipTask)'),e=>e.code==='stale-promo');
+  cloud.documents.delete(promoPath);
+  await assert.rejects(c.run('executeCloudTask(membershipTask)'),e=>e.code==='stale-promo');
+  assert.equal(cloud.documents.has(promoPath),false);
+});
+
+test('an offline retry whose promotion was removed is discarded with a clear message',async()=>{
+  const {c,cloud,promoPath}=await membershipTransaction();
+  cloud.documents.delete(promoPath);
+  c.run(`cloudFailedWrites=[{id:'old-link',actionName:'link receipt product to promo',task:membershipTask,operationId:membershipTask.operationId}];
+    showCloudBusy=()=>{};hideCloudBusy=()=>{};updateCloudFailButton=()=>{};`);
+  await c.run('retryCloudFailedWrites()');
+  assert.equal(c.run('cloudFailedWrites.length'),0);
+  assert.match(c.toasts.at(-1),/שיוכים בוטלו.*בחר מחדש/);
+  assert.doesNotMatch(c.toasts.at(-1),/כל הפעולות נשמרו/);
+  assert.equal(cloud.documents.has(promoPath),false);
 });
