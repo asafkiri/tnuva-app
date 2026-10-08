@@ -673,7 +673,7 @@ let receiptOpened = false;       // האם נפתחה תעודה (שער לפנ�
 // והבדיקה הרגילה (כולל סריקת AI כשיש פער) רצה מול הספירה שכבר נעשתה.
 let receiptNoDoc = false;        // הקליטה הנוכחית נפתחה בלי תעודה
 let receiptAttachTarget = null;  // צירוף נייר לקליטה שכבר נשמרה בלי תעודה
-let receiptReconcileDraft = null, receiptReconcileSession = null;
+let receiptReconcileDraft = null, receiptReconcileSession = null, receiptReconcileSource = null;
 let reconcileData = null;        // נתוני מסך השוואת תעודה
 let reconcileDetectiveRoundingGap = null; // סטיית עיגול זעירה שאושרה בבחירת פתרון של הבלש
 // v113: סטיית העיגול שבין שורות המבצע באפליקציה (מחיר מבצע × כמות, מעוגל פעם
@@ -741,7 +741,7 @@ let receiptDupConfirmed = false; // אישור שמירה למרות חשד לכ
 const RECEIPT_DRAFT_KEY = 'tn_receipt_draft';
 let receivingDigitsMissTimer = null;
 let receivingDigitsMissNotified = '';
-const APP_VERSION = '137'; // טיוטה מקומית, גיבוי והעברה מפורשת
+const APP_VERSION = '138'; // טיוטה מקומית, גיבוי והעברה מפורשת
 // גרסה 73: מוצר בלי מחיר קופה — חלון הכמות מציג מיד את העלות ליח׳ (ללא מע״מ) ופותח שדה להקלדת המחיר שעובר בקופה, בלי לנדוד למסך המחירים
 // v40: תג גרסה קבוע בפינת המסך — לדעת בשנייה איזו גרסה באמת רצה על המכשיר
 // (עוזר במיוחד מול מטמון ה-PWA). pointer-events:none — לעולם לא חוסם מגע.
@@ -1712,7 +1712,7 @@ function restoreReceiptDraft(incoming) {
     const o = incoming || JSON.parse(s);
     receiptReconcileDraft = o && o.reconciliation && o.reconciliation.version === 1
       && o.reconciliation.draftId === o.draftId && Array.isArray(o.reconciliation.rows) ? o.reconciliation : null;
-    receiptReconcileSession = null; reconcileData = null;
+    receiptReconcileSession = null; receiptReconcileSource = null; reconcileData = null;
     if (Array.isArray(o)) { receiptCountingMode = 'scan'; receiptList = o; receiptOpened = o.length > 0; }
     else if (o && typeof o === 'object') {
       receiptList = Array.isArray(o.items) ? o.items : [];
@@ -6566,10 +6566,11 @@ function hideReceiptSummary() { const m = $('receiptSummaryModal'); m.classList.
 // ===== מסך השוואת תעודה (חוסר/עודף) =====
 // תיקוני ההשוואה הם חלק מהטיוטה, גם כשהמסך נסגר. בלי תמונות ובלי סיכום לתשלום.
 function receiptReconcileSnapshot() {
-  if (!receiptDraftId) { receiptReconcileDraft = null; receiptReconcileSession = null; return null; }
+  if (!receiptDraftId) { receiptReconcileDraft = null; receiptReconcileSession = null; receiptReconcileSource = null; return null; }
   if (reconcileData && receiptReconcileSession === receiptDraftId) {
     receiptReconcileDraft = { version: 1, draftId: receiptDraftId, rows: reconcileData,
-      source: receiptList.map(l => ({ productId: l.productId, qty: l.qty })),
+      // Keep the count baseline paired with these rows, not with later scans.
+      source: receiptReconcileSource || [],
       state: { reconcilePaperEntered, reconcileAiAudit, reconcileSupplierDiscount, reconcileSupplierPromoItems, reconcilePromoMismatchItems, reconcileSupplierCreditClaim, noteCheckRows, noteCheckQtyMode, reconcileCheckMode, noteCheckForceQty, manualAssigned, manualPromoMarks, detectiveQuestionState, reconcileDetectiveRoundingGap, reconcilePromoRoundingGap } };
   }
   return receiptReconcileDraft && receiptReconcileDraft.draftId === receiptDraftId ? receiptReconcileDraft : null;
@@ -6596,10 +6597,14 @@ function restoreReceiptReconcile() {
   if (Object.prototype.hasOwnProperty.call(state, 'reconcileDetectiveRoundingGap')) reconcileDetectiveRoundingGap = state.reconcileDetectiveRoundingGap;
   if (Object.prototype.hasOwnProperty.call(state, 'reconcilePromoRoundingGap')) reconcilePromoRoundingGap = state.reconcilePromoRoundingGap;
   const oldCounts = new Map((d.source || []).map(l => [String(l.productId), Number(l.qty) || 0]));
+  let countsChanged = false;
   for (const item of receiptList) {
     const id = String(item.productId), qty = Number(item.qty) || 0;
-    if (oldCounts.has(id) && oldCounts.get(id) === qty) continue;
     const line = reconcileData.find(l => String(l.productId) === id);
+    // A matching source does not prove that a legacy draft contains the row.
+    // Existing unchanged rows retain manual corrections, including zero.
+    if (line && oldCounts.has(id) && oldCounts.get(id) === qty) continue;
+    countsChanged = true;
     if (line) { line.received = qty; }
     else {
       const p = products.find(p => String(p.id) === id), base = r2(Number(p && p.price) || 0);
@@ -6611,8 +6616,10 @@ function restoreReceiptReconcile() {
     }
   }
   for (const [id] of oldCounts) if (!receiptList.some(l => String(l.productId) === id)) {
+    countsChanged = true;
     const line = reconcileData.find(l => String(l.productId) === id); if (line) line.received = 0;
   }
+  receiptReconcileSource = receiptList.map(l => ({ productId: l.productId, qty: l.qty }));
   receiptReconcileSession = receiptDraftId;
   pendingReceipt = null; // סיכום תמיד נבנה מחדש מהתיקונים, בלי קריאת AI נוספת.
   rcStep = null;
@@ -6622,7 +6629,6 @@ function restoreReceiptReconcile() {
     try { aiScanEvaluation = aiEvaluateInvoiceScan(aiScanResponse); aiScanReused = true; aiScanError = ''; }
     catch (e) { aiScanEvaluation = null; aiScanError = 'לא הצלחתי להשוות כרגע. הפענוח נשמר; חזור לספירה ונסה שוב.'; }
   }
-  const countsChanged = JSON.stringify(d.source || []) !== JSON.stringify(receiptList.map(l => ({productId:l.productId,qty:l.qty})));
   if (countsChanged) { reconcileAiAudit = null; reconcileDetectiveRoundingGap = null; reconcilePromoRoundingGap = null; }
   setView('reconcile');
   return true;
@@ -6631,6 +6637,7 @@ function openReconcile() {
   if (!canEditDraft('receiving')) return;
   if (restoreReceiptReconcile()) return;
   receiptReconcileSession = receiptDraftId;
+  receiptReconcileSource = receiptList.map(l => ({ productId: l.productId, qty: l.qty }));
   const day = activeReceiptDate();
   reconcileData = receiptList.map(it => {
     const p = products.find(x => x.id === it.productId);

@@ -123,3 +123,20 @@ test('the former owner cannot add photos or trigger the old live camera, includi
 });
 
 test('taking a draft records the successful session and generation in the action log',async()=>{const c=createCloud(),a=await begin(c),b=make(c),entries=[];b.context.logAction=(...entry)=>entries.push(entry);await settle();const sid=id(a);assert.equal((await b.take(sid)).ok,true);assert.equal(entries.length,1);assert.equal(entries[0][0],'draft-handoff');assert.equal(entries[0][3].sessionId,sid);assert.equal(entries[0][3].gen,2);});
+
+test('more scans after comparison survive transfer without losing manual corrections',async()=>{
+ const c=createCloud(),a=await begin(c);
+ a.change("openReconcile();reconcileSetRecvLive('milk','4');reconcileSetNoteLive('milk','12');reconcileSetPriceLive('milk','6.321');setView('receiving');addReceiptQtyToTop(products.find(p=>p.id==='coffee'),3);saveReceiptDraft()");
+ await a.sync();
+ const p=JSON.parse(c.get(path('receiving',id(a))).payload);
+ assert.equal(p.items.length,2);assert.equal(p.reconciliation.source.length,1);
+ const b=make(c);await settle();assert.equal((await b.take(id(a))).ok,true);
+ b.run('openReconcile()');
+ assert.equal(b.run("reconcileData.find(l=>l.productId==='milk').received"),4);
+ assert.equal(b.run("reconcileData.find(l=>l.productId==='milk').noteQty"),12);
+ assert.equal(b.run("reconcileData.find(l=>l.productId==='milk').price"),6.321);
+ assert.equal(b.run("reconcileData.find(l=>l.productId==='coffee').received"),3);
+ assert.equal(b.requests.length,0);
+ await b.sync();
+ assert.equal(JSON.parse(c.get(path('receiving',id(a))).payload).reconciliation.rows.length,2);
+});
