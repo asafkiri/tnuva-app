@@ -72,6 +72,9 @@ export function runtime(supplier, { storage = new Map(), data = fixture(supplier
   vm.runInContext(fs.readFileSync(new URL('../shared-return-events.js',import.meta.url),'utf8'),context);
   const createReturnEvents=context.SharedReturnEvents.create;
   context.SharedReturnEvents={create:o=>createReturnEvents({...o,timers:{set:(fn,ms)=>{const t=setTimeout(fn,ms);t.unref();return t;},clear:clearTimeout}})};
+  vm.runInContext(fs.readFileSync(new URL('../local-receiving.js',import.meta.url),'utf8'),context);
+  const createLocalReceiving=context.LocalReceiving.create;
+  context.LocalReceiving={create:o=>createLocalReceiving({...o,timers:{set:(fn,ms)=>{const t=setTimeout(fn,ms);t.unref();return t;},clear:clearTimeout}})};
   vm.runInContext(moduleSource, context, { filename: 'index.html', timeout: 5000 });
   context.testData = structuredClone(data); context.testWrites = writes; context.testToasts = toasts;
   const run = script => vm.runInContext(script, context, { timeout: 5000 });
