@@ -254,10 +254,11 @@ for(const s of suppliers) {
     assert.equal((await a.run('unpackReceiptValue(packed)')).scan.documents[0].rows[0].quantity,10);
     assert.equal(typeof d.aiAudit.documents[0].rows,'number');assert.equal(raw(reload(s,a)),null);
   });
-  test(s+': active scan and count resume on another device without another OCR request',async()=>{
+  test(s+': active scan and count resume locally without uploading a receiving draft or repeating OCR',async()=>{
     const cloud=fakeCloud(),a=runtime(s,{cloud});await cloud.tick();await a.scan();
-    a.run('draftHandoffs.receiving.flush()');await cloud.tick();
-    const otherDevice=runtime(s,{cloud});await cloud.tick();assert.equal((await otherDevice.run('draftHandoffs.receiving.take('+JSON.stringify(a.run('receiptDraftId'))+')')).ok,true);assert.equal(raw(otherDevice),1);
+    await cloud.tick();assert.equal(a.run('draftHandoffs.receiving'),undefined);
+    const separate=runtime(s,{cloud});await cloud.tick();assert.equal(separate.run('receiptList.length'),0);
+    const otherDevice=runtime(s,{cloud,storage:new Map(a.storage)});await cloud.tick();assert.equal(raw(otherDevice),1);
     assert.equal(otherDevice.run('receiptList[0].qty'),9);otherDevice.run('finishReceipt()');
     assert.equal(otherDevice.run('aiScanEvaluation.findings.some(f=>f.type==="shortage"&&f.qty===1)'),true);assert.equal(scanCount(otherDevice),0);
   });

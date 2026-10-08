@@ -546,6 +546,7 @@
     </div>
 
     <script src="./draft-handoff.js"></script>
+    <script src="./local-receiving.js"></script>
     <script src="./shared-return-events.js"></script>
 <script type="module">
 // ===== Firebase (מפתח הענן של גלוברנס) =====
@@ -700,6 +701,7 @@ let receiptStorageWarning = '';
 let aiScanEditingImages = false;
 const draftHandoffs = {}, handoffFinalizing = {}, handoffFinishPlans = {};
 let handoffApplying = false, handoffUserEdit = false, receiptFinalizing = false;
+let localReceiptFinalizer = null, receiptLocalEpoch = 0, qtyReceiptEpoch = null;
 let orderDraftId = null, orderDraftNote = '';
 let receiptAnalysisCache = null, receiptAnalysisPending = null;
 let aiScanFromDraft = false;     // v15: הקריאה שוחזרה מהטיוטה — הצילומים עצמם כבר לא בזיכרון
@@ -741,7 +743,7 @@ let receiptDupConfirmed = false; // אישור שמירה למרות חשד לכ
 const RECEIPT_DRAFT_KEY = 'tn_receipt_draft';
 let receivingDigitsMissTimer = null;
 let receivingDigitsMissNotified = '';
-const APP_VERSION = '138'; // טיוטה מקומית, גיבוי והעברה מפורשת
+const APP_VERSION = '139'; // קליטה מקומית עד הסיום; החזרות מסונכרנות
 // גרסה 73: מוצר בלי מחיר קופה — חלון הכמות מציג מיד את העלות ליח׳ (ללא מע״מ) ופותח שדה להקלדת המחיר שעובר בקופה, בלי לנדוד למסך המחירים
 // v40: תג גרסה קבוע בפינת המסך — לדעת בשנייה איזו גרסה באמת רצה על המכשיר
 // (עוזר במיוחד מול מטמון ה-PWA). pointer-events:none — לעולם לא חוסם מגע.
@@ -1102,6 +1104,7 @@ function tnuvaPaperCheck(input, pageCount) {
 }
 
 function tnuvaResetPhotoReceipt() {
+  invalidateLocalReceiptUI();
   aiScanRunId++;
   receiptAnalysisCache = null; aiScanEditingImages = false;
   receiptEntryMode = 'photo'; receiptAnchorSource = null;
@@ -1561,7 +1564,7 @@ function readNoteEntry(required) {
 // על התוצאות; מה שיידרש צילום מחדש הוא רק סריקה חדשה של אותו נייר.
 function receiptDraftPayload(includeScan) {
   const scan = receiptScanSnapshot();
-  return { schemaVersion: 4, draftId: receiptDraftId, items: receiptList, notes: receiptNotes,
+  return { schemaVersion: 4, localOnly: true, draftId: receiptDraftId, items: receiptList, notes: receiptNotes,
     reconciliation: receiptReconcileSnapshot(),
     opened: receiptOpened, docDate: typeof receiptDocDate === 'undefined' ? null : receiptDocDate,
     dw: typeof receiptDepositWaived === 'undefined' ? false : receiptDepositWaived,
@@ -1580,7 +1583,7 @@ function saveReceiptDraft() {
   if ((receiptOpened || receiptList.length || receiptNotes.length || receiptManualInput || aiScanDocuments.some(d => d.pages.length || d.scanResult)) && !receiptDraftId) receiptDraftId = makeOperationId('receipt');
   const saved = persistReceiptDraft(receiptDraftPayload(true));
   receiptPriceSaveFailed = !saved;
-  handoffChanged('receiving'); refreshReceiptDraftNotice();
+  refreshReceiptDraftNotice();
   return saved;
 }
 // Each input owns its result. The combined response is only a derived view.
@@ -1663,7 +1666,7 @@ function persistReceiptDraft(payload) {
     return true;
   } catch (error) {
     // שומרים את העותק המלא האחרון; טיוטה חלקית לא תדרוס פענוח ששולם עליו.
-    receiptStorageNotice('השינויים האחרונים לא נשמרו במכשיר — אין מקום לפענוח. הטיוטה הקודמת נשמרה בשלמותה; אל תסגור לפני שהגיבוי לענן מאושר.');
+    receiptStorageNotice('השינויים האחרונים לא נשמרו במכשיר — אין מקום לפענוח. הטיוטה הקודמת נשמרה בשלמותה; אל תסגור את האפליקציה עד לפינוי מקום ושמירה מוצלחת.');
     return false;
   }
 }
@@ -1828,14 +1831,14 @@ function handoffFingerprint(kind) {
     reconciliation:d?{rows:d.rows,state:d.state}:null,attach:p.attach});
 }
 function handoffChanged(kind, opts) {
-  if(handoffApplying) return;
+  if(handoffApplying || kind==='receiving') return;
   const h=draftHandoffs[kind]; if(h) h.changed({user:!!handoffUserEdit,...opts});
 }
 function canEditDraft(kind, quiet=false) {
   if(handoffApplying) return true;
   const h=draftHandoffs[kind], st=h&&h.state();
-  if((kind==='receiving' && receiptFinalizing) || handoffFinalizing[kind] || (st&&st.readOnly)) {
-    if(!quiet) showToast(handoffBlockedText(kind,st),null,null,4000); return false;
+  if((kind==='receiving' && (receiptFinalizing || localReceiptPending())) || handoffFinalizing[kind] || (st&&st.readOnly)) {
+    if(!quiet) showToast(kind==='receiving'?'יש שמירת קליטה שעדיין נבדקת. לחץ על בדיקת השמירה למעלה.':handoffBlockedText(kind,st),null,null,4000); return false;
   }
   return true;
 }
@@ -1886,7 +1889,7 @@ function startDraftHandoffs() {
   if(!receiptDraftId && receiptDraftActive(receiptDraftPayload(false))) {receiptDraftId=makeOperationId('receipt');saveReceiptDraft();}
   if(Object.values(orderState).some(x=>x&&hasEnteredAmount(x.amount))&&!orderDraftId)orderDraftId=makeOperationId('order');
   saveDraft();
-  for(const kind of Object.keys(handoffLabels)) {
+  for(const kind of Object.keys(handoffLabels).filter(kind=>kind!=='receiving')) {
     const collectionName=kind==='receiving'?'receipts':kind==='order'?'history':'returns';
     const h=DraftHandoff.create({app:HANDOFF_APP,kind,prefix:HANDOFF_PREFIX,db,fs:fsApi,rootPath:['artifacts',appId,'public','data'],recordCollection:collectionName,appVersion:APP_VERSION,
       maxScanMs:(AI_SCAN_NETWORK_RETRIES+1)*AI_SCAN_FETCH_TIMEOUT_MS+60000,
@@ -1915,18 +1918,136 @@ function startDraftHandoffs() {
   }
   recoverLegacyDraftWrites();renderDraftHandoffBanner();
 }
+// Receiving has one local working copy. Only an explicit final save talks to the cloud.
+function localReceiptSession(){return handoffSession({draftId:receiptDraftId,attach:receiptAttachTarget});}
+function localReceiptPending(){
+  const id=localReceiptSession();if(!id)return false;
+  try{return !!JSON.parse(localStorage.getItem(HANDOFF_PREFIX+'_receiving_final_v1')||'{}')[id];}catch(e){return true;}
+}
+function ensureLocalReceiptFinalizer(){
+  if(localReceiptFinalizer)return localReceiptFinalizer;
+  if(!db||!globalThis.LocalReceiving)return null;
+  localReceiptFinalizer=LocalReceiving.create({storage:localStorage,prefix:HANDOFF_PREFIX,app:HANDOFF_APP,db,
+    fs:{doc,runTransaction,getDocFromServer},rootPath:['artifacts',appId,'public','data'],makeId:makeOperationId,
+    deviceName:actionDeviceLabel,appVersion:APP_VERSION,getSession:localReceiptSession,
+    getFingerprint:()=>handoffFingerprint('receiving')});
+  return localReceiptFinalizer;
+}
+function localReceiptResult(result){
+  if(result.ok)return true;
+  const text={offline:'אין אישור מהענן. הקליטה נשארה בטלפון; אפשר לבדוק את השמירה שוב.',unknown:'תשובת השמירה מתעכבת. הקליטה נשארה בטלפון; לחץ על בדיקת השמירה למעלה.',
+    storage:'אין מקום לשמירת הקליטה במכשיר. הנתונים שעל המסך לא נוקו; פנה מקום ונסה שוב.',busy:'שמירת הקליטה עדיין נבדקת.',
+    changed:'התעודה או מחיר המוצר השתנו בענן. הקליטה המקומית נשמרה; בדוק את התעודה בהיסטוריה.',
+    exists:'התעודה הזאת כבר נשמרה. העותק המקומי נשאר לבדיקה ולא ידרוס אותה.',saved:'הקליטה כבר הסתיימה בטלפון אחר. העותק המקומי נשאר לבדיקה.',
+    moved:'זאת טיוטה ישנה שהועברה לטלפון אחר. יש לסיים אותה בטלפון שאליו הועברה; העותק כאן נשמר.',canceled:'הטיוטה הישנה בוטלה בטלפון אחר. העותק כאן נשמר לבדיקה.',
+    'saved-late':'השמירה הקודמת אושרה, אך יש כאן שינויים שלא נכללו בה. הם נשארו בטלפון; בדוק מול ההיסטוריה.',
+    'pending-changed':'יש שמירה קודמת שלא הוכרעה ושינויים נוספים בטלפון. שני העותקים נשמרו; אין להמשיך לפני בדיקת ההיסטוריה.',
+    'permission-denied':'אין הרשאה לשמירה בענן. הקליטה נשארה בטלפון.',unauthenticated:'יש להתחבר מחדש לפני שמירת הקליטה.',
+    'invalid-argument':'הקליטה לא נשמרה בענן בגלל נתון לא תקין. הנתונים נשארו בטלפון.'};
+  showToast(text[result.reason]||'הקליטה לא נשמרה. הנתונים נשארו בטלפון.',null,null,6500);renderDraftHandoffBanner();return false;
+}
+async function finishLocalReceipt(id,data){
+  const finalizer=ensureLocalReceiptFinalizer();if(!finalizer)return localReceiptResult({reason:'offline'});
+  const d=handoffDraft('receiving');
+  return localReceiptResult(await finalizer.finish({sessionId:d.sessionId,recordId:id,data,expected:d.expected||null,
+    prices:handoffFinishPlans.receiving?.prices||[],fingerprint:handoffFingerprint('receiving')}));
+}
+function invalidateLocalReceiptUI(){
+  receiptLocalEpoch++;aiScanRunId++;aiScanBusy=false;aiAnalyzeBusy=false;
+  if(qtyTarget==='receipt')hideQty();
+  if(scanPurpose==='receiving'||scanPurpose==='rowproduct')closeScanner();
+  closeReceiptQuantityReview();aiCloseOrientationReview();aiCloseLiveCamera();
+  hideConfirm();
+}
+function completeLocalReceipt(sessionId,keepAttempt=false){
+  if(localReceiptSession()!==sessionId)return false;
+  // Persist the empty draft BEFORE touching memory. Full storage leaves the complete saved copy visible.
+  if(!persistReceiptDraft(receiptEmptyDraft())){showToast('התעודה נשמרה בענן אך הניקוי המקומי נכשל. הנתונים עדיין כאן; פנה מקום ובדוק שמירה שוב.',null,null,6500);return false;}
+  receiptFinalizing=false;invalidateLocalReceiptUI();hideReceiptSummary();tnuvaResetPhotoReceipt();
+  receiptList=[];receiptQuantityReview=null;receiptCountingMode='scan';pendingReceipt=null;receiptNotes=[];receiptDocDate=null;receiptDraftId=null;
+  receiptOpened=false;editingNotes=false;reconcileData=null;receiptReconcileDraft=null;receiptReconcileSession=null;receiptReconcileSource=null;
+  reconcileSupplierDiscount=0;reconcileSupplierPromoItems=[];reconcilePromoMismatchItems=[];reconcileSupplierCreditClaim=null;reconcileAiAudit=null;
+  aiScanDocuments=[];aiScanProgressText='';aiScanResponse=null;aiScanEvaluation=null;aiScanReused=false;aiScanFromDraft=false;aiScanError='';aiScanAutoRotationNote='';aiScanAttemptCount=0;
+  receiptDupConfirmed=false;receiptLinesConfirmed=false;receiptNoDoc=false;receiptAttachTarget=null;recomputeNoteTotal();
+  if(!keepAttempt)localReceiptFinalizer?.forget(sessionId);handoffFinishPlans.receiving=null;setView('receiptsHistory');return true;
+}
+async function retryLocalReceiptFinish(){
+  if(receiptFinalizing)return;
+  const finalizer=ensureLocalReceiptFinalizer(),id=localReceiptSession(),attempt=finalizer?.attempt(id);if(!attempt)return;
+  receiptFinalizing=true;
+  try{const result=await finalizer.finish({...attempt,fingerprint:handoffFingerprint('receiving')});
+    if(localReceiptResult(result)&&completeLocalReceipt(id))showToast('התעודה נשמרה ✓');
+  }finally{receiptFinalizing=false;renderDraftHandoffBanner();}
+}
+function localReceiptRecoveryEntries(){
+  const all=[];
+  for(const key of [HANDOFF_PREFIX+'_handoff_receiving_side',HANDOFF_PREFIX+'_handoff_legacy_writes']){
+    try{const list=JSON.parse(localStorage.getItem(key)||'[]');if(Array.isArray(list))for(const entry of list){
+      if(key.endsWith('_side'))all.push({type:'side',entry});else if(legacyReceivingTask(entry.task))all.push({type:'queued',entry});
+    }}catch(e){}
+  }
+  return all;
+}
+function localReceiptBannerHtml(){
+  const active=receiptDraftActive(receiptDraftPayload(false)),pending=localReceiptPending();
+  let html='<div class="rounded-xl border border-blue-200 bg-blue-50 text-blue-900 p-3 mb-2 text-sm font-bold">'+
+    (pending?'שמירת הקליטה עדיין נבדקת. הנתונים נשארו בטלפון הזה.<button class="btn-tap block w-full bg-white border rounded-lg p-2 mt-2" data-local-receipt="retry">בדוק את השמירה שוב</button>':
+      'הקליטה נשמרת בטלפון הזה. מתחילים ומסיימים באותו טלפון; התעודה תופיע בשאר המכשירים אחרי הסיום.')+'</div>';
+  if(active&&!receiptFinalizing)html+='<details class="mb-2 text-sm"><summary>אפשרויות לעותק המקומי</summary><button class="btn-tap border rounded-lg p-2 mt-2" data-local-receipt="archive">שמור עותק בצד ופנה את המסך</button></details>';
+  const entries=localReceiptRecoveryEntries();
+  if(entries.length)html+='<details class="rounded-xl border border-amber-300 bg-amber-50 p-3 mb-2 text-sm"><summary class="font-bold">'+entries.length+' עותקי קליטה ישנים נשמרו בטלפון לבדיקה</summary>'+entries.map((entry,index)=>{
+    let p=null;try{p=entry.type==='side'?JSON.parse(entry.entry.payload):entry.entry.task?.data;}catch(e){}
+    const rows=p?.reconciliation?.rows||p?.items||[],when=entry.entry.savedAt||entry.entry.createdAt;
+    const label=when?new Date(when).toLocaleString('he-IL'):'עותק ישן',units=rows.reduce((n,row)=>n+(Number(row.received??row.qty)||0),0);
+    const amount=p?.totalExVat??p?.noteTotalInc;
+    return '<details class="mt-2 border rounded-lg p-2"><summary>'+htmlEscape(label)+' · '+rows.length+' שורות · '+units+' יחידות</summary>'+(amount!=null?'<div>סכום ללא מע״מ: ₪'+fmtMoney(amount)+'</div>':'')+'<div>'+rows.map(row=>'<div>'+htmlEscape(row.name||row.productId||'')+' · '+htmlEscape(row.received??row.qty??'')+'</div>').join('')+'</div>'+(entry.type==='side'&&!active&&!pending?'<button class="btn-tap p-2 mt-2 border bg-white rounded-lg font-bold" data-local-receipt="open" data-index="'+index+'">פתח לבדיקה בטלפון הזה</button>':entry.type==='queued'?'<div class="mt-2">שמירה ישנה לעיון בלבד; הנתונים המקוריים נשמרו במלואם.</div>':'<div class="mt-2">סיים את הקליטה הנוכחית לפני פתיחת עותק אחר.</div>')+'</details>';
+  }).join('')+'</details>';
+  return html;
+}
+function archiveLocalReceipt(){
+  if(receiptFinalizing)return;
+  if(handoffDraft('receiving').scanRunning||aiScanDocuments.some(d=>d.pages.length&&!d.scanResult)){showToast('יש להשלים את קריאת הצילומים לפני שמירת עותק בצד.');return;}
+  const session=localReceiptSession(),epoch=receiptLocalEpoch;if(!session)return;
+  const archive=()=>{
+    if(epoch!==receiptLocalEpoch||session!==localReceiptSession()||receiptFinalizing||handoffDraft('receiving').scanRunning||aiScanDocuments.some(d=>d.pages.length&&!d.scanResult))return;
+    try{const key=HANDOFF_PREFIX+'_handoff_receiving_side',list=JSON.parse(localStorage.getItem(key)||'[]');if(!Array.isArray(list))throw Error('invalid');
+      const payload=JSON.stringify(receiptDraftPayload(true));list.push({sessionId:session,recordId:receiptDraftId,payload,savedAt:Date.now(),reason:'local-review'});localStorage.setItem(key,JSON.stringify(list));
+      if(completeLocalReceipt(session,true)){setView('receiving');showToast('העותק המלא נשמר בצד בטלפון הזה.');}
+    }catch(e){showToast('אין מקום לשמור עותק בצד. הקליטה נשארה על המסך.');}
+  };archive.allowReadOnly=true;
+  showConfirm('שמירת עותק מקומי בצד','העותק המלא יישאר לעיון בטלפון. פעולה זו אינה מבטלת שמירה שכבר נשלחה לענן.','שמור בצד',archive);
+}
+async function openLocalReceiptRecovery(index){
+  if(!canEditDraft('receiving')||receiptDraftActive(receiptDraftPayload(false))){showToast('סיים את הקליטה הנוכחית לפני פתיחת עותק אחר.');return;}
+  const entry=localReceiptRecoveryEntries()[index];if(!entry)return;
+  const epoch=receiptLocalEpoch;
+  try{
+    let payload;
+    if(entry.type==='side')payload=JSON.parse(entry.entry.payload);
+    else {
+      showToast('השמירה הישנה נשמרה לעיון בלבד כדי לא לשנות סכומים ואישורים שכבר חושבו.');return;
+
+    }
+    if(epoch!==receiptLocalEpoch||receiptDraftActive(receiptDraftPayload(false))||!canEditDraft('receiving'))return;
+    if(!payload?.draftId||!Array.isArray(payload.items))throw Error('invalid');
+    if(!persistReceiptDraft(payload))return;
+    invalidateLocalReceiptUI();restoreReceiptDraft(payload);setView('receiving');
+  }catch(e){showToast('לא ניתן לפתוח את העותק. הוא נשאר שמור בטלפון ללא שינוי.');}
+}
+
 function handoffHash(s){let n=2166136261;for(let i=0;i<s.length;i++)n=Math.imul(n^s.charCodeAt(i),16777619);return(n>>>0).toString(16);}
 async function finishDraft(kind,id,data,preparingReceipt=false) {
+  if(kind==='receiving')return finishLocalReceipt(id,data);
   if(preparingReceipt ? handoffFinalizing[kind] || draftHandoffs[kind]?.state().readOnly : !canEditDraft(kind))return false;
   const h=draftHandoffs[kind];if(!h){showToast('מנגנון השמירה טרם נטען — הטיוטה בטלפון. נסה שוב כשיש חיבור.');return false;}
   handoffFinalizing[kind]=true;
   try{return handoffResult(await h.finish(id,data));}
   finally{handoffFinalizing[kind]=false;renderDraftHandoffBanner();}
 }
-function cancelLocalDraft(kind) {if(!canEditDraft(kind))return false;const h=draftHandoffs[kind];if(h)h.cancel({});return true;}
+function cancelLocalDraft(kind) {if(!canEditDraft(kind))return false;if(kind==='receiving'){invalidateLocalReceiptUI();return true;}const h=draftHandoffs[kind];if(h)h.cancel({});return true;}
 function renderDraftHandoffBanner() {
   const el=$('draftHandoffBanner');if(!el)return;
-  const kind=handoffKind(),h=kind&&draftHandoffs[kind];el.innerHTML=currentView==='returns'?returnsRecoveryHtml():h?draftHandoffBannerHtml(kind,h.state()):'';
+  const kind=handoffKind(),h=kind&&draftHandoffs[kind];el.innerHTML=currentView==='returns'?returnsRecoveryHtml():kind==='receiving'?localReceiptBannerHtml():h?draftHandoffBannerHtml(kind,h.state()):'';
 }
 function draftHandoffBannerHtml(kind,st) {
   const label=handoffLabels[kind],who=n=>n?'בטלפון ״'+htmlEscape(n)+'״':'בטלפון אחר';
@@ -1979,6 +2100,8 @@ function guardDraftEvent(e) {
   }
 }
 // תור ישן מופרד לפני כל ניסיון שליחה. אף כתיבה ממנו לא נוגעת בטיוטה הישנה או דורסת רשומה.
+function legacyReceivingDraftTask(task){return !!task&&(!!task.receiptDraftGuard||(task.path?.at(-2)==='drafts'&&(task.path.at(-1)==='receipt'||task.path.at(-1).startsWith('handoff_'+HANDOFF_APP+'_receiving_')))||[...(task.tasks||[]),...(task.writes||[])].some(legacyReceivingDraftTask));}
+function legacyReceivingTask(task){return !!task&&(!!task.receiptDraftGuard||(task.path?.at(-2)==='drafts'&&(task.path.at(-1)==='receipt'||task.path.at(-1).startsWith('handoff_'+HANDOFF_APP+'_receiving_')))||(task.path?.at(-2)==='receipts'&&task.op==='set')||[...(task.tasks||[]),...(task.writes||[])].some(legacyReceivingTask));}
 function legacyDraftTask(task){return !!(task&&(task.receiptDraftGuard||(task.path&&['receipts','history'].includes(task.path.at(-2))&&task.op==='set')||(task.path&&task.path.at(-2)==='drafts'&&['receipt'].includes(task.path.at(-1)))));}
 function legacyReturnsTask(task){
   if(!task)return false;
@@ -1995,7 +2118,7 @@ function quarantineLegacyDraftWrites() {
   const key=HANDOFF_PREFIX+'_handoff_legacy_writes';
   let saved=[];try{saved=JSON.parse(localStorage.getItem(key)||'[]');}catch(e){}
   const finalNames=['save receipt before clearing draft','save receipt','save order before send'];
-  const isOld=x=>legacyDraftTask(x.task)&&(finalNames.includes(x.actionName)||x.task.receiptDraftGuard||x.task.path.at(-2)==='drafts');
+  const isOld=x=>legacyReceivingTask(x.task)&&!String(x.actionName||'').startsWith('restore deleted ')||legacyDraftTask(x.task)&&(finalNames.includes(x.actionName)||x.task.receiptDraftGuard||x.task.path?.at(-2)==='drafts');
   const old=cloudFailedWrites.filter(isOld);
   if(!old.length)return;
   try {localStorage.setItem(key,JSON.stringify([...saved,...old.filter(x=>!saved.some(y=>y.id===x.id))]));cloudFailedWrites=cloudFailedWrites.filter(x=>!isOld(x));saveCloudFailedWrites();}
@@ -2006,7 +2129,7 @@ async function recoverLegacyDraftWrites() {
   const keep=[];
   for(const item of list) {
     try {
-      const t=item.task;if(t.path.at(-2)==='drafts')continue; // הטיוטה המקומית שיקפה את המאזין הישן
+      const t=item.task;if(legacyReceivingTask(t)){keep.push(item);continue;}if(t.path.at(-2)==='drafts')continue; // הטיוטה המקומית שיקפה את המאזין הישן
       const coll=t.path.at(-2),id=t.path.at(-1),kind=coll==='receipts'?'receiving':coll==='history'?'order':'returns_'+(t.data.returnKind==='daily'?'daily':'weekly');
       if(handoffDraft(kind).recordId===id)continue;
       if(!navigator.onLine){keep.push(item);continue;}
@@ -4544,6 +4667,7 @@ function scanBeep() {
 let scanStream = null, scanTimer = null, barcodeDetector = null;
 let zxingReader = null, zxingActive = false;
 let wasmDetectorCls = null;
+let scanGeneration = 0;
 let scanUsingWasm = false, scanRoiCanvas = null, scanTickCount = 0;
 // מנוע סריקה חזק (zxing-cpp ב-WASM) לאייפון/ספארי — חושף ממשק BarcodeDetector זהה למובנה.
 // חובה לטעון דרך CDN שפותר תלויות (esm.run/esm.sh): קובץ ה-dist הרגיל מכיל import
@@ -4653,6 +4777,8 @@ function applyAutoZoom(stream) {
   } catch (e) {}
 }
 async function openScanner() {
+  const generation=++scanGeneration;
+  const stillCurrent=()=>generation===scanGeneration;
   refreshPriceScannerNotice();
   ensureScanAudio();
   acquireScreenWakeLock();
@@ -4666,11 +4792,14 @@ async function openScanner() {
     if (nativeScanSupported() && !isIOSDevice()) {
       scanUsingWasm = false;
       if (!barcodeDetector) barcodeDetector = new window.BarcodeDetector();
-      scanStream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: { ideal: 'environment' }, width: { ideal: 1920 }, height: { ideal: 1080 } } });
+      const openedStream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: { ideal: 'environment' }, width: { ideal: 1920 }, height: { ideal: 1080 } } });
+      if(!stillCurrent()){openedStream.getTracks().forEach(track=>track.stop());return;}
+      scanStream=openedStream;
       const v = $('scanVideo'); v.srcObject = scanStream; await v.play();
+      if(!stillCurrent())return;
       applyScanFocus(scanStream);
       // זום אוטומטי רק בסמסונג (בעיית פוקוס קרוב) — שיאומי ושאר האנדרואידים ללא שינוי
-      if (await isSamsungDevice()) applyAutoZoom(scanStream);
+      const samsung=await isSamsungDevice();if(!stillCurrent())return;if(samsung)applyAutoZoom(scanStream);
       setupScanTorch(scanStream);
       setScanDiag(scanStream, 'מובנה');
       setScanHint(readyHint);
@@ -4679,13 +4808,16 @@ async function openScanner() {
       // אייפון/ספארי: אין BarcodeDetector מובנה — טוענים מנוע WASM ומשתמשים באותו מסלול סריקה
       setScanHint('טוען מנוע סריקה...');
       try {
-        await ensureWasmDetector();
+        await ensureWasmDetector();if(!stillCurrent())return;
         scanUsingWasm = true;
         if (!barcodeDetector) barcodeDetector = new wasmDetectorCls({ formats: ['ean_13', 'ean_8', 'upc_a', 'upc_e', 'code_128', 'code_39', 'itf', 'qr_code'] });
         // רזולוציה גבוהה (4K כשאפשר): יותר פיקסלים לכל קו בברקוד — המנוע התוכנתי מתמודד
         // הרבה יותר טוב עם הדפסה מרוחה/צפופה. במכשירים ישנים הדפדפן יורד לבד ל-1080p
-        scanStream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: { ideal: 'environment' }, width: { ideal: 3840 }, height: { ideal: 2160 } } });
-        const v = $('scanVideo'); v.srcObject = scanStream; await v.play();
+        const openedStream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: { ideal: 'environment' }, width: { ideal: 3840 }, height: { ideal: 2160 } } });
+        if(!stillCurrent()){openedStream.getTracks().forEach(track=>track.stop());return;}
+      scanStream=openedStream;
+      const v = $('scanVideo'); v.srcObject = scanStream; await v.play();
+      if(!stillCurrent())return;
         applyScanFocus(scanStream);
         applyAutoZoom(scanStream);
         setupScanTorch(scanStream);
@@ -4694,15 +4826,17 @@ async function openScanner() {
         setScanHint(readyHint);
         scanTimer = setTimeout(scanTick, 400);
       } catch (err) {
+        if(!stillCurrent())return;
         // גיבוי: המנוע הישן (ZXing-JS) — כמו שהיה עד היום
         console.error('WASM scanner failed, falling back to ZXing-JS', err);
         setScanHint('טוען מנוע סריקה...');
-        await ensureZxing();
+        await ensureZxing();if(!stillCurrent())return;
         setScanHint(readyHint);
         await startZxing();
       }
     }
   } catch (e) {
+    if(!stillCurrent())return;
     console.error(e);
     showToast('לא ניתן להפעיל את המצלמה (בדוק הרשאה/חיבור)', null, null, 4000);
     closeScanner();
@@ -4817,6 +4951,7 @@ function grabFullFrame(v) {
 }
 function scanTick() {
   if (!scanStream || !barcodeDetector) return;
+  const generation=scanGeneration,stream=scanStream;
   const v = $('scanVideo');
   if (!v || v.readyState < 2) { scanTimer = setTimeout(scanTick, 200); return; }
   scanTickCount++;
@@ -4850,10 +4985,10 @@ function scanTick() {
     }
   }
   barcodeDetector.detect(src).then(codes => {
-    if (!scanStream) return;
+    if (!scanStream||generation!==scanGeneration||stream!==scanStream) return;
     if (codes && codes.length && codes[0].rawValue) onScanned(codes[0].rawValue);
     else scanTimer = setTimeout(scanTick, scanUsingWasm ? 80 : 200);
-  }).catch(() => { if (scanStream) scanTimer = setTimeout(scanTick, scanUsingWasm ? 150 : 300); });
+  }).catch(() => { if (scanStream&&generation===scanGeneration&&stream===scanStream) scanTimer = setTimeout(scanTick, scanUsingWasm ? 150 : 300); });
 }
 function loadScript(src) {
   return new Promise((resolve, reject) => {
@@ -4867,13 +5002,14 @@ async function ensureZxing() {
   await loadScript('https://cdn.jsdelivr.net/npm/@zxing/library@0.21.3/umd/index.min.js');
 }
 async function startZxing() {
+  const generation=scanGeneration;
   if (!zxingReader) zxingReader = new window.ZXing.BrowserMultiFormatReader();
   try { zxingReader.timeBetweenDecodingAttempts = 200; } catch (e) {}
   zxingActive = true;
   await zxingReader.decodeFromConstraints(
     { video: { facingMode: { ideal: 'environment' }, width: { ideal: 1920 }, height: { ideal: 1080 } } },
     $('scanVideo'),
-    (result) => { if (result && zxingActive) { const t = result.getText ? result.getText() : (result.text || ''); if (t) onScanned(t); } }
+    (result) => { if (result && zxingActive && generation===scanGeneration) { const t = result.getText ? result.getText() : (result.text || ''); if (t) onScanned(t); } }
   );
   const vEl = $('scanVideo'); if (vEl && vEl.srcObject) { applyScanFocus(vEl.srcObject); applyAutoZoom(vEl.srcObject); setupScanTorch(vEl.srcObject); setScanDiag(vEl.srcObject, 'גיבוי'); }
 }
@@ -4913,6 +5049,7 @@ function onScanned(val) {
   closeScanner();
 }
 function closeScanner() {
+  scanGeneration++;
   const restoreProductEditor = productEditorScanReturn;
   productEditorScanReturn = false;
   if (scanTimer) { clearTimeout(scanTimer); scanTimer = null; }
@@ -5057,7 +5194,7 @@ async function executeCloudTask(task) {
   if (!db || !task) throw new Error('אין חיבור לענן');
   if (task.operationId?.startsWith('ret_to_open'))throw Error('העברה ישנה של החזרה נשמרה בצד לבדיקה');
   if (legacyReturnsTask(task))throw Error('כתיבת טיוטת החזרות ישנה נעצרה — נשמר עותק בטלפון');
-  if (task.receiptDraftGuard || (task.path && task.path.at(-2)==='drafts' && ['receipt'].includes(task.path.at(-1)))) throw Error('כתיבת סנכרון ישנה נעצרה — העבודה נשמרה בטלפון');
+  if (legacyReceivingDraftTask(task)) throw Error('כתיבת סנכרון ישנה נעצרה — העבודה נשמרה בטלפון');
   if (Array.isArray(task.tasks)) { for (const t of task.tasks) await executeCloudTask(t); return; }
   if(task.op==='set'&&task.path?.at(-2)==='returns')return runTransaction(db,async tx=>{const ledger=await tx.get(doc(db,...dataPath('drafts','returns_events_tnuva_v1')));if(ledger.data()?.protectedRecords?.[task.path.at(-1)])throw Error('פריטים מהתעודה כבר הוחזרו לרשימה; השחזור נעצר');const ref=doc(db,...task.path),s=await tx.get(ref);if(s.exists()){if(returnRestoreSame(s.data(),task.data))return;throw Error('קיימת כבר תעודת החזרה חדשה יותר; השחזור נעצר');}tx.set(ref,task.data||{});});
   if(task.op==='batch'&&(task.writes||[]).some(w=>w.op==='set'&&w.path?.at(-2)==='returns'))return runTransaction(db,async tx=>{
@@ -5146,6 +5283,7 @@ async function retryCloudFailedWrites() {
     const list = cloudFailedWrites.slice().reverse(); // הישן קודם
     for (const item of list) {
       if(legacyReturnsTask(item.task)||['save returns without sending','save returns before send','return items to open list'].includes(item.actionName)){fail++;continue;}
+      if(legacyReceivingTask(item.task)&&!String(item.actionName||'').startsWith('restore deleted ')){fail++;continue;}
       if(legacyDraftTask(item.task) && ['save receipt before clearing draft','save receipt','save order before send'].includes(item.actionName)){fail++;continue;}
       try {
         const retryTask = retryTaskWithoutStaleUnitWrites(item);
@@ -5768,6 +5906,8 @@ function qtyPosMissingHtml(p) {
     '</div>';
 }
 function promptQty(p, target, nextMode) {
+  if((target||'receipt')==='receipt'&&!canEditDraft('receiving'))return;
+  qtyReceiptEpoch=(target||'receipt')==='receipt'?receiptLocalEpoch:null;
   qtyProduct = p; qtyTarget = target || 'receipt'; qtyNextMode = nextMode === 'crates' ? 'crates' : 'scanner';
   closeScanner();
   $('qtyName').textContent = p.name;
@@ -5905,6 +6045,7 @@ function updateQtyBoxBreak() {
   } else el.classList.add('hidden');
 }
 function addQtyToTarget(p, q, target) {
+  if(target!=='returns'&&!canEditDraft('receiving'))return;
   if (target === 'returns') {
     const ex = returnsList.find(it => it.productId === p.id);
     if (ex) ex.qty += q; else returnsList.push({ productId: p.id, name: p.name, barcode: p.barcode || '', qty: q });
@@ -5920,6 +6061,7 @@ function addQtyToTarget(p, q, target) {
   updateCart();
 }
 function commitQty(again) {
+  if(qtyTarget==='receipt'&&(qtyReceiptEpoch!==receiptLocalEpoch||!canEditDraft('receiving'))){hideQty();return;}
   const p = qtyProduct, tgt = qtyTarget, nextMode = qtyNextMode; if (!p) { hideQty(); return; }
   let q = parseInt(($('qtyVal').value || '').replace(/[^0-9]/g, ''), 10);
   if (!(q > 0)) q = 1;
@@ -6415,7 +6557,9 @@ function removeReceiptLine(productId) {
   const removed = receiptList[idx];
   receiptList.splice(idx, 1);
   saveReceiptDraft(); refreshReceipt(); updateCart();
+  const undoEpoch=receiptLocalEpoch;
   showToast('הוסר מהתעודה', 'בטל', () => {
+    if(undoEpoch!==receiptLocalEpoch||!canEditDraft('receiving'))return;
     receiptList.splice(Math.min(idx, receiptList.length), 0, removed);
     saveReceiptDraft(); if (currentView === 'receiving') refreshReceipt(); updateCart();
   });
@@ -15907,12 +16051,15 @@ async function confirmReceipt() {
   if (!pendingReceipt) { hideReceiptSummary(); return; }
   if (receiptFinalizing) return;
   if (!canEditDraft('receiving'))return;
+  if(aiScanBusy||aiAnalyzeBusy){showToast('יש להמתין לסיום בדיקת התעודה.');return;}
+  if(!saveReceiptDraft())return;
+  const finalSession=handoffDraft('receiving').sessionId, finalFingerprint=handoffFingerprint('receiving');
   receiptFinalizing=true;
   try {
-  saveReceiptDraft();
   let paperScan;
   try {paperScan=receiptScanSnapshot()?await packReceiptValue(receiptScanSnapshot()):null;}
   catch(e){showToast(e.message);return;}
+  if(finalSession!==handoffDraft('receiving').sessionId||finalFingerprint!==handoffFingerprint('receiving')){showToast('הקליטה השתנתה בזמן ההכנה. בדוק אותה לפני השמירה.');return;}
   const { lines, ex, calculatedEx, roundingAdjustment, grossEx, supplierDiscount, supplierPromoItems, supplierPromoMismatchItems, supplierCreditClaim, aiAudit, noteTotal, status, noDoc, noteParts, unresolvedAmountGap, unresolvedUnitsGap } = pendingReceipt;
   // v74: צירוף נייר דורס את אותה תעודה עצמה (אותו מזהה) ואינו יוצר שנייה.
   // זמן הקליטה המקורי נשמר — התעודה יושבת בהיסטוריה במקום שבו היא נקלטה,
@@ -15926,13 +16073,7 @@ async function confirmReceipt() {
   handoffFinishPlans.receiving = {prices: receiptPriceChanges(),data};
   const saved = await finishDraft('receiving',opId,data,true);
   if(!saved)return;
-  receiptFinalizing=false;
-  hideReceiptSummary();
-  aiCloseOrientationReview();
-  tnuvaResetPhotoReceipt();
-  receiptList = []; receiptQuantityReview = null; receiptCountingMode = 'scan'; pendingReceipt = null; receiptNotes = []; receiptDocDate = null; receiptDraftId = null; recomputeNoteTotal(); receiptOpened = false; editingNotes = false; reconcileData = null; reconcileSupplierDiscount = 0; reconcileSupplierPromoItems = []; reconcilePromoMismatchItems = []; reconcileSupplierCreditClaim = null; reconcileAiAudit = null; aiScanDocuments = []; aiScanBusy = false; aiScanProgressText = ''; aiScanResponse = null; aiScanEvaluation = null; aiScanReused = false; aiScanFromDraft = false; aiScanError = ''; aiScanAutoRotationNote = ''; aiScanAttemptCount = 0; receiptDupConfirmed = false; receiptLinesConfirmed = false; receiptNoDoc = false; receiptAttachTarget = null; saveReceiptDraft();
-  handoffFinishPlans.receiving=null;
-  setView('receiptsHistory');
+  if(!completeLocalReceipt(finalSession))return;
   const autoApplied = await autoApplyExactOffsets(); // v244: זוג מדויק מתקזז לבד
   const newOpen = receipts.filter(r => receiptDiscrepancyInfo(r).open).find(r => findOffsetMatch(r));
   if (autoApplied.length) showToast(autoOffsetToastText(autoApplied), null, null, 4200);
@@ -22241,7 +22382,7 @@ if ('serviceWorker' in navigator) {
 }
 
 for (const event of ['click','input','change','beforeinput','keydown'])document.addEventListener(event,guardDraftEvent,true);
-$('draftHandoffBanner').addEventListener('click',e=>{const b=e.target.closest('[data-handoff]');if(b)draftHandoffAction(b.dataset.handoff,b.dataset.kind,b.dataset.session);const r=e.target.closest('[data-return-recovery]');if(r)openReturnsRecovery(r.dataset.returnRecovery);});
+$('draftHandoffBanner').addEventListener('click',e=>{const local=e.target.closest('[data-local-receipt]');if(local){if(local.dataset.localReceipt==='retry')retryLocalReceiptFinish();else if(local.dataset.localReceipt==='archive')archiveLocalReceipt();else if(local.dataset.localReceipt==='open')openLocalReceiptRecovery(Number(local.dataset.index));return;}const b=e.target.closest('[data-handoff]');if(b)draftHandoffAction(b.dataset.handoff,b.dataset.kind,b.dataset.session);const r=e.target.closest('[data-return-recovery]');if(r)openReturnsRecovery(r.dataset.returnRecovery);});
 window.addEventListener('online',recoverLegacyDraftWrites);
 window.addEventListener('online',startReturnsLive);
 </script>
