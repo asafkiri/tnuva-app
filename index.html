@@ -11142,6 +11142,9 @@ function receiptSecondStrongEntries(holder, list) {
   const record = receiptSecondStrongRead(holder);
   return record && Array.isArray(record[list]) ? record[list].filter(entry => entry && typeof entry === 'object') : [];
 }
+// שירות 19, מהביקורת (סבב שלישי): למה קריאה שקראה את השורה המודפסת שנשאלה אינה נספרת (ineligible).
+const RECEIPT_SECOND_STRONG_INELIGIBLE = { credit_or_returns: 'קראה את התעודה כזיכוי או עם החזרות',
+  deposit_row: 'קראה את השורה כפיקדון', returns_row: 'קראה את השורה כהחזרה' };
 // "שורה 2: כמות 6, סכום שורה 30 · שורה 5: כמות 3" — תמיד הערך של הקריאה שנבחרה.
 function receiptSecondStrongPlacesText(entries) {
   const byLine = new Map();
@@ -11429,7 +11432,12 @@ function receiptRowDisputeHtml(dispute) {
   // הרביעית (אם הושלמה). שדה שהיא אישרה אינו מגיע לכאן כלל: השרת הוציא אותו מהמחלוקת.
   const second = dispute.secondStrong && Array.isArray(dispute.secondStrong.open) ? dispute.secondStrong : null;
   const askedOf = item => (second && second.open.find(entry => entry.field === item.field)) || null;
-  const readValue = read => read && read.seen === false ? 'לא ראתה את השורה' : show(read && read.value);
+  // שירות 19, מהביקורת (סבב שלישי): קריאה שלא הותאמה לשורה המודפסת שנשאלה (unmatched — קוד אחר
+  // באותה שורה, שתי שורות באותו מספר, או קוד שמופיע אצלה פעמיים) מגיעה כ-seen:false, ולכן "לא ראתה
+  // את השורה". קריאה שקראה את השורה אבל ראתה בתעודה זיכוי, מינוס או החזרות, או קראה את השורה כפיקדון
+  // או כהחזרה (ineligible), אינה נספרת: הערך שלה מוצג עם הסיבה, כדי שלא ייראה כמו אישור.
+  const readValue = read => read && read.seen === false ? 'לא ראתה את השורה'
+    : show(read && read.value) + (read && read.ineligible ? ' (' + (RECEIPT_SECOND_STRONG_INELIGIBLE[read.ineligible] || 'לא כשורת קליטה רגילה') + ' — לא נספרה)' : '');
   const others = item => {
     const asked = askedOf(item);
     const reads = asked && Array.isArray(asked.reads) ? asked.reads.filter(read => read && read.selected !== true) : [];
@@ -14465,7 +14473,9 @@ function aiScanDiagnosticsHtml(ev) {
           (second.outcome === 'failed' ? ' · לא הושלמה (' + String(second.error || '') + ')'
             : second.outcome === 'selected' ? ' · קריאת ההצלה נבחרה ולכן אינה מצביעה' : ''));
         const reads = entry => (Array.isArray(entry.reads) ? entry.reads : []).map(read => String(read && read.stage || '') + '=' +
-          (read && read.seen === false ? 'לא ראתה' : read && read.value != null ? String(read.value) : '—') + (read && read.selected ? '✓' : '')).join(' ');
+          (read && read.seen === false ? 'לא ראתה' + (read.unmatched ? ' (' + String(read.unmatched) + ')' : '')
+            : (read && read.value != null ? String(read.value) : '—') + (read && read.ineligible ? ' (לא נספרה: ' + String(read.ineligible) + ')' : '')) +
+          (read && read.selected ? '✓' : '')).join(' ');
         closed.concat(open).slice(0, 8).forEach(entry => lines.push((entry.rule ? 'התקבל' : 'לעובד (' + String(entry.reason || '') + ')') +
           ' · ' + receiptSecondStrongPlacesText([entry]) + ' · ' + reads(entry)));
       });

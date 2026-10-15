@@ -152,6 +152,35 @@ test('v143: a field the fourth read did not confirm stays with the worker — th
   assert.doesNotMatch(v18, /רביעית/);
 });
 
+// שירות 19, מהביקורת (סבב שלישי): הקריאה הרביעית נספרת רק כשקראה את השורה המודפסת שנשאלה — בדיוק
+// שורה אחת באותו עמוד ומספר שורה, באותו קוד, וקוד שמופיע אצלה פעם אחת — וכשורת פריטים רגילה.
+test('v143: a fourth read that was not matched to the printed line, or saw a credit note or a deposit there, is never shown as a confirmation', async () => {
+  const unmatched = { stage: 'second_strong_read', value: null, seen: false, unmatched: 'other_code' };
+  const credit = value => ({ stage: 'second_strong_read', value, ineligible: 'credit_or_returns' });
+  const deposit = value => ({ stage: 'second_strong_read', value, ineligible: 'deposit_row' });
+  for (const [reason, quantityExtra, totalExtra, quantityLine, totalLine, diagnosticsLine] of [
+    // קוד אחר באותה שורה (הסטה של עמודת הקוד): היא לא ראתה את השורה המודפסת הזאת.
+    ['not_matched', unmatched, unmatched, 'כמות: 6 מול 13, 17 · קריאה רביעית: לא ראתה את השורה',
+      'סכום שורה: 20.82 מול 45.11, 58.99 · קריאה רביעית: לא ראתה את השורה',
+      'לעובד (not_matched) · שורה 2: כמות 6 · consensus_escalation=6✓ consensus_1=13 consensus_2=17 second_strong_read=לא ראתה (other_code)'],
+    // היא קראה בשורה בדיוק את מה ש-Terra קרא, אבל ראתה בתעודה זיכוי: הערך שלה מוצג עם הסיבה, ואינו אישור.
+    ['not_eligible', credit(6), credit(20.82), 'כמות: 6 מול 13, 17 · קריאה רביעית: 6 (קראה את התעודה כזיכוי או עם החזרות — לא נספרה)',
+      'סכום שורה: 20.82 מול 45.11, 58.99 · קריאה רביעית: 20.82 (קראה את התעודה כזיכוי או עם החזרות — לא נספרה)',
+      'לעובד (not_eligible) · שורה 2: כמות 6 · consensus_escalation=6✓ consensus_1=13 consensus_2=17 second_strong_read=6 (לא נספרה: credit_or_returns)'],
+    ['not_eligible', deposit(6), deposit(20.82), 'כמות: 6 מול 13, 17 · קריאה רביעית: 6 (קראה את השורה כפיקדון — לא נספרה)',
+      'סכום שורה: 20.82 מול 45.11, 58.99 · קריאה רביעית: 20.82 (קראה את השורה כפיקדון — לא נספרה)',
+      'לעובד (not_eligible) · שורה 2: כמות 6 · consensus_escalation=6✓ consensus_1=13 consensus_2=17 second_strong_read=6 (לא נספרה: deposit_row)']]) {
+    const secondStrongRead = record({ open: [openEntry('quantity', QUANTITY_READS, reason, quantityExtra), openEntry('lineTotalExVat', TOTAL_READS, reason, totalExtra)] });
+    const c = await scanned(service({ disputedRows: [disputedRow([quantity, total])], secondStrongRead }));
+    assert.deepEqual(actions(c).disputed, [{ line: 2, fields: ['quantity', 'lineTotalExVat'] }], reason);
+    const box = card(c);
+    assert.ok(box.includes('<div dir="rtl">' + quantityLine + '</div><div dir="rtl">' + totalLine + '</div>'), reason + ': ' + box);
+    assert.match(box, decided, reason);
+    assert.match(box, fourthDisagrees, reason);
+    assert.ok(diagnostics(c).includes(diagnosticsLine), reason + '\n' + diagnostics(c));
+  }
+});
+
 test('v143: acceptance is per field — a closed quantity leaves the line total and the code on the card', async () => {
   // הקריאה הרביעית קראה 6 (כמו Terra) אבל 20.28 בסכום. הקוד שבמחלוקת אינו נשאל כלל (C2):
   // שתי זהויות באותו מחיר, ובשורה גם סכום פתוח — ולכן גם הקוד נשאר אצל העובד, כמו ב-142.
