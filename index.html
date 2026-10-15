@@ -11079,13 +11079,26 @@ function receiptSetRowDecision(row, type, extra) {
 // ההשוואה הישנה — נזרקת כולה, גם כשהתשובה הגיעה משרת ישן. שירות 14 מיישר
 // שורות לפי תוכן ואינו שולח את השדה הזה.
 const RECEIPT_DISPUTE_DOCUMENT_FIELDS = new Set(['rowCount']);
-// v142: שירות 18 מסלים רק על הבדל בשדה שמשנה החלטה. הבדל בתאריך, בעמוד, באחוז
-// המע"מ, בסכום המע"מ, בסכום כולל מע"מ ובהפרש העיגול נמסר עם trigger:false —
-// מידע בלבד. שדה כזה אינו פותח מחלוקת, אינו נספר כ"הוכרע מול המאגר" ואינו
-// מוצג בכרטיס — גם כשהגיע משרת ישן (16, 17) שלא סימן אותו.
+// v142: שירות 18 מסלים רק על הבדל בשדה שמשנה החלטה. הבדל בתאריך (בסריקה שנשאה
+// strongReadSelection:true — כלומר מכאן), בעמוד, באחוז המע"מ, בסכום המע"מ, בסכום
+// כולל מע"מ ובהפרש העיגול נמסר עם trigger:false — מידע בלבד. שדה כזה אינו פותח
+// מחלוקת, אינו נספר כ"הוכרע מול המאגר" ואינו מוצג בכרטיס — גם כשהגיע משרת ישן
+// (16, 17) שלא סימן אותו. יוצא מהכלל: הבדל בסימן של המע"מ או של הסכום כולל מע"מ.
 const RECEIPT_CONSENSUS_NON_TRIGGER_FIELDS = new Set(['docDate', 'sourcePage', 'vatPct', 'vatAmount', 'totalInclVat', 'roundingDiff']);
+// מיזוג עם 141: מינוס על סכום המע"מ או על הסכום כולל מע"מ מסמן זיכוי שהכותרת שלו
+// נחתכה (tnuvaPaperCheck). הבדל בערך באותו סימן הוא מידע; הבדל בסימן — קריאה אחת
+// ראתה מינוס והאחרת לא — הוא ההבדל בין קליטת סחורה לזיכוי, ולכן החלטה, כמו בשירות
+// 18 שמסלים עליו. ערך שלא נקרא אינו מינוס.
+const RECEIPT_CONSENSUS_SIGN_FIELDS = new Set(['vatAmount', 'totalInclVat']);
+function receiptConsensusNegative(value) {
+  const cents = aiMoneyCents(value);
+  return cents != null && cents < 0;
+}
 function receiptConsensusTriggerField(field) {
-  return !!field && field.trigger !== false && !RECEIPT_CONSENSUS_NON_TRIGGER_FIELDS.has(String(field.field || ''));
+  if (!field || field.trigger === false) return false;
+  const name = String(field.field || '');
+  if (RECEIPT_CONSENSUS_SIGN_FIELDS.has(name)) return receiptConsensusNegative(field.selected) !== receiptConsensusNegative(field.other);
+  return !RECEIPT_CONSENSUS_NON_TRIGGER_FIELDS.has(name);
 }
 // v142: משירות 18 קריאת ההכרעה אינה מנצחת מעצם היותה יקרה — כשהאפליקציה מבקשת
 // זאת (strongReadSelection: true, ראו aiRequestSingleDocScan) נבחרת הקריאה
@@ -11349,7 +11362,8 @@ function receiptRowActionButton(role, row, label, classes) {
 function receiptRowDisputeHtml(dispute) {
   if (!dispute || !Array.isArray(dispute.fields) || !dispute.fields.length) return '';
   const names = { code: 'קוד', quantity: 'כמות', unitPriceExVat: 'מחיר יחידה', lineTotalExVat: 'סכום שורה',
-    promoStar: 'סימון מבצע', section: 'מקטע', sourcePage: 'עמוד', rowCount: 'מספר שורות', row: 'השורה עצמה' };
+    promoStar: 'סימון מבצע', section: 'מקטע', sourcePage: 'עמוד', rowCount: 'מספר שורות', row: 'השורה עצמה',
+    vatAmount: 'סכום מע״מ', totalInclVat: 'סה״כ כולל מע״מ' };
   const show = value => value == null || value === '' ? 'לא נקרא' : String(value);
   const line = item => item.field === 'row' ? 'רק הקריאה שנבחרה ראתה את השורה הזאת'
     : htmlEscape(names[item.field] || item.field) + ': ' + htmlEscape(show(item.selected)) + ' מול ' + htmlEscape(show(item.other)) +

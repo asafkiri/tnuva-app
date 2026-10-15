@@ -245,6 +245,32 @@ test('v142: informational differences never open a card or count as settled', as
   assert.deepEqual(actions(marked), baseline);
 });
 
+// מיזוג עם 141: מינוס על סכום המע"מ או על הסכום כולל מע"מ מסמן זיכוי שהכותרת שלו
+// נחתכה (tnuvaPaperCheck). הבדל בערך באותו סימן הוא מידע; הבדל בסימן הוא ההבדל בין
+// קליטת סחורה לזיכוי — אותו כלל כמו בשירות 18, שמסלים עליו.
+test('v142: a sign difference on the VAT or the total is a decision; a value difference with the same sign is not', async () => {
+  const c = await scanned(disputeOnFirstRow([]));
+  const counts = field => c.run('receiptConsensusTriggerField(' + JSON.stringify(field) + ')');
+  for (const name of ['vatAmount', 'totalInclVat']) {
+    assert.equal(counts({ field: name, selected: 9, other: -9 }), true, name);
+    assert.equal(counts({ field: name, selected: -9, other: 9 }), true, name);
+    assert.equal(counts({ field: name, selected: null, other: -9 }), true, name + ': a value not read is not a minus');
+    assert.equal(counts({ field: name, selected: 9, other: 9.01 }), false, name);
+    assert.equal(counts({ field: name, selected: -9, other: -9.01 }), false, name);
+    assert.equal(counts({ field: name, selected: null, other: 9 }), false, name);
+    assert.equal(counts({ field: name, selected: 9, other: -9, trigger: false }), false, name + ': the server mark wins');
+  }
+  for (const name of ['docDate', 'sourcePage', 'vatPct', 'roundingDiff']) assert.equal(counts({ field: name, selected: 1, other: -1 }), false, name);
+  assert.equal(counts({ field: 'quantity', selected: 10, other: 16 }), true);
+  // על המסך: הבדל סימן פותח כרטיס עם שם השדה בעברית; הבדל ערך באותו סימן אינו פותח.
+  const baseline = actions(c);
+  const value = await scanned(disputeOnFirstRow([{ field: 'vatAmount', selected: 9, other: 9.01 }]));
+  assert.deepEqual(actions(value), baseline);
+  const sign = await scanned(disputeOnFirstRow([{ field: 'totalInclVat', selected: 59, other: -59 }]));
+  assert.deepEqual(actions(sign).disputed, [{ line: 1, fields: [{ field: 'totalInclVat', selected: 59, other: -59 }] }]);
+  assert.match(html(sign), /סה״כ כולל מע״מ: 59 מול -59/);
+});
+
 test('same base price with different deposits or billing units remains a decision', async () => {
   for (const change of [{ deposit: .3 }, { priceUnit: 'kg' }, { billingPackId: 'pack', billingPackSize: 6 }]) {
     const c = await scanned({ ...disputeOnFirstRow([{ field: 'code', selected: '14761056', other: '14761414' }]),
