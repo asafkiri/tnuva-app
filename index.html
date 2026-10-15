@@ -11434,8 +11434,9 @@ function receiptRowDisputeHtml(dispute) {
   const askedOf = item => (second && second.open.find(entry => entry.field === item.field)) || null;
   // שירות 19, מהביקורת (סבב שלישי): קריאה שלא הותאמה לשורה המודפסת שנשאלה (unmatched — קוד אחר
   // באותה שורה, שתי שורות באותו מספר, או קוד שמופיע אצלה פעמיים; ומהסבב הרביעי גם טבלה שאינה
-  // מתיישרת: lines_differ, code_moved, numbers_missing, price_differs) מגיעה כ-seen:false, ולכן "לא ראתה
-  // את השורה". קריאה שקראה את השורה אבל ראתה בתעודה זיכוי, מינוס או החזרות, או קראה את השורה כפיקדון
+  // מתיישרת: lines_differ, code_moved, numbers_missing, price_differs; ומהסבב החמישי numbers_repeated,
+  // ובסריקה של כמה תעודות מסמך שאינו אותו נייר: other_subtotal, subtotal_repeated) מגיעה כ-seen:false,
+  // ולכן "לא ראתה את השורה". קריאה שקראה את השורה אבל ראתה בתעודה זיכוי, מינוס או החזרות, או קראה את השורה כפיקדון
   // או כהחזרה (ineligible), אינה נספרת: הערך שלה מוצג עם הסיבה, כדי שלא ייראה כמו אישור.
   const readValue = read => read && read.seen === false ? 'לא ראתה את השורה'
     : show(read && read.value) + (read && read.ineligible ? ' (' + (RECEIPT_SECOND_STRONG_INELIGIBLE[read.ineligible] || 'לא כשורת קליטה רגילה') + ' — לא נספרה)' : '');
