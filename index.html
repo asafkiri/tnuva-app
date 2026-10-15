@@ -1092,7 +1092,10 @@ function tnuvaPaperCheck(input, pageCount) {
   const promo = Math.abs(cents(doc && doc.promoDiscountExVat) || 0);
   const net = itemsCents - promo - returnsCents;
   const credit = doc && doc.docType === 'credit';
-  const expected = credit && subtotal != null ? Math.abs(subtotal) : subtotal;
+  // v141: מינוס על סכום מסכם הוא סימן לזיכוי גם כשהכותרת ("זיכוי") לא צולמה.
+  // החשבון נבדק אז בערך מוחלט, כדי שקריאה חוזרת לא "תתקן" אותו בהשמטת המינוס.
+  const minusSummary = !credit && [subtotal, itemSummary, cents(doc && doc.vatAmount), cents(doc && doc.totalInclVat)].some(v => v != null && v < 0);
+  const expected = (credit || minusSummary) && subtotal != null ? Math.abs(subtotal) : subtotal;
   // v110: the numbers themselves, not only the fact that they differ. The bare
   // sentence left the user with nothing to compare against the paper.
   const shekels = value => '₪' + (value / 100).toFixed(2);
@@ -1105,7 +1108,7 @@ function tnuvaPaperCheck(input, pageCount) {
   // במפורש נעצר; כותרת שלא נקראה נחשבת תעודה רגילה.
   if (credit) review.push('זו חשבונית זיכוי — יש להזין אותה במסך החזרות, ולא כקליטת סחורה');
   if (returnLines || (returnSummary != null && returnSummary !== 0)) review.push('התעודה כוללת החזרות. יש להפריד אותן לפי תהליך ההחזרות הקיים ולהזין ידנית את נתוני הקליטה');
-  if (!credit && subtotal != null && subtotal <= 0) review.push('סכום התעודה אינו חיובי — יש לבדוק את סוג התעודה');
+  if (!credit && (minusSummary || (subtotal != null && subtotal <= 0))) review.push('סכום התעודה אינו חיובי — כנראה חשבונית זיכוי; יש להזין אותה במסך החזרות, ולא כקליטת סחורה');
   return { ok: problems.length === 0, receivable: !problems.length && !review.length,
     problems, review, missingSummary, retryable: problems.length > 0 && !missingSummary,
     amount: subtotal == null ? null : subtotal / 100, lines: printedLines == null ? null : printedLines,
@@ -5481,6 +5484,38 @@ async function hardDeleteSnapshotDocsWithBackup(name, docs, reason) {
 // ===== קליטת תעודות =====
 function todayStr() { return new Date().toLocaleDateString('en-CA'); }
 function activeReceiptDate() { return receiptDocDate || todayStr(); }
+// v141: תעודה כפולה מזוהה לפי סכום הנייר ותאריך — בלי מספר התעודה. אותו נייר
+// שנקרא שוב יוצא באותו סכום עד האגורה (1.10: ₪2,225.29 פעמיים). ±₪1 מכסה
+// הקלדה, ±3 ימים מכסה הזנה באיחור. על כל הקליטות מ-6.8 עד 13.10 הכלל לא
+// התריע על אף משלוח אחר: שני משלוחים שונים בתוך 3 ימים רחוקים לפחות ₪34.44.
+const RECEIPT_DUP_AMOUNT_CENTS = 100, RECEIPT_DUP_DAYS = 3;
+var receiptPaperDupOk = '';
+function receiptDayNumber(value) { const day = priceAuditDate(value); return day ? Date.parse(day + 'T00:00:00Z') / 86400000 : null; }
+function receiptPaperDuplicate(paperAmounts, day) {
+  const mine = (paperAmounts || []).map(x => normNote(x).amount).filter(a => a > 0);
+  const today = receiptDayNumber(day);
+  if (!mine.length || today == null) return null;
+  let session = '';
+  try { session = handoffDraft('receiving').sessionId || ''; } catch (e) {}
+  const attachId = receiptAttachTarget && receiptAttachTarget.id;
+  for (const r of receipts || []) {
+    if (!r || r.id === receiptDraftId || (attachId && r.id === attachId) || (session && r.localFinal && r.localFinal.sessionId === session)) continue;
+    const days = [r.docDate, r.date].map(receiptDayNumber).filter(n => n != null).map(n => Math.abs(n - today));
+    if (!days.length || Math.min(...days) > RECEIPT_DUP_DAYS) continue;
+    const theirs = Array.isArray(r.noteParts) ? r.noteParts.map(normNote) : (Number(r.noteTotalInc) > 0 ? [normNote(r.noteTotalInc)] : []);
+    for (const amount of mine) {
+      const other = theirs.find(q => q.amount > 0 && moneyDiffCents(amount, q.amount) <= RECEIPT_DUP_AMOUNT_CENTS);
+      if (other) return { receipt: r, amount, other, sig: [receiptDraftId, priceAuditDate(day), mine.map(a => Math.round(a * 100)).sort().join(','), r.id].join('|') };
+    }
+  }
+  return null;
+}
+function receiptPaperDuplicateText(dup, day) {
+  const r = dup.receipt, at = Number(r.timestamp) ? new Date(Number(r.timestamp)).toLocaleTimeString('he-IL', { hour: '2-digit', minute: '2-digit' }) : '';
+  return 'כבר נקלטה תעודה בסכום ₪' + fmtMoney(dup.other.amount) + (dup.other.lines ? ' · ' + dup.other.lines + ' שורות' : '') +
+    ' ב־' + dDisp(storedReceiptDate(r)) + (at ? ' בשעה ' + at : '') + '.\nהתעודה עכשיו: ₪' + fmtMoney(dup.amount) + ' · ' + dDisp(priceAuditDate(day) || day) +
+    '.\nאם זו אותה תעודה — בטל. אם זה משלוח אחר — שמור.';
+}
 function storedReceiptDate(rc) { return (rc && (rc.docDate || rc.date)) || todayStr(); }
 function r2(n) { return Math.round((Number(n) || 0) * 100) / 100; }
 function fmtMoney(n) { return r2(n).toLocaleString('he-IL', { minimumFractionDigits: 2, maximumFractionDigits: 2 }); }
@@ -6758,7 +6793,13 @@ function finishReceipt() {
   });
   const ex = r2(lines.reduce((a, l) => a + l.lineTotal, 0));
   const scannedUnits = lines.reduce((a, l) => a + (l.isDeposit ? 0 : (Number(l.qty) || 0)), 0); // v176: פיקדון בכסף בלבד
-  if (!receiptDupConfirmed) {
+  const paperDup = receiptPaperDuplicate(receiptNotes, day);
+  if (paperDup && receiptPaperDupOk !== paperDup.sig) {
+    showConfirm('ייתכן שהתעודה כבר נקלטה', receiptPaperDuplicateText(paperDup, day), 'זה משלוח אחר — המשך', function () { receiptPaperDupOk = paperDup.sig; finishReceipt(); });
+    return;
+  }
+  // בלי נייר אין סכום להשוות; נשארת הבדיקה הישנה לפי הסחורה שנספרה באותו יום.
+  if (!receiptDupConfirmed && !receiptNotes.some(x => normNote(x).amount > 0)) {
     const dup = receipts.find(r => r.id !== receiptDraftId && storedReceiptDate(r) === day && (Number(r.count) || 0) === lines.length && Math.abs((Number(r.receivedExVat != null ? r.receivedExVat : r.totalExVat) || 0) - ex) <= 1);
     if (dup) { showConfirm('אולי כפילות', 'כבר קיימת תעודה מ-' + dDisp(day) + ' בסכום דומה (₪' + fmtMoney(ex) + ' · ' + lines.length + ' שורות). ייתכן שכבר קלטת אותה — לשמור בכל זאת?', 'כן, שמור בכל זאת', function () { receiptDupConfirmed = true; finishReceipt(); }); return; }
   }
@@ -10405,7 +10446,7 @@ function priceAuditPromoSubsets(values, targetCents, rowsPerValue) {
 // לא ידוע — ולכן היא חוסמת את ההרכב כולו, ולא רק את עצמה.
 function priceAuditSummaryPlan(entries, discount) {
   const money = n => '₪' + fmtMoney(n), tail = '; אין מספיק ראיות לשיוך ההנחה לכל מוצר';
-  const blockers = entries.filter(e => e.row.capability !== 'checkable').map(e => ({ sourceIndex: e.row.sourceIndex, name: e.row.name, reason: e.row.reason }));
+  const blockers = entries.filter(e => e.row.capability !== 'checkable').map(e => ({ sourceIndex: e.row.sourceIndex, name: e.row.name, reason: e.row.reason, documentWide: !!e.row.documentWide }));
   // פירוט למשתמש בלבד. כל הנחת שורה מעוגלת בנפרד, כפי שתנובה מסכמת אותה.
   const knownTotal = r2(entries.reduce((sum, e) => {
     const r = e.row;
@@ -10541,7 +10582,7 @@ function receiptPriceAudit() {
         if (aiRowArithmeticError(raw, row.quantity)) { row.capability = 'partial'; row.reason = 'מחיר, הנחה וסכום שורה אינם מתיישבים בפענוח'; }
         if (gross != null && total != null && total > gross + .02) { row.capability = 'partial'; row.reason = 'סכום הנטו גבוה מהברוטו בשורה'; }
       }
-      if (!allComplete) { row.capability = 'partial'; row.reason = incompleteReason + '; לא ניתן לאשר מחיר סופי או להסיק שמבצע חסר'; }
+      if (!allComplete) { row.capability = 'partial'; row.documentWide = true; row.reason = incompleteReason + '; לא ניתן לאשר מחיר סופי או להסיק שמבצע חסר'; }
     });
     entries.forEach(e => { e.row.basePriceCheckable = e.row.capability === 'checkable' && e.row.originalUnitPrice != null; });
     if (PRICE_AUDIT_SUPPLIER !== 'berman' && source) {
@@ -10637,14 +10678,16 @@ function receiptPriceAuditAutoOnly(a, pending) {
   if (!missing.length || !missing.every(r => receiptAutoMatchedProduct(r))) return false;
   return !(pending || receiptRowActions(a)).total;
 }
-// v141: סיבה שחלה על כמה שורות נכתבת פעם אחת. ב-15.10 אותו משפט ארוך חזר על
-// עצמו 20 פעמים, שורה לכל מוצר, והסתיר שיש בעצם סיבה אחת.
+// v141: סיבה של התעודה כולה נכתבת פעם אחת. ב-15.10 אותו משפט ארוך חזר על
+// עצמו 20 פעמים, שורה לכל מוצר, והסתיר שיש בעצם סיבה אחת. סיבה של שורה
+// מסוימת (מחיר מאגר חסר, יחידת מידה) נשארת עם שם המוצר — שם צריך לטפל בה.
 function receiptBlockerLinesHtml(blockers, rowCount) {
-  const groups = new Map();
-  blockers.forEach(b => { const reason = String(b.reason || ''); if (!groups.has(reason)) groups.set(reason, []); groups.get(reason).push(b.name); });
-  return [...groups].map(([reason, names]) => names.length > 2
-    ? '<div class="mt-1 text-xs font-bold">' + (names.length === rowCount ? 'כל ' + names.length + ' השורות' : names.length + ' שורות') + ': ' + htmlEscape(reason) + '</div>'
-    : names.map(name => '<div class="mt-1 text-xs font-bold">' + htmlEscape(name) + ': ' + htmlEscape(reason) + '</div>').join('')).join('');
+  const line = text => '<div class="mt-1 text-xs font-bold">' + text + '</div>';
+  const wide = new Map();
+  blockers.filter(b => b.documentWide).forEach(b => { const reason = String(b.reason || ''); wide.set(reason, (wide.get(reason) || 0) + 1); });
+  const many = count => count === rowCount ? (count === 1 ? 'השורה' : 'כל ' + count + ' השורות') : count === 1 ? 'שורה אחת' : count + ' שורות';
+  return [...wide].map(([reason, count]) => line(many(count) + ': ' + htmlEscape(reason))).join('') +
+    blockers.filter(b => !b.documentWide).map(b => line(htmlEscape(b.name) + ': ' + htmlEscape(b.reason))).join('');
 }
 // כרטיסי ההחלטה נפתחים רק במסך הקליטה, כי שם יושב מאזין הלחיצות ושם אפשר
 // לסרוק. חלון הסיכום מקבל שורה אחת שמפנה לשם, כדי שלא יאשרו קליטה בלי לדעת.
@@ -16179,6 +16222,14 @@ async function confirmReceipt() {
   if (receiptFinalizing) return;
   if (!canEditDraft('receiving'))return;
   if(aiScanBusy||aiAnalyzeBusy){showToast('יש להמתין לסיום בדיקת התעודה.');return;}
+  // v141: גם כאן, לפני השמירה — מסלול ההשוואה אינו עובר תמיד ב-finishReceipt,
+  // וטלפון אחר יכול לשמור את אותו נייר בינתיים. חלון האישור יושב מתחת לסיכום.
+  const paperDup = receiptPaperDuplicate(pendingReceipt.noteParts, activeReceiptDate());
+  if (paperDup && receiptPaperDupOk !== paperDup.sig) {
+    hideReceiptSummary();
+    showConfirm('ייתכן שהתעודה כבר נקלטה', receiptPaperDuplicateText(paperDup, activeReceiptDate()), 'זה משלוח אחר — שמור', function () { receiptPaperDupOk = paperDup.sig; confirmReceipt(); });
+    return;
+  }
   if(!saveReceiptDraft())return;
   const finalSession=handoffDraft('receiving').sessionId, finalFingerprint=handoffFingerprint('receiving');
   receiptFinalizing=true;

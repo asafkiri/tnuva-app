@@ -81,6 +81,27 @@ test('a credit note the model recognised is still stopped', async () => {
   assert.equal(read(c, 'receiptPriceAudit()').complete, false);
 });
 
+test('a credit note whose title was cut is still stopped by the minus on its summary', async () => {
+  const c = await scan();
+  const minus = `Object.assign({}, aiScanResponse.scan.documents[0].__tnuvaPaper, { docType: 'invoice',
+    subtotalExVat: -aiScanResponse.scan.documents[0].__tnuvaPaper.subtotalExVat, vatAmount: -10, totalInclVat: -60 })`;
+  const check = read(c, `tnuvaPaperCheck(${minus}, 1)`);
+  assert.equal(check.ok, true); assert.equal(check.receivable, false);
+  assert.match(check.review.join(' '), /כנראה חשבונית זיכוי/);
+  // Only the VAT line kept its minus: still not ordinary goods.
+  const partial = read(c, `tnuvaPaperCheck(Object.assign({}, aiScanResponse.scan.documents[0].__tnuvaPaper, { vatAmount: -10 }), 1)`);
+  assert.equal(partial.receivable, false);
+});
+
+test('a reason that belongs to specific rows keeps the product names', async () => {
+  const c = await scan();
+  c.run(`products.filter(p => p.id === 'milk' || p.id === 'top' || p.id === 'cream').forEach(p => { p.price = 0; })`);
+  const help = c.run('receiptPriceSummaryHelpHtml(receiptPriceAudit(), true)');
+  for (const name of ['חלב 3% בקרטון 1 ליטר', 'יופלה און טופ פצפוצים 157 גרם', 'שמנת חמוצה 15% 200 מ&quot;ל'])
+    assert.ok(help.includes(name + ': חסר מחיר במאגר'), name);
+  assert.doesNotMatch(help, /3 שורות: /);
+});
+
 test('a document-level review gives each row its real reason, not "partial decoding"', async () => {
   const c = await scan({ returns: true });
   const a = read(c, 'receiptPriceAudit()');
