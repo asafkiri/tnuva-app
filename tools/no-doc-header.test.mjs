@@ -75,6 +75,26 @@ test('a catalog promotion the paper did not apply is named directly, not hidden 
   assert.match(view(c), /המחיר בתעודה שונה מהמחיר שבמאגר · 1\/4 עם פער/);
 });
 
+test('the decision card names the promotion the paper did not apply, not a ₪0.00 price gap', async () => {
+  const c = await scan({ withTopPromo: true });
+  const cards = c.run('receiptRowActionsHtml(receiptPriceAudit())').replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ');
+  assert.match(cards, /המבצע שבמאגר לא הופעל בתעודה/);
+  assert.match(cards, /ההנחה שלא התקבלה בשורה: ₪4\.43/);
+  assert.match(cards, /אם "מעדני און טופ" אינו מבצע שיורד בתעודה/);
+  assert.doesNotMatch(cards, /הפרש לשורה: ₪0\.00|עדכן את מחיר המאגר ל-₪3\.69/);
+});
+
+test('a handoff offer identifies the paper by its amount, with no dangling separator', async () => {
+  const c = await scan();
+  c.run(`receiptNotes=[{amount:1758.09,units:null,lines:20}]; recomputeNoteTotal();`);
+  const summary = JSON.parse(c.run(`JSON.stringify(handoffPayload('receiving').summary)`));
+  assert.equal(summary.paperAmount, 1758.09);
+  const banner = c.run(`draftHandoffBannerHtml('receiving', { offers: [{ deviceName: 'קופה', updatedAt: 0, summary: { lines: 0, units: 0, paperUnits: null } },
+    { deviceName: 'קופה', updatedAt: 0, summary: ${JSON.stringify(summary)} }] })`);
+  assert.doesNotMatch(banner, / · \)/);
+  assert.match(banner, /₪1,758\.09 בנייר/);
+});
+
 test('a credit note the model recognised is still stopped', async () => {
   const c = await scan({ docType: 'credit' });
   assert.equal(read(c, `tnuvaPaperCheck(aiScanResponse.scan.documents[0].__tnuvaPaper, 1).receivable`), false);
