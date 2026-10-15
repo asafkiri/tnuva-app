@@ -743,7 +743,7 @@ let receiptDupConfirmed = false; // אישור שמירה למרות חשד לכ
 const RECEIPT_DRAFT_KEY = 'tn_receipt_draft';
 let receivingDigitsMissTimer = null;
 let receivingDigitsMissNotified = '';
-const APP_VERSION = '142'; // קריאת ההכרעה לא תמיד נבחרת (strongReadSelection); קריאה בודדת בלי עד מסומנת
+const APP_VERSION = '143'; // שירות 19: קריאה חזקה שנייה — שדה שהתקבל בה אינו מחלוקת; כרטיס שנשאר אומר שנערכה קריאה רביעית
 // גרסה 73: מוצר בלי מחיר קופה — חלון הכמות מציג מיד את העלות ליח׳ (ללא מע״מ) ופותח שדה להקלדת המחיר שעובר בקופה, בלי לנדוד למסך המחירים
 // v40: תג גרסה קבוע בפינת המסך — לדעת בשנייה איזו גרסה באמת רצה על המכשיר
 // (עוזר במיוחד מול מטמון ה-PWA). pointer-events:none — לעולם לא חוסם מגע.
@@ -1457,6 +1457,9 @@ async function tnuvaShowServiceVersion() {
     const text = 'שירות הסריקה: גרסה ' + htmlEscape(String(status.serviceVersion == null ? 'לא ידועה' : status.serviceVersion)) +
       ' · ' + htmlEscape(String(status.model || 'ללא מודל')) +
       (status.retryModel ? ' · הסלמה: ' + htmlEscape(String(status.retryModel)) : ' · ללא מודל הסלמה') +
+      // v143: שירות 19 אומר אם הקריאה החזקה השנייה פעילה (SECOND_STRONG_READ=off מכבה אותה,
+      // וגם היעדר מודל הסלמה). שירות 18 ומטה אינו שולח את השדה, ואז אין מה להציג.
+      (typeof status.secondStrongRead === 'boolean' ? ' · קריאה חזקה שנייה: ' + (status.secondStrongRead ? 'פעילה' : 'כבויה') : '') +
       (status.keyConfigured ? '' : ' · חסר מפתח');
     if (line) line.textContent = text;
   } catch (error) {
@@ -1522,7 +1525,16 @@ function tnuvaScanHistoryHtml(audit) {
     audit.history.map(entry => '<div class="mt-2 border-t pt-2">תעודה ' + (entry.docIndex + 1) + ' · ' + (entry.ok ? 'התקבלה קריאה' : 'הפענוח נכשל') +
       (entry.scanAudit && Array.isArray(entry.scanAudit.attempts) ? entry.scanAudit.attempts.map(a => '<div dir="ltr">' +
         htmlEscape(a.model || a.requestedModel || '') + ' · ' + htmlEscape(a.stage || '') + ' · ' + htmlEscape(a.outcome || '') + (a.selected ? ' ✓' : '') + '</div>').join('') :
-        '<div dir="ltr">' + htmlEscape(entry.model || 'ללא דיווח מודל מהשרת') + '</div>') + '</div>').join('') + '</details>';
+        '<div dir="ltr">' + htmlEscape(entry.model || 'ללא דיווח מודל מהשרת') + '</div>') + tnuvaSecondStrongClosedHtml(entry.scanAudit) + '</div>').join('') + '</details>';
+}
+// v143: שדות שהתקבלו בקריאה החזקה השנייה של שירות 19, בלי אישור של העובד. בכרטיסי
+// הקליטה הם פשוט אינם (השרת הוציא אותם מ-disputedRows); כאן, בפרטי הפענוח של הקליטה
+// השמורה, רואים אילו שדות התקבלו כך ובאיזה ערך — הערך של הקריאה שנבחרה.
+function tnuvaSecondStrongClosedHtml(scanAudit) {
+  const closed = receiptSecondStrongEntries(scanAudit, 'closed');
+  if (!closed.length) return '';
+  return '<div data-second-strong-closed class="text-emerald-800">התקבלו בקריאה חזקה שנייה, בלי אישור ידני: ' +
+    htmlEscape(receiptSecondStrongPlacesText(closed)) + '</div>';
 }
 // Switching capture methods keeps the current count, notes, images and cached OCR.
 function rememberReceiptManualInput() {
@@ -3018,7 +3030,7 @@ async function logAction(type, title, details, meta) {
     await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'actionLog', id), {
       timestamp: Date.now(), type: type || 'system', title: title || 'פעולה', details: details || '',
       deviceName: actionDeviceLabel(), uid: (auth && auth.currentUser && auth.currentUser.uid) || '',
-      appVersion: 'v142_strong_read_selection', meta: cloneSafe(meta || {})
+      appVersion: 'v143_second_strong_read', meta: cloneSafe(meta || {})
     });
   } catch (e) { console.warn('action log failed', e); }
 }
@@ -3102,7 +3114,7 @@ async function exportFullBackup() {
       backupType: 'tnuva-firestore-full',
       backupVersion: 1,
       appId,
-      appVersion: 'v142_strong_read_selection',
+      appVersion: 'v143_second_strong_read',
       exportedAt: Date.now(),
       exportedAtIso: new Date().toISOString(),
       collections: {},
@@ -11079,6 +11091,10 @@ function receiptSetRowDecision(row, type, extra) {
 // ההשוואה הישנה — נזרקת כולה, גם כשהתשובה הגיעה משרת ישן. שירות 14 מיישר
 // שורות לפי תוכן ואינו שולח את השדה הזה.
 const RECEIPT_DISPUTE_DOCUMENT_FIELDS = new Set(['rowCount']);
+// שמות השדות בכרטיס המחלוקת (ומגרסה 143 גם בפרטי הפענוח של הקריאה החזקה השנייה).
+const RECEIPT_DISPUTE_FIELD_NAMES = { code: 'קוד', quantity: 'כמות', unitPriceExVat: 'מחיר יחידה', lineTotalExVat: 'סכום שורה',
+  promoStar: 'סימון מבצע', section: 'מקטע', sourcePage: 'עמוד', rowCount: 'מספר שורות', row: 'השורה עצמה',
+  vatAmount: 'סכום מע״מ', totalInclVat: 'סה״כ כולל מע״מ' };
 // v142: שירות 18 מסלים רק על הבדל בשדה שמשנה החלטה. הבדל בתאריך (בסריקה שנשאה
 // strongReadSelection:true — כלומר מכאן), בעמוד, באחוז המע"מ, בסכום המע"מ, בסכום
 // כולל מע"מ ובהפרש העיגול נמסר עם trigger:false — מידע בלבד. שדה כזה אינו פותח
@@ -11109,9 +11125,41 @@ function receiptEscalationSelected(consensus) {
   if (!consensus || consensus.escalated !== true) return false;
   return typeof consensus.escalationSelected === 'boolean' ? consensus.escalationSelected : true;
 }
+// v143: שירות 19 — הקריאה החזקה השנייה (Terra#2). שדה כמות או כסף שקריאת ההכרעה קראה,
+// כשהיא הקריאה שנבחרה ואף קריאה זולה לא אישרה אותו, נשאל שוב במודל החזק — רק המקום,
+// בלי אף ערך. קראה אותו בדיוק כך והנייר מוכיח את עצמו: השרת מוציא אותו מ-disputedRows,
+// ולכן כאן אין מה לעשות איתו — הוא פשוט אינו מחלוקת. מה שנשאל ונשאר פתוח מגיע
+// ב-consensus.secondStrongRead.open עם הערך שכל קריאה ראתה (reads: הקריאה שנבחרה
+// ראשונה, אחריה העדים, ובסוף הקריאה הנוספת אם הושלמה), והכרטיס שלו אומר שנערכה גם
+// קריאה רביעית. הקריאה הנוספת לעולם אינה נבחרת, אינה מוסיפה מחלוקת ואינה נוגעת בקוד.
+// שירות 18 ומטה, ושירות 19 עם SECOND_STRONG_READ=off, אינם שולחים את הרשומה — ואז הכול
+// כמו בגרסה 142. holder הוא הקונצנזוס או יומן הסריקה (scanAudit): בשניהם אותה רשומה.
+function receiptSecondStrongRead(holder) {
+  const record = holder && holder.secondStrongRead;
+  return record && typeof record === 'object' && !Array.isArray(record) ? record : null;
+}
+function receiptSecondStrongEntries(holder, list) {
+  const record = receiptSecondStrongRead(holder);
+  return record && Array.isArray(record[list]) ? record[list].filter(entry => entry && typeof entry === 'object') : [];
+}
+// "שורה 2: כמות 6, סכום שורה 30 · שורה 5: כמות 3" — תמיד הערך של הקריאה שנבחרה.
+function receiptSecondStrongPlacesText(entries) {
+  const byLine = new Map();
+  entries.forEach(entry => {
+    const line = Number(entry.lineNumber) || (Number.isInteger(Number(entry.rowIndex)) ? Number(entry.rowIndex) + 1 : '?');
+    if (!byLine.has(line)) byLine.set(line, []);
+    byLine.get(line).push((RECEIPT_DISPUTE_FIELD_NAMES[entry.field] || String(entry.field || '')) + ' ' +
+      (entry.value == null || entry.value === '' ? 'לא נקרא' : String(entry.value)));
+  });
+  return [...byLine].map(([line, parts]) => 'שורה ' + line + ': ' + parts.join(', ')).join(' · ');
+}
 // ההקלה חלה רק כשקריאה של מודל ההסלמה נבחרה בפועל. עצם ניסיון ההסלמה
 // אינו מספיק: הוא עשוי להיכשל, לרוץ על אותו מודל כמו הקריאות הראשונות, או
 // (משירות 18) להפסיד לקריאה זולה שנסגרה טוב יותר מול הנייר.
+// v143: הקריאה החזקה השנייה של שירות 19 (שלב second_strong_read) רצה על אותו מודל
+// חזק, אבל היא עדה בלבד ולעולם אינה נבחרת — ולכן אינה נספרת כאן גם אם שרת יסמן אותה
+// בטעות כנבחרת. כשהיא יוצאת בתוך קריאת ההצלה של סכום הביקורת (checksum_retry) ומפסידה,
+// היא אינה נבחרת; כשקריאת ההצלה מנצחת — זו בחירה של שירות 18, ונספרת כמו קודם.
 function receiptSelectedStrongerModel(meta) {
   const consensus = meta && meta.consensus;
   const base = consensus && consensus.model;
@@ -11140,10 +11188,16 @@ function receiptConsensusDisputes() {
       // v142: שורה שהקריאות נחלקו בה רק על שדה מידע אינה מחלוקת כלל.
       const fields = (Array.isArray(item.fields) ? item.fields : []).filter(receiptConsensusTriggerField);
       if (!fields.length || fields.some(field => RECEIPT_DISPUTE_DOCUMENT_FIELDS.has(String((field && field.field) || '')))) return;
+      // v143: השדות של השורה הזאת שהקריאה החזקה השנייה נשאלה עליהם ולא אישרה (שירות 19).
+      // כל בקשה נושאת תעודה אחת (noteIndex 0 בשרת), ובכל זאת ההתאמה היא לפי שני המספרים.
+      const secondOpen = receiptSecondStrongEntries(consensus, 'open').filter(entry => Number(entry.rowIndex) === rowIndex
+        && Number(entry.noteIndex || 0) === Number(item.noteIndex || 0));
       out.set(Number(meta.docIndex) + ':' + rowIndex, Object.assign({}, item, { fields, docIndex: Number(meta.docIndex),
         escalated: consensus.escalated === true, escalationModel: consensus.escalationModel || null,
         escalationSelected: receiptEscalationSelected(consensus),
-        selectedStrongerModel: receiptSelectedStrongerModel(meta) }));
+        selectedStrongerModel: receiptSelectedStrongerModel(meta),
+        secondStrong: secondOpen.length ? { model: receiptSecondStrongRead(consensus).model || null,
+          stage: receiptSecondStrongRead(consensus).stage || null, open: secondOpen } : null }));
     });
   });
   return out;
@@ -11361,13 +11415,29 @@ function receiptRowActionButton(role, row, label, classes) {
 }
 function receiptRowDisputeHtml(dispute) {
   if (!dispute || !Array.isArray(dispute.fields) || !dispute.fields.length) return '';
-  const names = { code: 'קוד', quantity: 'כמות', unitPriceExVat: 'מחיר יחידה', lineTotalExVat: 'סכום שורה',
-    promoStar: 'סימון מבצע', section: 'מקטע', sourcePage: 'עמוד', rowCount: 'מספר שורות', row: 'השורה עצמה',
-    vatAmount: 'סכום מע״מ', totalInclVat: 'סה״כ כולל מע״מ' };
+  const names = RECEIPT_DISPUTE_FIELD_NAMES;
   const show = value => value == null || value === '' ? 'לא נקרא' : String(value);
+  // v143: שדה שהקריאה החזקה השנייה של שירות 19 נשאלה עליו ולא אישרה. הערך שמוצג ראשון
+  // נשאר של הקריאה שנבחרה; אחריו מה שכל קריאה אחרת ראתה — העדים, ובסוף הקריאה
+  // הרביעית (אם הושלמה). שדה שהיא אישרה אינו מגיע לכאן כלל: השרת הוציא אותו מהמחלוקת.
+  const second = dispute.secondStrong && Array.isArray(dispute.secondStrong.open) ? dispute.secondStrong : null;
+  const askedOf = item => (second && second.open.find(entry => entry.field === item.field)) || null;
+  const readValue = read => read && read.seen === false ? 'לא ראתה את השורה' : show(read && read.value);
+  const others = item => {
+    const asked = askedOf(item);
+    const reads = asked && Array.isArray(asked.reads) ? asked.reads.filter(read => read && read.selected !== true) : [];
+    const witnesses = reads.filter(read => read.stage !== second.stage);
+    const fourth = asked && asked.reason !== 'failed' ? reads.find(read => read.stage === second.stage) : null;
+    return (witnesses.length ? witnesses.map(readValue).join(', ') : show(item.other)) +
+      (fourth ? ' · קריאה רביעית: ' + readValue(fourth) : '');
+  };
   const line = item => item.field === 'row' ? 'רק הקריאה שנבחרה ראתה את השורה הזאת'
-    : htmlEscape(names[item.field] || item.field) + ': ' + htmlEscape(show(item.selected)) + ' מול ' + htmlEscape(show(item.other)) +
+    : htmlEscape(names[item.field] || item.field) + ': ' + htmlEscape(show(item.selected)) + ' מול ' + htmlEscape(others(item)) +
       (Number(item.confirmed) > 0 ? ' · קריאה נוספת קראה כמו הקריאה שנבחרה' : '');
+  const asked = dispute.fields.filter(askedOf);
+  const fourthLine = asked.length ? '<div class="mt-1" data-fourth-read>נערכה גם קריאה רביעית ב־' + htmlEscape(second.model || 'המודל היקר') +
+    (asked.every(item => askedOf(item).reason === 'failed') ? ', אבל היא לא הושלמה' : ', והיא לא אישרה את הקריאה שנבחרה') +
+    ' — ההכרעה כאן שלך.</div>' : '';
   // v142: "הכריע" נאמר רק כשקריאה של המודל החזק היא שנבחרה. משירות 18 קריאת
   // ההכרעה יכולה לרוץ ולהפסיד לקריאה זולה שנסגרה טוב יותר מול הנייר — אז היא
   // עדה בלבד, וההכרעה נשארת אצל המשתמש. שרת ישן (16, 17): escalationSelected נגזר מ-escalated.
@@ -11379,7 +11449,7 @@ function receiptRowDisputeHtml(dispute) {
     (decidedBy ? '<div class="mt-1">הכריע ' + htmlEscape(decidedBy) + ' בקריאה שלישית.</div>'
       : dispute.escalated ? '<div class="mt-1">נערכה קריאה שלישית ב־' + htmlEscape(dispute.escalationModel || 'המודל היקר') +
         ', אבל נבחרה הקריאה שנסגרה טוב יותר מול הנייר — ההכרעה כאן שלך.</div>'
-      : '<div class="mt-1">הקריאה השלישית לא הושלמה — ההכרעה כאן שלך.</div>') + '</div>';
+      : '<div class="mt-1">הקריאה השלישית לא הושלמה — ההכרעה כאן שלך.</div>') + fourthLine + '</div>';
 }
 function receiptRowHeadHtml(row) {
   return '<div class="font-black text-slate-800">' + htmlEscape(row.name) + '</div>' +
@@ -14367,12 +14437,30 @@ function aiScanDiagnosticsHtml(ev) {
       tokenLine('קריאת תעודות', aiScanResponse.usage);
       // v97: הסריקה יוצאת פעמיים במקביל, ולפעמים גם למודל היקר. המונה מציג
       // כל קריאה בנפרד, כדי שהעלות של הקונצנזוס תהיה גלויה ולא מוסתרת.
+      // v143: גם קריאת ההצלה של סכום הביקורת והקריאה החזקה השנייה של שירות 19 הן קריאות
+      // בתשלום, ועד כאן לא נספרו כאן. הקריאה השנייה יוצאת בשלב second_strong_read, או —
+      // כשנייר אחר באותה בקשה צריך הצלה — בתוך checksum_retry עצמו (אותה משבצת). האפליקציה
+      // שולחת תעודה אחת בכל בקשה, ולכן אצלה זה second_strong_read; checksum_retry נספר בכל
+      // מקרה, כי גם הוא קריאה בתשלום.
+      const paidStage = stage => stage.startsWith('consensus') || stage === 'checksum_retry' || stage === 'second_strong_read';
       (aiScanResponse.perDocument || []).forEach(meta => {
         const attempts = meta && meta.scanAudit && Array.isArray(meta.scanAudit.attempts) ? meta.scanAudit.attempts : [];
         attempts.forEach(attempt => {
-          if (!attempt || !String(attempt.stage || '').startsWith('consensus')) return;
+          if (!attempt || !paidStage(String(attempt.stage || ''))) return;
           tokenLine('תעודה ' + (Number(meta.docIndex) + 1) + ' · ' + attempt.stage + ' · ' + (attempt.model || attempt.requestedModel || ''), attempt.usage);
         });
+        // v143: מה הקריאה החזקה השנייה נשאלה, מה התקבל בה ומה נשאר לעובד — עם מה שכל קריאה ראתה.
+        const second = receiptSecondStrongRead(meta && meta.consensus);
+        if (!second || !(Number(second.asked) > 0)) return;
+        const closed = receiptSecondStrongEntries(meta.consensus, 'closed'), open = receiptSecondStrongEntries(meta.consensus, 'open');
+        lines.push('קריאה חזקה שנייה · תעודה ' + (Number(meta.docIndex) + 1) + ' · ' + String(second.stage || '') + ' · ' + String(second.model || '') +
+          ': נשאלו ' + Number(second.asked) + ' שדות · התקבלו ' + closed.length + ' · נשארו לעובד ' + open.length +
+          (second.outcome === 'failed' ? ' · לא הושלמה (' + String(second.error || '') + ')'
+            : second.outcome === 'selected' ? ' · קריאת ההצלה נבחרה ולכן אינה מצביעה' : ''));
+        const reads = entry => (Array.isArray(entry.reads) ? entry.reads : []).map(read => String(read && read.stage || '') + '=' +
+          (read && read.seen === false ? 'לא ראתה' : read && read.value != null ? String(read.value) : '—') + (read && read.selected ? '✓' : '')).join(' ');
+        closed.concat(open).slice(0, 8).forEach(entry => lines.push((entry.rule ? 'התקבל' : 'לעובד (' + String(entry.reason || '') + ')') +
+          ' · ' + receiptSecondStrongPlacesText([entry]) + ' · ' + reads(entry)));
       });
       if (aiScanResponse.barcodeRetryAudit && aiScanResponse.barcodeRetryAudit.attempted) tokenLine('סיבוב ברקוד (' + (Number(aiScanResponse.barcodeRetryAudit.targetCount) || 0) + ' יעדים)', aiScanResponse.barcodeRetryAudit.usage);
     }
