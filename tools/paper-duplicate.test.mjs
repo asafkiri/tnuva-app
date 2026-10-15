@@ -83,3 +83,35 @@ test('a copy saved on another phone after the summary opened is caught before th
   await new Promise(r => setTimeout(r, 50)); await cloud.tick();
   assert.equal(cloud.paths('/receipts/').length, 1, a.toasts.join('\n'));
 });
+
+test('the same delivery saved earlier without paper is still caught when it is entered again with paper', async () => {
+  // R1: goods counted without paper (noDoc, no paper amount); same day, same count, same counted value.
+  const noDoc = { id: 'receipt_nodoc', date: '2026-10-01', docDate: '2026-10-01', timestamp: Date.parse('2026-10-01T06:00:00Z'),
+    status: 'open', noDoc: true, count: 1, noteParts: [], receivedExVat: 2225.29, totalExVat: 2225.29 };
+  const { a } = await receiving({ history: [noDoc] });
+  a.run('finishReceipt()');
+  assert.equal(a.node('confirmTitle').textContent, 'אולי כפילות');
+  assert.equal(a.node('confirmModal').classList.contains('hidden'), false);
+});
+
+test('the result does not depend on which copy was saved first (typed paper date vs entry day)', async () => {
+  // Saved copy entered on 5.10 with no typed date; the current copy has the printed date 1.10 typed, entered on 5.10.
+  const { a } = await receiving({ day: '2026-10-05', history: [saved('copy', '2026-10-05', 2225.29, 18)] });
+  a.run(`receiptDocDate='2026-10-01'; finishReceipt()`);
+  assert.ok(dialog(a));
+});
+
+test('the closest match is shown, and an approval covers every match it was shown with', async () => {
+  const history = [saved('other_delivery', '2026-10-03', 2226.1, 22), saved('true_copy', '2026-10-01', 2225.29, 18)];
+  const { a } = await receiving({ day: '2026-10-02', history });
+  a.run('finishReceipt()');
+  const d = dialog(a);
+  assert.match(d.text, /₪2,225\.29 · 18 שורות ב־/);
+  assert.match(d.text, /ועוד 1 קליטות נוספות/);
+  a.events.get('confirmOk:click')();
+  assert.ok(a.run('pendingReceipt'));
+  // A third match that appears later (another phone) asks again.
+  a.run(`receipts.push(${JSON.stringify(saved('third', '2026-10-02', 2225.3, 18))})`);
+  await a.run('confirmReceipt()');
+  assert.ok(dialog(a));
+});

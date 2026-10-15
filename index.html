@@ -5494,30 +5494,44 @@ function activeReceiptDate() { return receiptDocDate || todayStr(); }
 const RECEIPT_DUP_AMOUNT_CENTS = 100, RECEIPT_DUP_DAYS = 3;
 var receiptPaperDupOk = '';
 function receiptDayNumber(value) { const day = priceAuditDate(value); return day ? Date.parse(day + 'T00:00:00Z') / 86400000 : null; }
+// סכומי הנייר של קליטה שמורה (ריק — קליטה בלי תעודה שעדיין ממתינה לנייר).
+function receiptPaperAmounts(r) {
+  const parts = r && Array.isArray(r.noteParts) ? r.noteParts.map(normNote) : (r && Number(r.noteTotalInc) > 0 ? [normNote(r.noteTotalInc)] : []);
+  return parts.filter(q => q.amount > 0);
+}
 function receiptPaperDuplicate(paperAmounts, day) {
   const mine = (paperAmounts || []).map(x => normNote(x).amount).filter(a => a > 0);
-  const today = receiptDayNumber(day);
-  if (!mine.length || today == null) return null;
+  // הצד הנוכחי נמדד גם הוא בשני ימים — התאריך שהוקלד והיום (ובצירוף נייר גם יום
+  // הקליטה המקורית) — כמו הצד השמור (docDate ו-date), כדי שהתוצאה לא תלויה בסדר.
+  const myDays = [day, todayStr(), receiptAttachTarget && receiptAttachTarget.date].map(receiptDayNumber).filter(n => n != null);
+  if (!mine.length || !myDays.length) return null;
   let session = '';
   try { session = handoffDraft('receiving').sessionId || ''; } catch (e) {}
   const attachId = receiptAttachTarget && receiptAttachTarget.id;
+  const matches = [];
   for (const r of receipts || []) {
     if (!r || r.id === receiptDraftId || (attachId && r.id === attachId) || (session && r.localFinal && r.localFinal.sessionId === session)) continue;
-    const days = [r.docDate, r.date].map(receiptDayNumber).filter(n => n != null).map(n => Math.abs(n - today));
-    if (!days.length || Math.min(...days) > RECEIPT_DUP_DAYS) continue;
-    const theirs = Array.isArray(r.noteParts) ? r.noteParts.map(normNote) : (Number(r.noteTotalInc) > 0 ? [normNote(r.noteTotalInc)] : []);
-    for (const amount of mine) {
-      const other = theirs.find(q => q.amount > 0 && moneyDiffCents(amount, q.amount) <= RECEIPT_DUP_AMOUNT_CENTS);
-      if (other) return { receipt: r, amount, other, sig: [receiptDraftId, priceAuditDate(day), mine.map(a => Math.round(a * 100)).sort().join(','), r.id].join('|') };
+    const theirDays = [r.docDate, r.date].map(receiptDayNumber).filter(n => n != null);
+    if (!theirDays.length) continue;
+    const distance = Math.min(...theirDays.flatMap(t => myDays.map(m => Math.abs(t - m))));
+    if (distance > RECEIPT_DUP_DAYS) continue;
+    for (const amount of mine) for (const other of receiptPaperAmounts(r)) {
+      const cents = moneyDiffCents(amount, other.amount);
+      if (cents <= RECEIPT_DUP_AMOUNT_CENTS) matches.push({ receipt: r, amount, other, cents, distance });
     }
   }
-  return null;
+  if (!matches.length) return null;
+  // הקרובה ביותר מוצגת; האישור חל על כל ההתאמות שנמצאו, ולכן התאמה נוספת שתופיע אחר כך שואלת שוב.
+  matches.sort((a, b) => a.cents - b.cents || a.distance - b.distance);
+  const ids = [...new Set(matches.map(m => m.receipt.id))].sort().join(',');
+  return { ...matches[0], count: new Set(matches.map(m => m.receipt.id)).size,
+    sig: [receiptDraftId, priceAuditDate(day), mine.map(a => Math.round(a * 100)).sort().join(','), ids].join('|') };
 }
 function receiptPaperDuplicateText(dup, day) {
   const r = dup.receipt, at = Number(r.timestamp) ? new Date(Number(r.timestamp)).toLocaleTimeString('he-IL', { hour: '2-digit', minute: '2-digit' }) : '';
   return 'כבר נקלטה תעודה בסכום ₪' + fmtMoney(dup.other.amount) + (dup.other.lines ? ' · ' + dup.other.lines + ' שורות' : '') +
     ' ב־' + dDisp(storedReceiptDate(r)) + (at ? ' בשעה ' + at : '') + '.\nהתעודה עכשיו: ₪' + fmtMoney(dup.amount) + ' · ' + dDisp(priceAuditDate(day) || day) +
-    '.\nאם זו אותה תעודה — בטל. אם זה משלוח אחר — שמור.';
+    (dup.count > 1 ? '.\nועוד ' + (dup.count - 1) + ' קליטות נוספות בסכום ובתאריך קרובים' : '') + '.\nאם זו אותה תעודה — בטל. אם זה משלוח אחר — שמור.';
 }
 function storedReceiptDate(rc) { return (rc && (rc.docDate || rc.date)) || todayStr(); }
 function r2(n) { return Math.round((Number(n) || 0) * 100) / 100; }
@@ -6802,8 +6816,11 @@ function finishReceipt() {
     return;
   }
   // בלי נייר אין סכום להשוות; נשארת הבדיקה הישנה לפי הסחורה שנספרה באותו יום.
-  if (!receiptDupConfirmed && !receiptNotes.some(x => normNote(x).amount > 0)) {
-    const dup = receipts.find(r => r.id !== receiptDraftId && storedReceiptDate(r) === day && (Number(r.count) || 0) === lines.length && Math.abs((Number(r.receivedExVat != null ? r.receivedExVat : r.totalExVat) || 0) - ex) <= 1);
+  // מול קליטה בלי תעודה (אין לה סכום נייר להשוות) נשארת הבדיקה הישנה לפי הסחורה
+  // שנספרה באותו יום — גם כשלקליטה הנוכחית יש נייר: אותו משלוח שנקלט קודם בלי נייר.
+  const hasPaper = receiptNotes.some(x => normNote(x).amount > 0);
+  if (!receiptDupConfirmed) {
+    const dup = receipts.find(r => r && r.id !== receiptDraftId && (!hasPaper || !receiptPaperAmounts(r).length) && storedReceiptDate(r) === day && (Number(r.count) || 0) === lines.length && Math.abs((Number(r.receivedExVat != null ? r.receivedExVat : r.totalExVat) || 0) - ex) <= 1);
     if (dup) { showConfirm('אולי כפילות', 'כבר קיימת תעודה מ-' + dDisp(day) + ' בסכום דומה (₪' + fmtMoney(ex) + ' · ' + lines.length + ' שורות). ייתכן שכבר קלטת אותה — לשמור בכל זאת?', 'כן, שמור בכל זאת', function () { receiptDupConfirmed = true; finishReceipt(); }); return; }
   }
   const unitsMismatch = receiptNoteUnits != null && scannedUnits !== receiptNoteUnits;
