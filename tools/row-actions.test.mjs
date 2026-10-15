@@ -137,7 +137,11 @@ test('failed, same-model and unselected escalations do not settle equal-price id
     { model: 'gpt-5.6-luna' },
     { model: null },
     { scanAudit: { attempts: [{ stage: 'consensus_1', requestedModel: 'gpt-5.6-luna', selected: true },
-      { stage: 'consensus_escalation', requestedModel: 'gpt-5.6-terra', selected: false }] } }
+      { stage: 'consensus_escalation', requestedModel: 'gpt-5.6-terra', selected: false }] } },
+    // v142: שירות 18 אומר במפורש שקריאת ההכרעה לא נבחרה — גם בלי יומן ניסיונות,
+    // ושם המודל אינו גובר על כך.
+    { model: 'gpt-5.6-luna', consensus: { ...source.paper.consensus, escalationSelected: false } },
+    { consensus: { ...source.paper.consensus, escalationSelected: false } }
   ]) {
     const c = await scanned({ paper: { ...source.paper, ...changed } });
     assert.deepEqual(actions(c).disputed.map(item => item.line), [1]);
@@ -156,6 +160,115 @@ test('the selected attempt proves escalation or checksum-retry identity even wit
     assert.deepEqual(actions(c).disputed, []);
     assert.equal(actions(c).modelSettled, 1);
   }
+});
+
+// v142: משירות 18 קריאת ההכרעה אינה מנצחת מעצם היותה יקרה. כשקריאה זולה נסגרה
+// טוב יותר מול הנייר היא שנבחרת, וקריאת ההכרעה נשארת עדה — המסך אינו אומר שהיא הכריעה.
+const v18 = (selected, fields = [{ field: 'quantity', selected: 10, other: 16 }]) => {
+  const source = disputeOnFirstRow(fields);
+  return { paper: { ...source.paper, model: selected ? 'gpt-5.6-terra' : 'gpt-5.6-luna', serviceVersion: 18,
+    consensus: { ...source.paper.consensus, escalationSelected: selected, unverifiedSingleRead: false },
+    scanAudit: { version: 1, attempts: [
+      { stage: 'consensus_1', requestedModel: 'gpt-5.6-luna', selected: !selected, paperError: 0 },
+      { stage: 'consensus_2', requestedModel: 'gpt-5.6-luna', selected: false, paperError: 0 },
+      { stage: 'consensus_escalation', requestedModel: 'gpt-5.6-terra', selected, paperError: selected ? 0 : 2 }] } } };
+};
+const decided = /הכריע gpt-5\.6-terra בקריאה שלישית/;
+const witnessOnly = /נערכה קריאה שלישית ב־gpt-5\.6-terra, אבל נבחרה הקריאה שנסגרה טוב יותר מול הנייר — ההכרעה כאן שלך/;
+
+test('v142: a cheap read selected after the escalation is never worded as the strong model\'s decision', async () => {
+  const c = await scanned(v18(false));
+  assert.deepEqual(actions(c).disputed.map(item => item.line), [1]);
+  const view = html(c);
+  assert.doesNotMatch(view, decided);
+  assert.match(view, witnessOnly);
+  assert.doesNotMatch(view, /הקריאה השלישית לא הושלמה/, 'the third read did complete');
+  // ושתי זהויות באותו מחיר אינן נסגרות "לפי המודל החזק" כשהוא לא נבחר.
+  const identity = await scanned(v18(false, [{ field: 'code', selected: '14761056', other: '14761414' }]));
+  assert.equal(actions(identity).modelSettled, 0);
+  assert.deepEqual(actions(identity).disputed.map(item => item.line), [1]);
+  assert.doesNotMatch(html(identity), /לפי המודל החזק/);
+  assert.match(html(identity), witnessOnly);
+  // טיוטה ששוחזרה אומרת את אותו דבר.
+  identity.run('saveReceiptDraft()');
+  const restored = harness.runtime('tnuva', { data, storage: identity.storage });
+  restored.run('restoreReceiptDraft()');
+  assert.equal(actions(restored).modelSettled, 0);
+  assert.match(html(restored), witnessOnly);
+  assert.equal(restored.requests.length, 0);
+});
+
+test('v142: when the strong read is selected the card and the same-price rule stay as they were', async () => {
+  // שירות 18 שבחר בקריאת ההכרעה, ושרת ישן שאינו שולח escalationSelected כלל.
+  for (const source of [v18(true), disputeOnFirstRow([{ field: 'quantity', selected: 10, other: 16 }])]) {
+    const c = await scanned(source);
+    assert.deepEqual(actions(c).disputed.map(item => item.line), [1]);
+    assert.match(html(c), decided);
+    assert.doesNotMatch(html(c), witnessOnly);
+  }
+  const identity = await scanned(v18(true, [{ field: 'code', selected: '14761056', other: '14761414' }]));
+  assert.equal(actions(identity).modelSettled, 1);
+  assert.deepEqual(actions(identity).disputed, []);
+  // והסלמה שנכשלה נשארת "לא הושלמה".
+  const failed = await scanned({ paper: { ...data.paper, model: 'gpt-5.6-luna',
+    consensus: { ...disputeOnFirstRow([]).paper.consensus, escalated: false, escalationModel: null, escalationError: 'network',
+      escalationSelected: false, disputedRows: [{ noteIndex: 0, rowIndex: 0, lineNumber: 1, code: '14761056', description: 'מעדן שוקולד חלב YOLO',
+        fields: [{ field: 'quantity', selected: 10, other: 16 }] }] } } });
+  assert.match(html(failed), /הקריאה השלישית לא הושלמה — ההכרעה כאן שלך/);
+  assert.doesNotMatch(html(failed), decided);
+});
+
+// v142: שירות 18 אינו מסלים על הבדל בשדה מידע (תאריך, עמוד, מע"מ, עיגול), ומסמן
+// אותו ב-diffs עם trigger:false. הבדל כזה אינו פותח כרטיס ואינו נספר כהכרעה.
+test('v142: informational differences never open a card or count as settled', async () => {
+  const baseline = actions(await scanned(disputeOnFirstRow([])));
+  assert.equal(baseline.settled, 0);
+  // הקריאות הסכימו על כל שדה שמשנה החלטה; ההבדלים שנמסרו הם מידע בלבד.
+  const agreed = await scanned({ paper: { ...data.paper, model: 'gpt-5.6-luna', serviceVersion: 18,
+    consensus: { ...consensus, agreed: true, reason: null, escalated: false, escalationModel: null,
+      escalationSelected: false, unverifiedSingleRead: false, disputedRows: [], missingRows: [],
+      diffs: [{ noteIndex: 0, scope: 'document', field: 'docDate', values: ['17/09/2026', '16/09/2026'], trigger: false },
+        { noteIndex: 0, scope: 'document', field: 'vatAmount', values: [44.1, 44.2], trigger: false },
+        { noteIndex: 0, scope: 'row', rowIndex: 0, otherRowIndex: 0, lineNumber: 1, field: 'sourcePage', values: [1, 2], trigger: false }] } } });
+  assert.deepEqual(actions(agreed), baseline);
+  assert.doesNotMatch(html(agreed), /שתי הסריקות של הצילום לא קראו|הסריקות נחלקו|הוכרעו מול המאגר|data-unverified-read/);
+  // שורה שהקריאות נחלקו בה רק על העמוד אינה מחלוקת — לא שאלה, ולא "הוכרעה מול המאגר".
+  const page = await scanned(disputeOnFirstRow([{ field: 'sourcePage', selected: 1, other: 2 }]));
+  assert.deepEqual(actions(page), baseline);
+  assert.doesNotMatch(html(page), /עמוד: 1 מול 2|הוכרעו מול המאגר/);
+  // לצד שדה שכן מכריע — השדה המכריע נשאר, והעמוד אינו מוצג.
+  const mixed = await scanned(disputeOnFirstRow([{ field: 'quantity', selected: 10, other: 16 }, { field: 'sourcePage', selected: 1, other: 2 }]));
+  assert.deepEqual(actions(mixed).disputed, [{ line: 1, fields: [{ field: 'quantity', selected: 10, other: 16 }] }]);
+  assert.doesNotMatch(html(mixed), /עמוד: 1 מול 2/);
+  // ושדה שהשרת עצמו סימן trigger:false אינו מחלוקת גם אם שמו אינו מוכר כאן.
+  const marked = await scanned(disputeOnFirstRow([{ field: 'unitOfMeasure', selected: 'kg', other: 'unit', trigger: false }]));
+  assert.deepEqual(actions(marked), baseline);
+});
+
+// מיזוג עם 141: מינוס על סכום המע"מ או על הסכום כולל מע"מ מסמן זיכוי שהכותרת שלו
+// נחתכה (tnuvaPaperCheck). הבדל בערך באותו סימן הוא מידע; הבדל בסימן הוא ההבדל בין
+// קליטת סחורה לזיכוי — אותו כלל כמו בשירות 18, שמסלים עליו.
+test('v142: a sign difference on the VAT or the total is a decision; a value difference with the same sign is not', async () => {
+  const c = await scanned(disputeOnFirstRow([]));
+  const counts = field => c.run('receiptConsensusTriggerField(' + JSON.stringify(field) + ')');
+  for (const name of ['vatAmount', 'totalInclVat']) {
+    assert.equal(counts({ field: name, selected: 9, other: -9 }), true, name);
+    assert.equal(counts({ field: name, selected: -9, other: 9 }), true, name);
+    assert.equal(counts({ field: name, selected: null, other: -9 }), true, name + ': a value not read is not a minus');
+    assert.equal(counts({ field: name, selected: 9, other: 9.01 }), false, name);
+    assert.equal(counts({ field: name, selected: -9, other: -9.01 }), false, name);
+    assert.equal(counts({ field: name, selected: null, other: 9 }), false, name);
+    assert.equal(counts({ field: name, selected: 9, other: -9, trigger: false }), false, name + ': the server mark wins');
+  }
+  for (const name of ['docDate', 'sourcePage', 'vatPct', 'roundingDiff']) assert.equal(counts({ field: name, selected: 1, other: -1 }), false, name);
+  assert.equal(counts({ field: 'quantity', selected: 10, other: 16 }), true);
+  // על המסך: הבדל סימן פותח כרטיס עם שם השדה בעברית; הבדל ערך באותו סימן אינו פותח.
+  const baseline = actions(c);
+  const value = await scanned(disputeOnFirstRow([{ field: 'vatAmount', selected: 9, other: 9.01 }]));
+  assert.deepEqual(actions(value), baseline);
+  const sign = await scanned(disputeOnFirstRow([{ field: 'totalInclVat', selected: 59, other: -59 }]));
+  assert.deepEqual(actions(sign).disputed, [{ line: 1, fields: [{ field: 'totalInclVat', selected: 59, other: -59 }] }]);
+  assert.match(html(sign), /סה״כ כולל מע״מ: 59 מול -59/);
 });
 
 test('same base price with different deposits or billing units remains a decision', async () => {
@@ -478,6 +591,189 @@ test('a date that was read from the paper is not replaced by today', async () =>
   const doc = JSON.parse(c.run('JSON.stringify(receiptPriceAudit().documents[0])'));
   assert.equal(doc.date, '2026-09-17');
   assert.equal(doc.dateAssumed, false);
+});
+
+// v142: הכרעת בעל החנות — תאריך שלא נקרא היטב, היום. תאריך שקריאה אחרת של אותו
+// צילום ראתה אחרת (ואף קריאה אינה מאשרת), או תאריך שעוד לא הגיע, אינו היום שבו
+// נשפטים המבצעים. התאריכים כאן יחסיים להיום, כדי שהבדיקה לא תלויה ביום הריצה.
+const shiftedDay = n => new Date(Date.now() + n * 864e5).toLocaleDateString('en-CA');
+const printedDay = n => shiftedDay(n).split('-').reverse().join('/');
+const paperDay = printedDay(-30);
+// מבצע שהיה בתוקף ביום התעודה ופג מאז — מה שמבדיל בין יום הנייר להיום.
+const datedPromo = { id: 'paper-day-promo', type: 'receipt', pct: 10, minQty: 1, minUnit: 'unit',
+  start: shiftedDay(-35), end: shiftedDay(-25), productIds: ['p_yolo_chocolate'] };
+const agreedV18 = { attempted: true, reads: 2, completedReads: 2, model: 'gpt-5.6-luna', agreed: true, reason: null,
+  escalated: false, escalationModel: null, escalationError: null, escalationSelected: false, unverifiedSingleRead: false,
+  diffs: [], disputedRows: [], missingRows: [], docDateUnconfirmed: [] };
+const dateDiff = { noteIndex: 0, scope: 'document', field: 'docDate', values: [paperDay, printedDay(-31)], trigger: false };
+const datedData = (consensusOverride, docChanges = {}, serviceVersion = 18, paperChanges = {}) => ({ promos: [datedPromo],
+  paper: { ...data.paper, model: 'gpt-5.6-luna', serviceVersion, consensus: consensusOverride, ...paperChanges,
+    scan: { warnings: [], documents: [{ ...document, docDate: paperDay, ...docChanges }] } } });
+const dateOf = c => JSON.parse(c.run(`JSON.stringify((function(){ const a = receiptPriceAudit(), d = a.documents[0], r = a.rows.find(x => x.line === 1);
+  return { date: d.date, assumed: d.dateAssumed, doubt: d.dateDoubt, read: d.dateRead, rowDate: r.date, promo: r.hasActivePromo,
+    promoDay: priceAuditPromoDay(), engine: promoActive(promos[0], priceAuditPromoDay()),
+    printed: aiScanResponse.scan.documents[0].docDate, source: priceAuditSource(aiScanResponse.scan.documents[0]).docDate };
+})())`));
+const disputedLine = /<span data-price-date-doubt="disputed"[^>]*>תאריך התעודה לא נקרא בוודאות — המבצעים נבדקים לפי היום; אפשר לבחור תאריך אחר<\/span><\/summary>/;
+const trustedDate = { date: shiftedDay(-30), assumed: false, doubt: null, read: null, rowDate: shiftedDay(-30), promo: true,
+  promoDay: shiftedDay(-30), engine: true, printed: paperDay, source: paperDay };
+const todayDate = doubt => ({ date: today, assumed: true, doubt, read: paperDay, rowDate: today, promo: false,
+  promoDay: today, engine: false, printed: paperDay, source: paperDay });
+
+test('v142: a date no other read confirms is not trusted — promotions are judged by today, and the line says why', async () => {
+  // שירות 18: הקריאות נחלקו על התאריך בלבד, אין הסלמה, וקריאה זולה נבחרה.
+  const c = await scanned(datedData({ ...agreedV18, diffs: [dateDiff], docDateUnconfirmed: [0] }));
+  assert.deepEqual(dateOf(c), todayDate('disputed'), 'the printed date stays as it was read');
+  const view = html(c);
+  assert.match(view, disputedLine);
+  // אינו חוסם: השורה נשארת מקופלת, אין שורה שנעצרה על תאריך, ושום כרטיס לא נפתח.
+  assert.match(view, /<details data-price-date><summary/);
+  assert.doesNotMatch(view, /<details data-price-date open/);
+  assert.equal(c.run("receiptPriceAudit().rows.filter(r => r.reason === 'חסר תאריך תעודה לבדיקת תוקף המבצע').length"), 0);
+  assert.deepEqual(actions(c).disputed, []);
+  assert.equal(c.run('receiptPaperScanState'), 'ok');
+  // תאריך שקריאה אחרת אישרה (למשל קריאת ההכרעה) — אמין, גם כש-diffs מציג הבדל
+  // בין שתי הקריאות הזולות: השדה החדש גובר על הנפילה אחורה.
+  const confirmed = await scanned(datedData({ ...agreedV18, diffs: [dateDiff], docDateUnconfirmed: [] }));
+  assert.deepEqual(dateOf(confirmed), trustedDate);
+  assert.doesNotMatch(html(confirmed), /data-price-date-doubt/);
+});
+
+test('v142: an older service or draft without the new field reads the two cheap dates in the diff', async () => {
+  // שירות 16: אין docDateUnconfirmed. הבדל התאריך נושא את התאריכים של שתי
+  // הקריאות הזולות (values[0] — הראשונה), והתאריך שנבחר מאושר כשקריאה שאינה
+  // הקריאה שנבחרה קראה אותו יום.
+  const { docDateUnconfirmed, unverifiedSingleRead, escalationSelected, ...old } = agreedV18;
+  const escalated = { ...old, agreed: false, reason: 'reads_disagree', escalated: true, escalationModel: 'gpt-5.6-terra' };
+  const vatDiff = { noteIndex: 0, scope: 'document', field: 'vatAmount', values: [1, 2] };
+  // קריאת ההכרעה ניצחה וקראה את התאריך של הקריאה הזולה הראשונה — שתיים מתוך שלוש.
+  const twoOfThree = await scanned(datedData({ ...escalated, diffs: [dateDiff, vatDiff] }, {}, 16));
+  assert.deepEqual(dateOf(twoOfThree), trustedDate);
+  assert.doesNotMatch(html(twoOfThree), /data-price-date-doubt/);
+  // ... או של השנייה, גם בצורת כתיבה אחרת.
+  const second = await scanned(datedData({ ...escalated, diffs: [{ ...dateDiff, values: [printedDay(-31), paperDay.replace(/\//g, '.')] }] }, {}, 16));
+  assert.deepEqual(dateOf(second), trustedDate);
+  // קריאת ההכרעה קראה תאריך שלישי: אף קריאה אינה מאשרת אותו.
+  const third = await scanned(datedData({ ...escalated, diffs: [{ ...dateDiff, values: [printedDay(-29), printedDay(-31)] }, vatDiff] }, {}, 16));
+  assert.deepEqual(dateOf(third), todayDate('disputed'));
+  assert.match(html(third), disputedLine);
+  // ההסלמה נכשלה, ולכן נבחרה הקריאה הזולה הראשונה: values[0] הוא התאריך שלה
+  // עצמה ואינו עד, והשנייה קראה יום אחר.
+  const failed = { ...old, agreed: false, reason: 'reads_disagree', escalationError: 'openai_network_error' };
+  assert.deepEqual(dateOf(await scanned(datedData({ ...failed, diffs: [dateDiff] }, {}, 16))), todayDate('disputed'));
+  // ... אבל כשהשנייה קראה אותו יום בצורה אחרת, היא מאשרת אותו.
+  const format = await scanned(datedData({ ...failed, diffs: [{ ...dateDiff, values: [paperDay, paperDay.replace(/\//g, '.')] }] }, {}, 16));
+  assert.deepEqual(dateOf(format), trustedDate);
+  // יומן הניסיונות אומר מי נבחרה: קריאת הצלה שניצחה אחרי הסלמה שנכשלה אינה אחת
+  // הקריאות הזולות, ולכן הקריאה הזולה הראשונה היא עד לה.
+  const audit = selected => ({ scanAudit: { version: 1, attempts: ['consensus_1', 'consensus_2', 'consensus_escalation', 'checksum_retry']
+    .map(stage => ({ stage, selected: stage === selected })) } });
+  assert.deepEqual(dateOf(await scanned(datedData({ ...failed, diffs: [dateDiff] }, {}, 16, audit('checksum_retry')))), trustedDate);
+  assert.deepEqual(dateOf(await scanned(datedData({ ...failed, diffs: [dateDiff] }, {}, 16, audit('consensus_1')))), todayDate('disputed'));
+  assert.deepEqual(dateOf(await scanned(datedData({ ...escalated, diffs: [dateDiff] }, {}, 16, audit('consensus_escalation')))), trustedDate);
+  // שדה מסמך אחר, או שורה, אינם הבדל תאריך.
+  const other = await scanned(datedData({ ...escalated, diffs: [{ noteIndex: 0, scope: 'document', field: 'vatAmount', values: [1, 2] },
+    { noteIndex: 0, scope: 'row', rowIndex: 0, otherRowIndex: 0, lineNumber: 1, field: 'quantity', values: [10, 16] }] }, {}, 16));
+  assert.deepEqual(dateOf(other), trustedDate);
+  // בלי קונצנזוס כלל (שירות ישן מאוד, טיוטה ישנה) — אין עדות למחלוקת.
+  assert.deepEqual(dateOf(await scanned(datedData(null, {}, 11))), trustedDate);
+});
+
+test('v142: a date after today is not trusted, and the line shows what was read', async () => {
+  const tomorrow = printedDay(1);
+  const c = await scanned(datedData(agreedV18, { docDate: tomorrow }));
+  assert.deepEqual(dateOf(c), { ...todayDate('future'), read: tomorrow, printed: tomorrow, source: tomorrow });
+  assert.match(html(c), new RegExp('<span data-price-date-doubt="future"[^>]*>התאריך שנקרא מהתעודה, ' + tomorrow
+    + ', מאוחר מהיום — המבצעים נבדקים לפי היום; אפשר לבחור תאריך אחר</span></summary>'));
+  // תאריך עתידי שגם נחלקו עליו נאמר כעתידי — זו הסיבה הוודאית יותר.
+  const both = await scanned(datedData({ ...agreedV18, docDateUnconfirmed: [0] }, { docDate: tomorrow }));
+  assert.equal(dateOf(both).doubt, 'future');
+  // היום עצמו אינו בעתיד.
+  const sameDay = await scanned(datedData(agreedV18, { docDate: printedDay(0) }));
+  assert.deepEqual([dateOf(sameDay).date, dateOf(sameDay).assumed, dateOf(sameDay).doubt], [today, false, null]);
+});
+
+test('v142: a past date both reads agree on is trusted, in every printed format', async () => {
+  for (const printed of [paperDay, shiftedDay(-30), paperDay.replace(/\//g, '.')]) {
+    const c = await scanned(datedData(agreedV18, { docDate: printed }));
+    assert.deepEqual(dateOf(c), { ...trustedDate, printed, source: printed });
+    assert.doesNotMatch(html(c), /data-price-date-doubt/);
+  }
+});
+
+test('v142: a date the worker confirmed or typed still wins over the fallback', async () => {
+  const disputed = { ...agreedV18, diffs: [dateDiff], docDateUnconfirmed: [0] };
+  // תאריך שהוקלד בתחילת הקליטה ("תעודה מתאריך אחר") גובר על תאריך נייר שנחשד.
+  const typed = await scanned(datedData(disputed));
+  typed.run(`receiptDocDate = '${shiftedDay(-28)}'`);
+  assert.deepEqual(dateOf(typed), { ...trustedDate, date: shiftedDay(-28), rowDate: shiftedDay(-28), promoDay: shiftedDay(-28) });
+  assert.doesNotMatch(html(typed), /data-price-date-doubt/);
+  // גם מול תאריך עתידי.
+  const future = await scanned(datedData(agreedV18, { docDate: printedDay(1) }));
+  future.run(`receiptDocDate = '${shiftedDay(-28)}'`);
+  assert.equal(dateOf(future).date, shiftedDay(-28));
+  // רק תאריך הנייר נחשד: תאריך נייר אמין עדיין קודם לתאריך שהוקלד, כמו קודם.
+  const trusted = await scanned(datedData(agreedV18));
+  trusted.run(`receiptDocDate = '${shiftedDay(-28)}'`);
+  assert.deepEqual(dateOf(trusted), trustedDate);
+  // תאריך שנבחר בשורה המקופלת גובר על הכול, ומבטל את ההסבר.
+  const chosen = await scanned(datedData(disputed));
+  assert.equal(chosen.run(`priceAuditSetDate(0, '${shiftedDay(-30)}')`), true);
+  assert.deepEqual(dateOf(chosen), trustedDate);
+  assert.doesNotMatch(html(chosen), /data-price-date-doubt/);
+});
+
+test('v142: a draft reload keeps the distrusted date, its reason, and the worker\'s choice', async () => {
+  const reload = (c, overrides) => harness.runtime('tnuva', { storage: c.storage,
+    data: JSON.parse(JSON.stringify(Object.assign({}, data, overrides))) });
+  const uploads = c => c.requests.filter(r => r.url.endsWith('/scan')).length;
+  const { docDateUnconfirmed, ...withoutField } = agreedV18;
+  for (const [label, overrides] of [
+    ['service 18 flag', datedData({ ...agreedV18, diffs: [dateDiff], docDateUnconfirmed: [0] })],
+    ['older diffs fallback', datedData({ ...withoutField, diffs: [dateDiff] }, {}, 16)]]) {
+    const c = await scanned(overrides);
+    const restored = reload(c, overrides);
+    assert.deepEqual(dateOf(restored), todayDate('disputed'), label);
+    assert.match(html(restored), disputedLine, label);
+    assert.equal(uploads(restored), 0, label + ': no paid scan after the reload');
+  }
+  const future = datedData(agreedV18, { docDate: printedDay(1) });
+  assert.equal(dateOf(reload(await scanned(future), future)).doubt, 'future');
+  // הבחירה של העובד נשמרת בטיוטה וגוברת גם אחרי ריענון.
+  const overrides = datedData({ ...agreedV18, docDateUnconfirmed: [0] });
+  const c = await scanned(overrides);
+  c.run(`priceAuditSetDate(0, '${shiftedDay(-30)}')`);
+  assert.deepEqual(dateOf(reload(c, overrides)), trustedDate);
+});
+
+test('v142: with several papers the promotion day follows the dates the review actually uses', async () => {
+  // שתי תעודות מאותו יום מודפס; על התאריך של השנייה הקריאות נחלקו.
+  const overrides = datedData(agreedV18);
+  const c = harness.runtime('tnuva', { data: JSON.parse(JSON.stringify(Object.assign({}, data, overrides))) });
+  let calls = 0;
+  const original = c.context.fetch;
+  c.context.fetch = async (url, options) => {
+    const response = await original(url, options);
+    if (!String(url).endsWith('/scan')) return response;
+    const payload = await response.json();
+    if (++calls === 2) payload.consensus.docDateUnconfirmed = [0];
+    const body = JSON.stringify(payload);
+    return { ...response, text: async () => body, json: async () => JSON.parse(body) };
+  };
+  c.run(`currentView='receiving'; mainMode='receiving'; scanPurpose='receiving'; refreshScanHost = () => {};
+    aiScanDocuments = [0, 1].map(i => ({ noteIndex: i, amount: null, units: null, lines: null,
+      pages: [{ dataUrl: 'data:image/jpeg;base64,Zml4dHVyZQ==', orientationConfirmed: true }] }));`);
+  await c.run('tnuvaStartPaperScan()');
+  const state = () => JSON.parse(c.run(`JSON.stringify({ dates: receiptPriceAudit().documents.map(d => [d.date, d.dateDoubt]),
+    day: priceAuditPromoDay(), engine: promoActive(promos[0], priceAuditPromoDay()) })`));
+  // התעודות נבדקות לפי שני ימים שונים, ולכן — כמו תמיד כשהן חלוקות — היום שהוקלד או היום.
+  assert.deepEqual(state(), { dates: [[shiftedDay(-30), null], [today, 'disputed']], day: today, engine: false });
+  c.run(`receiptDocDate = '${shiftedDay(-28)}'`);
+  assert.deepEqual(state(), { dates: [[shiftedDay(-30), null], [shiftedDay(-28), null]], day: shiftedDay(-28), engine: true });
+  c.run('receiptDocDate = null');
+  // העובד בחר לתעודה השנייה את היום המודפס — שתיהן שוב באותו יום, ושני המנועים איתן.
+  c.run(`priceAuditSetDate(1, '${shiftedDay(-30)}')`);
+  assert.deepEqual(state(), { dates: [[shiftedDay(-30), null], [shiftedDay(-30), null]], day: shiftedDay(-30), engine: true });
 });
 
 test('a summary that does not close shows the arithmetic instead of asking for a number out of thin air', async () => {

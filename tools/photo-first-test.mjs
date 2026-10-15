@@ -67,7 +67,8 @@ test('background completion refreshes the visible invoice header without replaci
     receiptTotalsHtml: () => 'totals', receivingProgressHtml: () => 'progress',
     renderReceiving() { throw new Error('Must preserve the scanner and active input'); }
   });
-  vm.runInContext(['receiptNoteHeaderLabel', 'receiptNoteHeaderValue', 'refreshReceiptTotals', 'refreshScanHost', 'tnuvaPaperStatusHtml'].map(source).join('\n'), c);
+  vm.runInContext(['receiptNoteHeaderLabel', 'receiptNoteHeaderValue', 'refreshReceiptTotals', 'refreshScanHost', 'tnuvaPaperStatusHtml',
+    'tnuvaUnverifiedSingleRead', 'tnuvaUnverifiedReadHtml'].map(source).join('\n'), c);
   c.refreshScanHost();
   assert.equal(nodes.rcNoteSummaryValue.textContent, 'התעודה בפענוח…');
   c.aiScanDocuments = [input()];
