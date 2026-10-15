@@ -167,12 +167,25 @@ test('v143: acceptance is per field — a closed quantity leaves the line total 
 });
 
 test('v143: the second strong read is never the selected read — the wording and the same-price rule follow the escalation, also in the checksum-retry slot', async () => {
-  // (b) קוד שבמחלוקת בין שתי זהויות באותו מחיר, וכמות שהתקבלה בקריאה הרביעית: Terra נבחר,
-  // ולכן הזהות נסגרת לפי המודל החזק כמו ב-142 — הניסיון הרביעי אינו משנה זאת.
+  // (b) קוד שבמחלוקת בין שתי זהויות באותו מחיר, בשורה שהקריאה הרביעית לא נגעה בה: Terra נבחר,
+  // ולכן הזהות נסגרת לפי המודל החזק כמו ב-142 — הקריאה הרביעית, שסגרה כמות בשורה אחרת, אינה משנה זאת.
+  const elsewhere = { ...closedEntry('quantity', [10, 13, 17]), rowIndex: 0, lineNumber: 1 };
   const identity = await scanned(service({ disputedRows: [disputedRow([code])],
-    secondStrongRead: record({ asked: 1, closed: [closedEntry('quantity', QUANTITY_READS)] }) }));
+    secondStrongRead: record({ asked: 1, closed: [elsewhere] }) }));
   assert.equal(identity.run('receiptSelectedStrongerModel(aiScanResponse.perDocument[0])'), 'gpt-5.6-terra');
   assert.deepEqual(actions(identity), { state: 'ready', total: 0, settled: 1, modelSettled: 1, disputed: [] });
+  // מהביקורת: בשורה שהקריאה הרביעית סגרה בה כמות או כסף, כלל שתי הזהויות באותו מחיר אינו חל.
+  // ב-142 הכמות הייתה נשארת בכרטיס ("זהות אינה יכולה להסתיר מחלוקת על כמות/כסף"), והקוד עמה;
+  // אילו הכרטיס נסגר כאן, הקריאה הרביעית הייתה מכריעה זהות בעקיפין. הקוד נשאר אצל העובד, כמו ב-142.
+  // (שירות 19 אינו שואל שורה שהקוד של Terra בה אינו מאושר; זו הגנה נוספת, מול כל שרת.)
+  const sameRow = await scanned(service({ disputedRows: [disputedRow([code])],
+    secondStrongRead: record({ asked: 1, closed: [closedEntry('quantity', QUANTITY_READS)] }) }));
+  assert.equal(sameRow.run('receiptSelectedStrongerModel(aiScanResponse.perDocument[0])'), 'gpt-5.6-terra');
+  assert.deepEqual(actions(sameRow), { state: 'ready', total: 1, settled: 0, modelSettled: 0, disputed: [{ line: 2, fields: ['code'] }] });
+  const sameRowBox = card(sameRow);
+  assert.ok(sameRowBox.includes('<div dir="rtl">קוד: 14761414 מול 14761056</div>'), sameRowBox);
+  assert.doesNotMatch(sameRowBox, /כמות:/, 'the accepted quantity is not on the card');
+  assert.match(sameRowBox, decided);
   // שרת שיסמן בטעות את הקריאה הרביעית כנבחרת — היא אינה "המודל החזק שנבחר".
   const marked = await scanned(service({ disputedRows: [disputedRow([code])], escalationSelected: false,
     secondStrongRead: record({ asked: 1, closed: [closedEntry('quantity', QUANTITY_READS)] }),

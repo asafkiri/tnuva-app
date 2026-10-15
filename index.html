@@ -11190,14 +11190,17 @@ function receiptConsensusDisputes() {
       if (!fields.length || fields.some(field => RECEIPT_DISPUTE_DOCUMENT_FIELDS.has(String((field && field.field) || '')))) return;
       // v143: השדות של השורה הזאת שהקריאה החזקה השנייה נשאלה עליהם ולא אישרה (שירות 19).
       // כל בקשה נושאת תעודה אחת (noteIndex 0 בשרת), ובכל זאת ההתאמה היא לפי שני המספרים.
-      const secondOpen = receiptSecondStrongEntries(consensus, 'open').filter(entry => Number(entry.rowIndex) === rowIndex
-        && Number(entry.noteIndex || 0) === Number(item.noteIndex || 0));
+      const sameRow = entry => Number(entry.rowIndex) === rowIndex && Number(entry.noteIndex || 0) === Number(item.noteIndex || 0);
+      const secondOpen = receiptSecondStrongEntries(consensus, 'open').filter(sameRow);
       out.set(Number(meta.docIndex) + ':' + rowIndex, Object.assign({}, item, { fields, docIndex: Number(meta.docIndex),
         escalated: consensus.escalated === true, escalationModel: consensus.escalationModel || null,
         escalationSelected: receiptEscalationSelected(consensus),
         selectedStrongerModel: receiptSelectedStrongerModel(meta),
         secondStrong: secondOpen.length ? { model: receiptSecondStrongRead(consensus).model || null,
-          stage: receiptSecondStrongRead(consensus).stage || null, open: secondOpen } : null }));
+          stage: receiptSecondStrongRead(consensus).stage || null, open: secondOpen } : null,
+        // v143, מהביקורת: השדות של השורה הזאת שהקריאה החזקה השנייה סגרה. הם כבר אינם במחלוקת;
+        // כאן הם רק עוצרים את כלל שתי הזהויות באותו מחיר באותה שורה (receiptSamePriceModelDecision).
+        secondStrongClosed: receiptSecondStrongEntries(consensus, 'closed').filter(sameRow) }));
     });
   });
   return out;
@@ -11218,6 +11221,10 @@ function receiptSamePriceModelDecision(row, dispute, built = tnuvaBuildCodeIndex
       || row.capability !== 'checkable' || row.result !== 'match'
       || !row.printedVsCatalog || row.printedVsCatalog.off) return false;
   if (dispute.fields.some(item => item.field !== 'code' && !RECEIPT_DISPUTE_INFORMATIONAL_FIELDS.has(item.field))) return false;
+  // v143, מהביקורת: שורה שהקריאה החזקה השנייה של שירות 19 סגרה בה כמות או כסף. ב-142 השדה
+  // הזה היה עדיין במחלוקת והתנאי שלמעלה עצר כאן; בלי זה הקריאה הרביעית — שלעולם אינה נוגעת
+  // בקוד (C2) — הייתה מכריעה את הזהות בעקיפין. הקוד נשאר אצל העובד, כמו ב-142.
+  if (Array.isArray(dispute.secondStrongClosed) && dispute.secondStrongClosed.length) return false;
   const codes = dispute.fields.filter(item => item.field === 'code');
   if (codes.length !== 1) return false;
   const selectedCode = tnuvaCodeOf(codes[0].selected), otherCode = tnuvaCodeOf(codes[0].other);
