@@ -156,6 +156,8 @@ test('v143: a field the fourth read did not confirm stays with the worker — th
 // שורה אחת באותו עמוד ומספר שורה, באותו קוד, וקוד שמופיע אצלה פעם אחת — וכשורת פריטים רגילה.
 test('v143: a fourth read that was not matched to the printed line, or saw a credit note or a deposit there, is never shown as a confirmation', async () => {
   const unmatched = { stage: 'second_strong_read', value: null, seen: false, unmatched: 'other_code' };
+  // מהסבב הרביעי: הטבלה שלה אינה מתיישרת (המספרים זזו שורה תחת עמודת קוד שלמה) — גם זה "לא ראתה".
+  const slid = { stage: 'second_strong_read', value: null, seen: false, unmatched: 'price_differs' };
   const credit = value => ({ stage: 'second_strong_read', value, ineligible: 'credit_or_returns' });
   const deposit = value => ({ stage: 'second_strong_read', value, ineligible: 'deposit_row' });
   for (const [reason, quantityExtra, totalExtra, quantityLine, totalLine, diagnosticsLine] of [
@@ -163,6 +165,9 @@ test('v143: a fourth read that was not matched to the printed line, or saw a cre
     ['not_matched', unmatched, unmatched, 'כמות: 6 מול 13, 17 · קריאה רביעית: לא ראתה את השורה',
       'סכום שורה: 20.82 מול 45.11, 58.99 · קריאה רביעית: לא ראתה את השורה',
       'לעובד (not_matched) · שורה 2: כמות 6 · consensus_escalation=6✓ consensus_1=13 consensus_2=17 second_strong_read=לא ראתה (other_code)'],
+    ['not_matched', slid, slid, 'כמות: 6 מול 13, 17 · קריאה רביעית: לא ראתה את השורה',
+      'סכום שורה: 20.82 מול 45.11, 58.99 · קריאה רביעית: לא ראתה את השורה',
+      'לעובד (not_matched) · שורה 2: כמות 6 · consensus_escalation=6✓ consensus_1=13 consensus_2=17 second_strong_read=לא ראתה (price_differs)'],
     // היא קראה בשורה בדיוק את מה ש-Terra קרא, אבל ראתה בתעודה זיכוי: הערך שלה מוצג עם הסיבה, ואינו אישור.
     ['not_eligible', credit(6), credit(20.82), 'כמות: 6 מול 13, 17 · קריאה רביעית: 6 (קראה את התעודה כזיכוי או עם החזרות — לא נספרה)',
       'סכום שורה: 20.82 מול 45.11, 58.99 · קריאה רביעית: 20.82 (קראה את התעודה כזיכוי או עם החזרות — לא נספרה)',

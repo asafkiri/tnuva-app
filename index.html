@@ -11433,7 +11433,8 @@ function receiptRowDisputeHtml(dispute) {
   const second = dispute.secondStrong && Array.isArray(dispute.secondStrong.open) ? dispute.secondStrong : null;
   const askedOf = item => (second && second.open.find(entry => entry.field === item.field)) || null;
   // שירות 19, מהביקורת (סבב שלישי): קריאה שלא הותאמה לשורה המודפסת שנשאלה (unmatched — קוד אחר
-  // באותה שורה, שתי שורות באותו מספר, או קוד שמופיע אצלה פעמיים) מגיעה כ-seen:false, ולכן "לא ראתה
+  // באותה שורה, שתי שורות באותו מספר, או קוד שמופיע אצלה פעמיים; ומהסבב הרביעי גם טבלה שאינה
+  // מתיישרת: lines_differ, code_moved, numbers_missing, price_differs) מגיעה כ-seen:false, ולכן "לא ראתה
   // את השורה". קריאה שקראה את השורה אבל ראתה בתעודה זיכוי, מינוס או החזרות, או קראה את השורה כפיקדון
   // או כהחזרה (ineligible), אינה נספרת: הערך שלה מוצג עם הסיבה, כדי שלא ייראה כמו אישור.
   const readValue = read => read && read.seen === false ? 'לא ראתה את השורה'
