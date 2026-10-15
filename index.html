@@ -743,7 +743,7 @@ let receiptDupConfirmed = false; // אישור שמירה למרות חשד לכ
 const RECEIPT_DRAFT_KEY = 'tn_receipt_draft';
 let receivingDigitsMissTimer = null;
 let receivingDigitsMissNotified = '';
-const APP_VERSION = '140'; // שמירת מבצעים לשנתיים וזיכויי מרכזת בתעודות
+const APP_VERSION = '141'; // קריאת ההכרעה לא תמיד נבחרת; קריאה בודדת בלי עד מסומנת
 // גרסה 73: מוצר בלי מחיר קופה — חלון הכמות מציג מיד את העלות ליח׳ (ללא מע״מ) ופותח שדה להקלדת המחיר שעובר בקופה, בלי לנדוד למסך המחירים
 // v40: תג גרסה קבוע בפינת המסך — לדעת בשנייה איזו גרסה באמת רצה על המכשיר
 // (עוזר במיוחד מול מטמון ה-PWA). pointer-events:none — לעולם לא חוסם מגע.
@@ -1178,6 +1178,27 @@ function tnuvaPhotoGateHtml() {
     '<button data-role="rc-photo-quantity" ' + (ready ? '' : 'disabled') + ' class="btn-tap w-full py-3 mt-2 bg-white border-2 border-emerald-300 text-emerald-800 rounded-xl font-black text-base">פענח תעודה — הכמויות נבדקות ידנית</button>' +
     '<button data-role="rc-photo-manual" ' + (aiScanBusy ? 'disabled' : '') + ' class="btn-tap w-full py-3 text-sm font-bold text-slate-500">הקלדת סכום ומספר פריטים ידנית</button>' + receivingNoDocGateHtml() + '</div>';
 }
+// v141: קריאה אחת בלי אף עד אינה קריאה מאומתת. כשהקריאה המקבילה נפלה וגם
+// קריאת ההכרעה לא הושלמה, אין מחלוקת — כי אין עם מי לחלוק — וזה נראה בדיוק
+// כמו הסכמה. שירות 17 אומר זאת במפורש (unverifiedSingleRead); מול שרת ישן זה
+// נגזר מהשדות שכבר נשמרים: נוסו כמה קריאות, הושלמה אחת בלבד, ההסלמה לא
+// הושלמה, ולא קריאת ההצלה של סכום הביקורת נבחרה (אז הקריאה הזולה היא עדה לה).
+function tnuvaUnverifiedSingleRead(meta) {
+  const consensus = meta && meta.consensus;
+  if (!meta || meta.ok === false || !consensus || consensus.attempted !== true) return false;
+  if (typeof consensus.unverifiedSingleRead === 'boolean') return consensus.unverifiedSingleRead;
+  if (typeof consensus.completedReads !== 'number' || consensus.completedReads >= 2 || consensus.escalated === true) return false;
+  const attempts = meta.scanAudit && Array.isArray(meta.scanAudit.attempts) ? meta.scanAudit.attempts : [];
+  return !attempts.some(attempt => attempt && attempt.selected === true && attempt.stage === 'checksum_retry');
+}
+// ההודעה אינה חוסמת: הנייר עצמו נבדק כרגיל, ורק אין קריאה שנייה שמאשרת את השורות.
+function tnuvaUnverifiedReadHtml() {
+  const docs = ((aiScanResponse && aiScanResponse.perDocument) || []).filter(tnuvaUnverifiedSingleRead);
+  if (!docs.length) return '';
+  const label = aiScanDocuments.length > 1 ? 'תעודה ' + docs.map(meta => Number(meta.docIndex) + 1).join(', ') + ': ' : '';
+  return '<div data-unverified-read class="rounded-xl bg-amber-50 border border-amber-300 p-2 mb-2 text-[11px] font-black text-amber-900"><i class="fa-solid fa-triangle-exclamation"></i> ' +
+    htmlEscape(label) + 'רק קריאה אחת של הצילום הצליחה, והאימות לא הושלם — בדוק את השורות מול הנייר, או צלם שוב.</div>';
+}
 function tnuvaPaperStatusHtml() {
   if (receiptStorageWarning) return '<div class="rounded-xl bg-amber-50 border border-amber-300 p-3 mb-3 font-bold text-amber-900">' + htmlEscape(receiptStorageWarning) + '</div>';
   if (receiptEntryMode !== 'photo') return '';
@@ -1186,8 +1207,8 @@ function tnuvaPaperStatusHtml() {
     // v104: הקריאה שמוצגת שרדה ניסיון מאוחר שנכשל, ולכן היא שייכת לצילום הקודם.
     (aiScanDocuments.some(doc => doc && doc.scanResult && doc.scanResult.staleAfterFailure)
       ? '<div class="rounded-xl bg-amber-50 border border-amber-300 p-2 mb-2 text-[11px] font-black text-amber-900"><i class="fa-solid fa-triangle-exclamation"></i> הצילום האחרון לא נקרא, ולכן מוצגת הקריאה הקודמת של התעודה. אם צילמת תעודה אחרת — סרוק שוב לפני הסיום.</div>'
-      : '');
-  if (receiptPaperScanState === 'failed' || receiptPaperScanState === 'interrupted') return '<div class="rounded-xl bg-amber-50 border border-amber-300 p-3 mb-3 text-sm font-bold text-amber-900">אפשר להמשיך בספירה. לפני הסיום צריך להשלים את נתוני התעודה.' +
+      : '') + tnuvaUnverifiedReadHtml();
+  if (receiptPaperScanState === 'failed' || receiptPaperScanState === 'interrupted') return tnuvaUnverifiedReadHtml() + '<div class="rounded-xl bg-amber-50 border border-amber-300 p-3 mb-3 text-sm font-bold text-amber-900">אפשר להמשיך בספירה. לפני הסיום צריך להשלים את נתוני התעודה.' +
     tnuvaPaperProblemsHtml('mt-1 text-xs') +
     '<button data-role="rc-photo-repair" class="btn-tap w-full bg-white border border-amber-300 rounded-xl py-2 mt-2">בדוק צילומים / הוסף עמוד חסר</button>' +
     '<button data-role="rc-photo-manual" class="btn-tap w-full py-2 text-xs underline">או הקלד סכום ומספר פריטים</button></div>';
@@ -6241,10 +6262,12 @@ function receiptManualReceivingHtml() {
   const problems = receiptPaperScanProblems.length ? receiptPaperScanProblems : [aiScanError || 'הפענוח לא הושלם. בדוק את צילומי התעודה כדי להמשיך.'];
   const status = running
     ? '<div role="status" class="rounded-xl bg-blue-50 border border-blue-200 p-4 mb-3 text-base font-bold text-blue-800"><i class="fa-solid fa-circle-notch fa-spin"></i> ' + htmlEscape(aiScanProgressText || 'מפענח את התעודה…') + '<div class="mt-2 text-sm">בסיום הפענוח אפשר לאשר את הכמויות או לדווח על חוסרים ועודפים.</div></div>'
-    : ready ? ''
+    // v141: המסך הזה אינו עובר דרך tnuvaPaperStatusHtml, ולכן הודעת הקריאה הבודדת
+    // נוספת כאן במפורש — בדיוק כאן המשתמש מאשר את כל הכמויות שנקראו בלחיצה אחת.
+    : ready ? tnuvaUnverifiedReadHtml()
     // v110: אותו חשבון ואותן בחירות כמו בקליטה בסריקה. עד כאן המסך הזה הציג רק
     // "סכומי השורות ... אינם שווים" וכפתור צילום, בלי מספר אחד להשוות לנייר.
-    : '<div role="status" class="rounded-xl bg-amber-50 border border-amber-300 p-4 mb-3 text-base font-bold text-amber-900">' + (tnuvaSummaryGuideDocs().length && receiptPaperScanState === 'failed' ? '' : 'צריך להשלים את פענוח התעודה') +
+    : tnuvaUnverifiedReadHtml() + '<div role="status" class="rounded-xl bg-amber-50 border border-amber-300 p-4 mb-3 text-base font-bold text-amber-900">' + (tnuvaSummaryGuideDocs().length && receiptPaperScanState === 'failed' ? '' : 'צריך להשלים את פענוח התעודה') +
       (receiptPaperScanProblems.length ? tnuvaPaperProblemsHtml('mt-2 text-sm') : '<div class="mt-2 text-sm">' + problems.map(htmlEscape).join('<br>') + '</div>') +
       '<button data-role="rc-photo-repair" class="btn-tap w-full bg-white border border-amber-300 rounded-xl py-3 mt-3">בדוק את צילומי התעודה / צלם שוב</button>' +
       '<button data-role="rc-photo-manual" class="btn-tap w-full py-2 text-xs underline">או הקלד סכום ומספר פריטים</button></div>';
@@ -10879,8 +10902,25 @@ function receiptSetRowDecision(row, type, extra) {
 // ההשוואה הישנה — נזרקת כולה, גם כשהתשובה הגיעה משרת ישן. שירות 14 מיישר
 // שורות לפי תוכן ואינו שולח את השדה הזה.
 const RECEIPT_DISPUTE_DOCUMENT_FIELDS = new Set(['rowCount']);
+// v141: שירות 17 מסלים רק על הבדל בשדה שמשנה החלטה. הבדל בתאריך, בעמוד, באחוז
+// המע"מ, בסכום המע"מ, בסכום כולל מע"מ ובהפרש העיגול נמסר עם trigger:false —
+// מידע בלבד. שדה כזה אינו פותח מחלוקת, אינו נספר כ"הוכרע מול המאגר" ואינו
+// מוצג בכרטיס — גם כשהגיע משרת ישן שלא סימן אותו.
+const RECEIPT_CONSENSUS_NON_TRIGGER_FIELDS = new Set(['docDate', 'sourcePage', 'vatPct', 'vatAmount', 'totalInclVat', 'roundingDiff']);
+function receiptConsensusTriggerField(field) {
+  return !!field && field.trigger !== false && !RECEIPT_CONSENSUS_NON_TRIGGER_FIELDS.has(String(field.field || ''));
+}
+// v141: משירות 17 קריאת ההכרעה אינה מנצחת מעצם היותה יקרה — נבחרת הקריאה
+// שהנייר שלה נסגר הכי טוב, ובשוויון קריאת ההכרעה. escalated אומר רק שהקריאה
+// השלישית רצה; escalationSelected אומר אם היא זו שנבחרה. שרת ישן (16 ומטה)
+// אינו שולח את השדה, ושם הסלמה שהושלמה נבחרה תמיד.
+function receiptEscalationSelected(consensus) {
+  if (!consensus || consensus.escalated !== true) return false;
+  return typeof consensus.escalationSelected === 'boolean' ? consensus.escalationSelected : true;
+}
 // ההקלה חלה רק כשקריאה של מודל ההסלמה נבחרה בפועל. עצם ניסיון ההסלמה
-// אינו מספיק: הוא עשוי להיכשל, או לרוץ על אותו מודל כמו הקריאות הראשונות.
+// אינו מספיק: הוא עשוי להיכשל, לרוץ על אותו מודל כמו הקריאות הראשונות, או
+// (משירות 17) להפסיד לקריאה זולה שנסגרה טוב יותר מול הנייר.
 function receiptSelectedStrongerModel(meta) {
   const consensus = meta && meta.consensus;
   const base = consensus && consensus.model;
@@ -10895,7 +10935,7 @@ function receiptSelectedStrongerModel(meta) {
     return retry && retry !== base && attempt.requestedModel === retry ? retry : null;
   }
   // תאימות לטיוטות ששמרו את שם המודל שנבחר, בלי יומן ניסיונות מלא.
-  const retry = meta.checksumRetryAttempted && meta.checksumRetryModel || (consensus.escalated && consensus.escalationModel);
+  const retry = meta.checksumRetryAttempted && meta.checksumRetryModel || (receiptEscalationSelected(consensus) && consensus.escalationModel);
   return retry && retry !== base && meta.model === retry ? retry : null;
 }
 function receiptConsensusDisputes() {
@@ -10906,10 +10946,12 @@ function receiptConsensusDisputes() {
     consensus.disputedRows.forEach(item => {
       const rowIndex = Number(item && item.rowIndex);
       if (!Number.isInteger(rowIndex)) return;
-      const fields = Array.isArray(item.fields) ? item.fields : [];
+      // v141: שורה שהקריאות נחלקו בה רק על שדה מידע אינה מחלוקת כלל.
+      const fields = (Array.isArray(item.fields) ? item.fields : []).filter(receiptConsensusTriggerField);
       if (!fields.length || fields.some(field => RECEIPT_DISPUTE_DOCUMENT_FIELDS.has(String((field && field.field) || '')))) return;
-      out.set(Number(meta.docIndex) + ':' + rowIndex, Object.assign({}, item, { docIndex: Number(meta.docIndex),
+      out.set(Number(meta.docIndex) + ':' + rowIndex, Object.assign({}, item, { fields, docIndex: Number(meta.docIndex),
         escalated: consensus.escalated === true, escalationModel: consensus.escalationModel || null,
+        escalationSelected: receiptEscalationSelected(consensus),
         selectedStrongerModel: receiptSelectedStrongerModel(meta) }));
     });
   });
@@ -11134,10 +11176,17 @@ function receiptRowDisputeHtml(dispute) {
   const line = item => item.field === 'row' ? 'רק הקריאה שנבחרה ראתה את השורה הזאת'
     : htmlEscape(names[item.field] || item.field) + ': ' + htmlEscape(show(item.selected)) + ' מול ' + htmlEscape(show(item.other)) +
       (Number(item.confirmed) > 0 ? ' · קריאה נוספת קראה כמו הקריאה שנבחרה' : '');
+  // v141: "הכריע" נאמר רק כשקריאה של המודל החזק היא שנבחרה. משירות 17 קריאת
+  // ההכרעה יכולה לרוץ ולהפסיד לקריאה זולה שנסגרה טוב יותר מול הנייר — אז היא
+  // עדה בלבד, וההכרעה נשארת אצל המשתמש. שרת ישן: escalationSelected נגזר מ-escalated.
+  const decidedBy = dispute.escalationSelected ? (dispute.escalationModel || 'המודל היקר')
+    : (dispute.escalated && dispute.selectedStrongerModel) || '';
   return '<div class="mt-2 rounded-lg bg-amber-50 border border-amber-200 p-2 text-[11px] font-bold text-amber-900">' +
     '<div>שתי הסריקות של הצילום לא קראו את השורה אותו דבר:</div>' +
     dispute.fields.map(item => '<div dir="rtl">' + line(item) + '</div>').join('') +
-    (dispute.escalated ? '<div class="mt-1">הכריע ' + htmlEscape(dispute.escalationModel || 'המודל היקר') + ' בקריאה שלישית.</div>'
+    (decidedBy ? '<div class="mt-1">הכריע ' + htmlEscape(decidedBy) + ' בקריאה שלישית.</div>'
+      : dispute.escalated ? '<div class="mt-1">נערכה קריאה שלישית ב־' + htmlEscape(dispute.escalationModel || 'המודל היקר') +
+        ', אבל נבחרה הקריאה שנסגרה טוב יותר מול הנייר — ההכרעה כאן שלך.</div>'
       : '<div class="mt-1">הקריאה השלישית לא הושלמה — ההכרעה כאן שלך.</div>') + '</div>';
 }
 function receiptRowHeadHtml(row) {

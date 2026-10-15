@@ -137,7 +137,11 @@ test('failed, same-model and unselected escalations do not settle equal-price id
     { model: 'gpt-5.6-luna' },
     { model: null },
     { scanAudit: { attempts: [{ stage: 'consensus_1', requestedModel: 'gpt-5.6-luna', selected: true },
-      { stage: 'consensus_escalation', requestedModel: 'gpt-5.6-terra', selected: false }] } }
+      { stage: 'consensus_escalation', requestedModel: 'gpt-5.6-terra', selected: false }] } },
+    // v141: שירות 17 אומר במפורש שקריאת ההכרעה לא נבחרה — גם בלי יומן ניסיונות,
+    // ושם המודל אינו גובר על כך.
+    { model: 'gpt-5.6-luna', consensus: { ...source.paper.consensus, escalationSelected: false } },
+    { consensus: { ...source.paper.consensus, escalationSelected: false } }
   ]) {
     const c = await scanned({ paper: { ...source.paper, ...changed } });
     assert.deepEqual(actions(c).disputed.map(item => item.line), [1]);
@@ -156,6 +160,89 @@ test('the selected attempt proves escalation or checksum-retry identity even wit
     assert.deepEqual(actions(c).disputed, []);
     assert.equal(actions(c).modelSettled, 1);
   }
+});
+
+// v141: משירות 17 קריאת ההכרעה אינה מנצחת מעצם היותה יקרה. כשקריאה זולה נסגרה
+// טוב יותר מול הנייר היא שנבחרת, וקריאת ההכרעה נשארת עדה — המסך אינו אומר שהיא הכריעה.
+const v17 = (selected, fields = [{ field: 'quantity', selected: 10, other: 16 }]) => {
+  const source = disputeOnFirstRow(fields);
+  return { paper: { ...source.paper, model: selected ? 'gpt-5.6-terra' : 'gpt-5.6-luna', serviceVersion: 17,
+    consensus: { ...source.paper.consensus, escalationSelected: selected, unverifiedSingleRead: false },
+    scanAudit: { version: 1, attempts: [
+      { stage: 'consensus_1', requestedModel: 'gpt-5.6-luna', selected: !selected, paperError: 0 },
+      { stage: 'consensus_2', requestedModel: 'gpt-5.6-luna', selected: false, paperError: 0 },
+      { stage: 'consensus_escalation', requestedModel: 'gpt-5.6-terra', selected, paperError: selected ? 0 : 2 }] } } };
+};
+const decided = /הכריע gpt-5\.6-terra בקריאה שלישית/;
+const witnessOnly = /נערכה קריאה שלישית ב־gpt-5\.6-terra, אבל נבחרה הקריאה שנסגרה טוב יותר מול הנייר — ההכרעה כאן שלך/;
+
+test('v141: a cheap read selected after the escalation is never worded as the strong model\'s decision', async () => {
+  const c = await scanned(v17(false));
+  assert.deepEqual(actions(c).disputed.map(item => item.line), [1]);
+  const view = html(c);
+  assert.doesNotMatch(view, decided);
+  assert.match(view, witnessOnly);
+  assert.doesNotMatch(view, /הקריאה השלישית לא הושלמה/, 'the third read did complete');
+  // ושתי זהויות באותו מחיר אינן נסגרות "לפי המודל החזק" כשהוא לא נבחר.
+  const identity = await scanned(v17(false, [{ field: 'code', selected: '14761056', other: '14761414' }]));
+  assert.equal(actions(identity).modelSettled, 0);
+  assert.deepEqual(actions(identity).disputed.map(item => item.line), [1]);
+  assert.doesNotMatch(html(identity), /לפי המודל החזק/);
+  assert.match(html(identity), witnessOnly);
+  // טיוטה ששוחזרה אומרת את אותו דבר.
+  identity.run('saveReceiptDraft()');
+  const restored = harness.runtime('tnuva', { data, storage: identity.storage });
+  restored.run('restoreReceiptDraft()');
+  assert.equal(actions(restored).modelSettled, 0);
+  assert.match(html(restored), witnessOnly);
+  assert.equal(restored.requests.length, 0);
+});
+
+test('v141: when the strong read is selected the card and the same-price rule stay as they were', async () => {
+  // שירות 17 שבחר בקריאת ההכרעה, ושרת ישן שאינו שולח escalationSelected כלל.
+  for (const source of [v17(true), disputeOnFirstRow([{ field: 'quantity', selected: 10, other: 16 }])]) {
+    const c = await scanned(source);
+    assert.deepEqual(actions(c).disputed.map(item => item.line), [1]);
+    assert.match(html(c), decided);
+    assert.doesNotMatch(html(c), witnessOnly);
+  }
+  const identity = await scanned(v17(true, [{ field: 'code', selected: '14761056', other: '14761414' }]));
+  assert.equal(actions(identity).modelSettled, 1);
+  assert.deepEqual(actions(identity).disputed, []);
+  // והסלמה שנכשלה נשארת "לא הושלמה".
+  const failed = await scanned({ paper: { ...data.paper, model: 'gpt-5.6-luna',
+    consensus: { ...disputeOnFirstRow([]).paper.consensus, escalated: false, escalationModel: null, escalationError: 'network',
+      escalationSelected: false, disputedRows: [{ noteIndex: 0, rowIndex: 0, lineNumber: 1, code: '14761056', description: 'מעדן שוקולד חלב YOLO',
+        fields: [{ field: 'quantity', selected: 10, other: 16 }] }] } } });
+  assert.match(html(failed), /הקריאה השלישית לא הושלמה — ההכרעה כאן שלך/);
+  assert.doesNotMatch(html(failed), decided);
+});
+
+// v141: שירות 17 אינו מסלים על הבדל בשדה מידע (תאריך, עמוד, מע"מ, עיגול), ומסמן
+// אותו ב-diffs עם trigger:false. הבדל כזה אינו פותח כרטיס ואינו נספר כהכרעה.
+test('v141: informational differences never open a card or count as settled', async () => {
+  const baseline = actions(await scanned(disputeOnFirstRow([])));
+  assert.equal(baseline.settled, 0);
+  // הקריאות הסכימו על כל שדה שמשנה החלטה; ההבדלים שנמסרו הם מידע בלבד.
+  const agreed = await scanned({ paper: { ...data.paper, model: 'gpt-5.6-luna', serviceVersion: 17,
+    consensus: { ...consensus, agreed: true, reason: null, escalated: false, escalationModel: null,
+      escalationSelected: false, unverifiedSingleRead: false, disputedRows: [], missingRows: [],
+      diffs: [{ noteIndex: 0, scope: 'document', field: 'docDate', values: ['17/09/2026', '16/09/2026'], trigger: false },
+        { noteIndex: 0, scope: 'document', field: 'vatAmount', values: [44.1, 44.2], trigger: false },
+        { noteIndex: 0, scope: 'row', rowIndex: 0, otherRowIndex: 0, lineNumber: 1, field: 'sourcePage', values: [1, 2], trigger: false }] } } });
+  assert.deepEqual(actions(agreed), baseline);
+  assert.doesNotMatch(html(agreed), /שתי הסריקות של הצילום לא קראו|הסריקות נחלקו|הוכרעו מול המאגר|data-unverified-read/);
+  // שורה שהקריאות נחלקו בה רק על העמוד אינה מחלוקת — לא שאלה, ולא "הוכרעה מול המאגר".
+  const page = await scanned(disputeOnFirstRow([{ field: 'sourcePage', selected: 1, other: 2 }]));
+  assert.deepEqual(actions(page), baseline);
+  assert.doesNotMatch(html(page), /עמוד: 1 מול 2|הוכרעו מול המאגר/);
+  // לצד שדה שכן מכריע — השדה המכריע נשאר, והעמוד אינו מוצג.
+  const mixed = await scanned(disputeOnFirstRow([{ field: 'quantity', selected: 10, other: 16 }, { field: 'sourcePage', selected: 1, other: 2 }]));
+  assert.deepEqual(actions(mixed).disputed, [{ line: 1, fields: [{ field: 'quantity', selected: 10, other: 16 }] }]);
+  assert.doesNotMatch(html(mixed), /עמוד: 1 מול 2/);
+  // ושדה שהשרת עצמו סימן trigger:false אינו מחלוקת גם אם שמו אינו מוכר כאן.
+  const marked = await scanned(disputeOnFirstRow([{ field: 'unitOfMeasure', selected: 'kg', other: 'unit', trigger: false }]));
+  assert.deepEqual(actions(marked), baseline);
 });
 
 test('same base price with different deposits or billing units remains a decision', async () => {
