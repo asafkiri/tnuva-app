@@ -153,3 +153,11 @@ test('no printed document number appears anywhere, and a single paper gets no or
   assert.doesNotMatch(html, /תעודה 1/);
   assert.equal(c.run(`'docs' in handoffPayload('receiving').summary`), false);
 });
+
+test('a mixed paper whose returns exceed its goods closes with its own minus, and stays out of goods receiving', async () => {
+  const c = await scan();
+  const check = read(c, `tnuvaPaperCheck({ ...aiScanResponse.scan.documents[0].__tnuvaPaper, docType: 'invoice', promoDiscountExVat: 0,
+    rows: [{ section: 'items', sourcePage: 1, quantity: 10, unitPriceExVat: 5, lineTotalExVat: 50 }, { section: 'returns', sourcePage: 1, quantity: 16, unitPriceExVat: 5, lineTotalExVat: 80 }],
+    itemsSectionTotalExVat: 50, itemsPrintedLines: 1, returnsSectionTotalExVat: 80, returnsPrintedLines: 1, subtotalExVat: -30, vatAmount: -5.4, totalInclVat: -35.4 }, 1)`);
+  assert.equal(check.ok, true); assert.equal(check.receivable, false); assert.deepEqual(check.problems, []);
+});
