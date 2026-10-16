@@ -1,12 +1,13 @@
 // v143: שירות 19 — הקריאה החזקה השנייה (Terra#2). הכרעת הבעלים: שתי הקריאות הזולות
 // מסכימות — מתקבל. נחלקו — Terra קורא, ושדה ש-Terra מסכים בו עם אחת מהן מתקבל. שדה
-// ש-Terra אינו מסכים בו עם אף אחת — קריאה חזקה שנייה, ואם היא קוראת אותו כמו Terra הוא
-// מתקבל בלי פעולה של העובד. אחרת העובד מאשר או מתקן, כמו היום, עם הערכים של הקריאה
-// שנבחרה ומה שכל קריאה ראתה. "מתקבל" הוא לפי שדה ושורה, לעולם לא לפי תעודה.
-// השרת עושה את כל זה: שדה שהתקבל פשוט אינו ב-disputedRows. הבדיקות כאן מריצות את
-// האפליקציה כולה מול שירות 19 מדומה, ובודקות שהיא קוראת את מה שנוסף — השלב
-// second_strong_read, הרשומה consensus.secondStrongRead וקריאה רביעית בתוך משבצת
-// קריאת ההצלה — ושמול שירות 18 (וגם שירות 19 עם SECOND_STRONG_READ=off) הכול כמו ב-142.
+// ש-Terra אינו מסכים בו עם אף אחת — קריאה חזקה שנייה של כל התעודה, ורק אם הקריאה שלה כולה
+// זהה לקריאה של Terra (והנייר והשורה נסגרים) השדה מתקבל בלי פעולה של העובד. אחרת העובד
+// מאשר או מתקן, כמו היום, עם הערכים של הקריאה שנבחרה ומה שכל קריאה זולה ראתה. "מתקבל" הוא
+// לפי שדה ושורה, לעולם לא לפי תעודה. השרת עושה את כל זה: שדה שהתקבל פשוט אינו ב-disputedRows.
+// הבדיקות כאן מריצות את האפליקציה כולה מול שירות 19 מדומה, ובודקות שהיא קוראת את מה שנוסף —
+// השלב second_strong_read והרשומה consensus.secondStrongRead (closed עם closedBy, open עם
+// not_identical או failed, ו-differences) — ושמול שירות 18 (וגם שירות 19 עם SECOND_STRONG_READ=off,
+// וגם כשהמשבצת של קריאת ההצלה) הכול כמו ב-142.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { runtime } from './receipt-scan-harness.mjs';
@@ -28,17 +29,19 @@ const quantity = { field: 'quantity', selected: 6, other: 13, confirmed: 0 };
 const total = { field: 'lineTotalExVat', selected: 20.82, other: 45.11, confirmed: 0 };
 const code = { field: 'code', selected: '14761414', other: '14761056', confirmed: 0 };
 const disputedRow = fields => ({ noteIndex: 0, rowIndex: 1, lineNumber: 2, code: '14761414', description: 'מעדן שכבות YOLO', fields });
-// בדיוק כמו השרת: הקריאה שנבחרה ראשונה, אחריה העדים לפי השלב, ובסוף הקריאה הנוספת.
+// בדיוק כמו השרת: הקריאה שנבחרה ראשונה, אחריה העדים לפי השלב, ובשדה שנסגר — בסוף הקריאה הנוספת.
 const place = { noteIndex: 0, rowIndex: 1, page: 1, lineNumber: 2 };
 const reads = (values, extra) => [{ stage: 'consensus_escalation', value: values[0], selected: true },
   { stage: 'consensus_1', value: values[1] }, { stage: 'consensus_2', value: values[2] }].concat(extra ? [extra] : []);
 const QUANTITY_READS = [6, 13, 17], TOTAL_READS = [20.82, 45.11, 58.99];
-const closedEntry = (field, values, stage = 'second_strong_read') =>
-  ({ ...place, field, value: values[0], reads: reads(values, { stage, value: values[0] }), rule: 'second_strong_read' });
-const openEntry = (field, values, reason, extra) => ({ ...place, field, value: values[0], reads: reads(values, extra), reason });
+const closedEntry = (field, values) =>
+  ({ ...place, field, value: values[0], reads: reads(values, { stage: 'second_strong_read', value: values[0] }), closedBy: 'second_strong_read' });
+const openEntry = (field, values, reason) => ({ ...place, field, value: values[0], reads: reads(values), reason });
+const rowDifference = (lineNumber, field, values) => ({ noteIndex: 0, scope: 'row', rowIndex: lineNumber - 1, lineNumber, field, values });
 const usage = (input, output) => ({ input_tokens: input, output_tokens: output });
-const record = (changes = {}) => ({ outcome: 'read', stage: 'second_strong_read', model: 'gpt-5.6-terra', requestId: 'fixture-4',
-  asked: 2, usage: usage(301, 31), closed: [], open: [], ...changes });
+const record = (changes = {}) => ({ outcome: 'identical', stage: 'second_strong_read', model: 'gpt-5.6-terra', requestId: 'fixture-4',
+  asked: 2, usage: usage(301, 31), closed: [], open: [], notAsked: [], differences: [], ...changes });
+const notIdentical = (differences, open) => record({ outcome: 'not_identical', differences, open });
 const cheapAndStrong = (escalationSelected = true) => [
   { stage: 'consensus_1', requestedModel: 'gpt-5.6-luna', selected: false, outcome: 'read', usage: usage(101, 11) },
   { stage: 'consensus_2', requestedModel: 'gpt-5.6-luna', selected: false, outcome: 'read', usage: usage(102, 12) },
@@ -79,8 +82,9 @@ const card = c => { const view = html(c); const at = view.indexOf('שתי הסר
 const diagnostics = c => c.run('aiScanDiagnosticsHtml({})');
 const history = c => c.run('tnuvaScanHistoryHtml(tnuvaReceiptScanAudit())');
 const decided = /הכריע gpt-5\.6-terra בקריאה שלישית\./;
-const fourthDisagrees = /<div class="mt-1" data-fourth-read>נערכה גם קריאה רביעית ב־gpt-5\.6-terra, והיא לא אישרה את הקריאה שנבחרה — ההכרעה כאן שלך\.<\/div>/;
-const fourthFailed = /<div class="mt-1" data-fourth-read>נערכה גם קריאה רביעית ב־gpt-5\.6-terra, אבל היא לא הושלמה — ההכרעה כאן שלך\.<\/div>/;
+const fourthDiffers = first => '<div class="mt-1" data-fourth-read>נערכה גם קריאה רביעית של כל התעודה ב־gpt-5.6-terra, והיא לא קראה אותה בדיוק כמו הקריאה שנבחרה' +
+  ' (ההבדל הראשון: ' + first + ') — ההכרעה כאן שלך.</div>';
+const fourthFailed = /<div class="mt-1" data-fourth-read>נערכה גם קריאה רביעית של כל התעודה ב־gpt-5\.6-terra, אבל היא לא הושלמה — ההכרעה כאן שלך\.<\/div>/;
 const notice = /רק קריאה אחת של הצילום הצליחה/;
 
 test('v143: a field the second strong read accepted is simply not a dispute, and the scan details say which and with what value', async () => {
@@ -99,7 +103,7 @@ test('v143: a field the second strong read accepted is simply not a dispute, and
   assert.match(details, /<div data-second-strong-closed class="text-emerald-800">התקבלו בקריאה חזקה שנייה, בלי אישור ידני: שורה 2: כמות 6, סכום שורה 20\.82<\/div>/);
   // והרשומה נשמרת עם הקליטה (scanAudit של התעודה השמורה), בקונצנזוס וביומן הניסיונות.
   const saved = JSON.parse(c.run('JSON.stringify(cloneSafe(tnuvaReceiptScanAudit()))'));
-  assert.deepEqual(saved.perDocument[0].consensus.secondStrongRead.closed.map(item => [item.lineNumber, item.field, item.value, item.rule]),
+  assert.deepEqual(saved.perDocument[0].consensus.secondStrongRead.closed.map(item => [item.lineNumber, item.field, item.value, item.closedBy]),
     [[2, 'quantity', 6, 'second_strong_read'], [2, 'lineTotalExVat', 20.82, 'second_strong_read']]);
   assert.equal(saved.history[0].scanAudit.secondStrongRead.closed.length, 2);
 
@@ -111,32 +115,39 @@ test('v143: a field the second strong read accepted is simply not a dispute, and
   assert.doesNotMatch(history(v18), /data-second-strong-closed/);
 });
 
-test('v143: a field the fourth read did not confirm stays with the worker — the selected value first, then what every read saw', async () => {
-  for (const [reason, quantityExtra, totalExtra, quantityLine, totalLine, last] of [
-    ['disagrees', { stage: 'second_strong_read', value: 9 }, { stage: 'second_strong_read', value: 31.23 },
-      'כמות: 6 מול 13, 17 · קריאה רביעית: 9', 'סכום שורה: 20.82 מול 45.11, 58.99 · קריאה רביעית: 31.23', fourthDisagrees],
-    ['not_seen', { stage: 'second_strong_read', value: null, seen: false }, { stage: 'second_strong_read', value: null, seen: false },
-      'כמות: 6 מול 13, 17 · קריאה רביעית: לא ראתה את השורה', 'סכום שורה: 20.82 מול 45.11, 58.99 · קריאה רביעית: לא ראתה את השורה', fourthDisagrees],
-    // הקריאה הרביעית נכשלה: אין לה ערך, והעדים מוצגים כמו שהם.
-    ['failed', null, null, 'כמות: 6 מול 13, 17', 'סכום שורה: 20.82 מול 45.11, 58.99', fourthFailed]]) {
-    const secondStrongRead = record({ ...(reason === 'failed' ? { outcome: 'failed', error: 'openai_network_error', usage: null } : {}),
-      open: [openEntry('quantity', QUANTITY_READS, reason, quantityExtra), openEntry('lineTotalExVat', TOTAL_READS, reason, totalExtra)] });
+test('v143: a field the fourth read did not settle stays with the worker — the selected value first, what every cheap read saw, and where the fourth read differed', async () => {
+  // הכרעת הבעלים הסופית: הקריאה הרביעית מוכרעת על התעודה כולה. אין לה ערך לפי שדה בכרטיס; השורה האחרונה
+  // אומרת שהיא נערכה, ואיפה קראה אחרת מהקריאה שנבחרה — גם כשההבדל בשורה אחרת או בסיכום.
+  for (const [label, differences, first] of [
+    ['a third value on the asked row', [rowDifference(2, 'quantity', [6, 9]), rowDifference(2, 'lineTotalExVat', [20.82, 31.23])], 'שורה 2, כמות: 6 מול 9'],
+    ['another row', [rowDifference(1, 'code', ['14761056', '14761057'])], 'שורה 1, קוד: 14761056 מול 14761057'],
+    ['a row less', [{ noteIndex: 0, scope: 'document', field: 'rowCount', values: [2, 1] }], 'מספר שורות: 2 מול 1'],
+    ['the printed subtotal', [{ noteIndex: 0, scope: 'document', field: 'subtotalExVat', values: [55.52, 55.53] }], 'סה״כ חייב מע״מ: 55.52 מול 55.53'],
+    ['the row read as a deposit', [rowDifference(2, 'deposit', [false, true])], 'שורה 2, פיקדון: לא מול כן'],
+    ['a credit note', [{ noteIndex: 0, scope: 'document', field: 'docType', values: ['invoice', 'credit'] }], 'סוג התעודה: invoice מול credit']]) {
+    const secondStrongRead = notIdentical(differences, [openEntry('quantity', QUANTITY_READS, 'not_identical'), openEntry('lineTotalExVat', TOTAL_READS, 'not_identical')]);
     const c = await scanned(service({ disputedRows: [disputedRow([quantity, total])], secondStrongRead }));
-    assert.deepEqual(actions(c).disputed, [{ line: 2, fields: ['quantity', 'lineTotalExVat'] }], reason);
+    assert.deepEqual(actions(c).disputed, [{ line: 2, fields: ['quantity', 'lineTotalExVat'] }], label);
     const box = card(c);
-    assert.ok(box.includes('<div dir="rtl">' + quantityLine + '</div><div dir="rtl">' + totalLine + '</div>'), reason + ': ' + box);
-    assert.match(box, decided, reason + ': Terra is still the selected read');
-    assert.match(box, last, reason);
-    if (reason === 'failed') assert.doesNotMatch(box, /קריאה רביעית:/, reason);
+    assert.ok(box.includes('<div dir="rtl">כמות: 6 מול 13, 17</div><div dir="rtl">סכום שורה: 20.82 מול 45.11, 58.99</div>'), label + ': ' + box);
+    assert.doesNotMatch(box, /קריאה רביעית:/, label + ': no per-field value of the fourth read');
+    assert.match(box, decided, label + ': Terra is still the selected read');
+    assert.ok(box.includes(fourthDiffers(first)), label + ': ' + box);
     // הכפתורים של העובד — כמו היום.
-    assert.match(html(c), /data-role="rowfix-confirm" data-doc="0" data-row="1"/, reason);
+    assert.match(html(c), /data-role="rowfix-confirm" data-doc="0" data-row="1"/, label);
   }
+  // הקריאה הרביעית נכשלה: העדים מוצגים כמו שהם, והשורה האחרונה אומרת שלא הושלמה.
+  const failed = await scanned(service({ disputedRows: [disputedRow([quantity, total])], secondStrongRead: record({ outcome: 'failed', error: 'openai_network_error',
+    usage: null, open: [openEntry('quantity', QUANTITY_READS, 'failed'), openEntry('lineTotalExVat', TOTAL_READS, 'failed')] }) }));
+  const failedBox = card(failed);
+  assert.ok(failedBox.includes('<div dir="rtl">כמות: 6 מול 13, 17</div><div dir="rtl">סכום שורה: 20.82 מול 45.11, 58.99</div>'), failedBox);
+  assert.match(failedBox, fourthFailed);
 
   // טיוטה ששוחזרה אומרת את אותו דבר, בלי סריקה נוספת בתשלום.
-  const c = await scanned(service({ disputedRows: [disputedRow([quantity, total])], secondStrongRead: record({
-    open: [openEntry('quantity', QUANTITY_READS, 'disagrees', { stage: 'second_strong_read', value: 9 })] }) }));
+  const c = await scanned(service({ disputedRows: [disputedRow([quantity, total])], secondStrongRead: notIdentical([rowDifference(2, 'quantity', [6, 9])],
+    [openEntry('quantity', QUANTITY_READS, 'not_identical')]) }));
   const before = card(c);
-  assert.match(before, fourthDisagrees);
+  assert.ok(before.includes(fourthDiffers('שורה 2, כמות: 6 מול 9')), before);
   c.run('saveReceiptDraft()');
   const restored = runtime('tnuva', { data: service({ disputedRows: [] }), storage: c.storage });
   restored.run('restoreReceiptDraft()');
@@ -152,64 +163,21 @@ test('v143: a field the fourth read did not confirm stays with the worker — th
   assert.doesNotMatch(v18, /רביעית/);
 });
 
-// שירות 19, מהביקורת (סבב שלישי): הקריאה הרביעית נספרת רק כשקראה את השורה המודפסת שנשאלה — בדיוק
-// שורה אחת באותו עמוד ומספר שורה, באותו קוד, וקוד שמופיע אצלה פעם אחת — וכשורת פריטים רגילה.
-test('v143: a fourth read that was not matched to the printed line, or saw a credit note or a deposit there, is never shown as a confirmation', async () => {
-  const unmatched = { stage: 'second_strong_read', value: null, seen: false, unmatched: 'other_code' };
-  // מהסבב הרביעי: הטבלה שלה אינה מתיישרת (המספרים זזו שורה תחת עמודת קוד שלמה) — גם זה "לא ראתה".
-  const slid = { stage: 'second_strong_read', value: null, seen: false, unmatched: 'price_differs' };
-  // מהסבב החמישי: מספרים שנקראו פעמיים, ותעודה אחרת תחת אותה תווית — גם אלה "לא ראתה".
-  const twice = { stage: 'second_strong_read', value: null, seen: false, unmatched: 'numbers_repeated' };
-  const otherNote = { stage: 'second_strong_read', value: null, seen: false, unmatched: 'other_subtotal' };
-  const credit = value => ({ stage: 'second_strong_read', value, ineligible: 'credit_or_returns' });
-  const deposit = value => ({ stage: 'second_strong_read', value, ineligible: 'deposit_row' });
-  for (const [reason, quantityExtra, totalExtra, quantityLine, totalLine, diagnosticsLine] of [
-    // קוד אחר באותה שורה (הסטה של עמודת הקוד): היא לא ראתה את השורה המודפסת הזאת.
-    ['not_matched', unmatched, unmatched, 'כמות: 6 מול 13, 17 · קריאה רביעית: לא ראתה את השורה',
-      'סכום שורה: 20.82 מול 45.11, 58.99 · קריאה רביעית: לא ראתה את השורה',
-      'לעובד (not_matched) · שורה 2: כמות 6 · consensus_escalation=6✓ consensus_1=13 consensus_2=17 second_strong_read=לא ראתה (other_code)'],
-    ['not_matched', slid, slid, 'כמות: 6 מול 13, 17 · קריאה רביעית: לא ראתה את השורה',
-      'סכום שורה: 20.82 מול 45.11, 58.99 · קריאה רביעית: לא ראתה את השורה',
-      'לעובד (not_matched) · שורה 2: כמות 6 · consensus_escalation=6✓ consensus_1=13 consensus_2=17 second_strong_read=לא ראתה (price_differs)'],
-    ['not_matched', twice, twice, 'כמות: 6 מול 13, 17 · קריאה רביעית: לא ראתה את השורה',
-      'סכום שורה: 20.82 מול 45.11, 58.99 · קריאה רביעית: לא ראתה את השורה',
-      'לעובד (not_matched) · שורה 2: כמות 6 · consensus_escalation=6✓ consensus_1=13 consensus_2=17 second_strong_read=לא ראתה (numbers_repeated)'],
-    ['not_matched', otherNote, otherNote, 'כמות: 6 מול 13, 17 · קריאה רביעית: לא ראתה את השורה',
-      'סכום שורה: 20.82 מול 45.11, 58.99 · קריאה רביעית: לא ראתה את השורה',
-      'לעובד (not_matched) · שורה 2: כמות 6 · consensus_escalation=6✓ consensus_1=13 consensus_2=17 second_strong_read=לא ראתה (other_subtotal)'],
-    // היא קראה בשורה בדיוק את מה ש-Terra קרא, אבל ראתה בתעודה זיכוי: הערך שלה מוצג עם הסיבה, ואינו אישור.
-    ['not_eligible', credit(6), credit(20.82), 'כמות: 6 מול 13, 17 · קריאה רביעית: 6 (קראה את התעודה כזיכוי או עם החזרות — לא נספרה)',
-      'סכום שורה: 20.82 מול 45.11, 58.99 · קריאה רביעית: 20.82 (קראה את התעודה כזיכוי או עם החזרות — לא נספרה)',
-      'לעובד (not_eligible) · שורה 2: כמות 6 · consensus_escalation=6✓ consensus_1=13 consensus_2=17 second_strong_read=6 (לא נספרה: credit_or_returns)'],
-    ['not_eligible', deposit(6), deposit(20.82), 'כמות: 6 מול 13, 17 · קריאה רביעית: 6 (קראה את השורה כפיקדון — לא נספרה)',
-      'סכום שורה: 20.82 מול 45.11, 58.99 · קריאה רביעית: 20.82 (קראה את השורה כפיקדון — לא נספרה)',
-      'לעובד (not_eligible) · שורה 2: כמות 6 · consensus_escalation=6✓ consensus_1=13 consensus_2=17 second_strong_read=6 (לא נספרה: deposit_row)']]) {
-    const secondStrongRead = record({ open: [openEntry('quantity', QUANTITY_READS, reason, quantityExtra), openEntry('lineTotalExVat', TOTAL_READS, reason, totalExtra)] });
-    const c = await scanned(service({ disputedRows: [disputedRow([quantity, total])], secondStrongRead }));
-    assert.deepEqual(actions(c).disputed, [{ line: 2, fields: ['quantity', 'lineTotalExVat'] }], reason);
-    const box = card(c);
-    assert.ok(box.includes('<div dir="rtl">' + quantityLine + '</div><div dir="rtl">' + totalLine + '</div>'), reason + ': ' + box);
-    assert.match(box, decided, reason);
-    assert.match(box, fourthDisagrees, reason);
-    assert.ok(diagnostics(c).includes(diagnosticsLine), reason + '\n' + diagnostics(c));
-  }
-});
-
-test('v143: acceptance is per field — a closed quantity leaves the line total and the code on the card', async () => {
-  // הקריאה הרביעית קראה 6 (כמו Terra) אבל 20.28 בסכום. הקוד שבמחלוקת אינו נשאל כלל (C2):
-  // שתי זהויות באותו מחיר, ובשורה גם סכום פתוח — ולכן גם הקוד נשאר אצל העובד, כמו ב-142.
-  const c = await scanned(service({ disputedRows: [disputedRow([code, total])], secondStrongRead: record({
-    closed: [closedEntry('quantity', QUANTITY_READS)],
-    open: [openEntry('lineTotalExVat', TOTAL_READS, 'disagrees', { stage: 'second_strong_read', value: 20.28 })] }) }));
+test('v143: acceptance is per field — a closed quantity leaves a line total that was not asked, and the code, on the card', async () => {
+  // הקריאה הרביעית קראה את כל התעודה כמו Terra, ולכן הכמות שנשאלה נסגרה. הסכום לא נשאל (רק קריאה זולה
+  // אחת קראה אותו, notAsked), והקוד שבמחלוקת אינו נשאל כלל (C2) — שניהם נשארים אצל העובד, כמו ב-142,
+  // ובלי שורה על קריאה רביעית: היא לא נשאלה עליהם.
+  const c = await scanned(service({ disputedRows: [disputedRow([code, total])], secondStrongRead: record({ asked: 1,
+    closed: [closedEntry('quantity', QUANTITY_READS)], notAsked: [{ ...openEntry('lineTotalExVat', TOTAL_READS, 'lone') }] }) }));
   assert.deepEqual(actions(c).disputed, [{ line: 2, fields: ['code', 'lineTotalExVat'] }]);
   const box = card(c);
-  assert.ok(box.includes('<div dir="rtl">קוד: 14761414 מול 14761056</div><div dir="rtl">סכום שורה: 20.82 מול 45.11, 58.99 · קריאה רביעית: 20.28</div>'), box);
+  assert.ok(box.includes('<div dir="rtl">קוד: 14761414 מול 14761056</div><div dir="rtl">סכום שורה: 20.82 מול 45.11</div>'), box);
   assert.doesNotMatch(box, /כמות:/, 'the accepted quantity is not on the card');
-  assert.match(box, fourthDisagrees);
+  assert.doesNotMatch(box, /רביעית/);
   assert.match(history(c), /התקבלו בקריאה חזקה שנייה, בלי אישור ידני: שורה 2: כמות 6</);
 });
 
-test('v143: the second strong read is never the selected read — the wording and the same-price rule follow the escalation, also in the checksum-retry slot', async () => {
+test('v143: the second strong read is never the selected read — the wording and the same-price rule follow the escalation, and the checksum-retry slot is service 18\'s', async () => {
   // (b) קוד שבמחלוקת בין שתי זהויות באותו מחיר, בשורה שהקריאה הרביעית לא נגעה בה: Terra נבחר,
   // ולכן הזהות נסגרת לפי המודל החזק כמו ב-142 — הקריאה הרביעית, שסגרה כמות בשורה אחרת, אינה משנה זאת.
   const elsewhere = { ...closedEntry('quantity', [10, 13, 17]), rowIndex: 0, lineNumber: 1 };
@@ -237,23 +205,25 @@ test('v143: the second strong read is never the selected read — the wording an
   assert.equal(actions(marked).modelSettled, 0);
   assert.deepEqual(actions(marked).disputed, [{ line: 2, fields: ['code'] }]);
 
-  // (a) המשבצת המשותפת: נייר אחר באותה בקשה צריך הצלה, והקריאה הרביעית היא קריאת ההצלה
-  // עצמה. האפליקציה שולחת תעודה אחת בכל בקשה ולכן אינה מגיעה לכאן, אבל זה חלק מהחוזה של
-  // שירות 19. היא הפסידה — Terra נשאר הקריאה שנבחרה, וההצבעה שלה נרשמה בשלב checksum_retry.
+  // (a) הנייר שנבחר נכשל: המשבצת היא של קריאת ההצלה, כמו בשירות 18 — הכרעת הבעלים הסופית: היא אינה
+  // נשאלת על שום שדה ואינה סוגרת דבר (outcome checksum_retry_slot, והשדה ב-notAsked). שירות 19 מגיע לכאן
+  // רק בסריקה של כמה תעודות, והאפליקציה שולחת אחת, אבל זה חלק מהחוזה. הפסידה או ניצחה — הכרטיס של 142.
+  const slotRecord = record({ outcome: 'checksum_retry_slot', stage: null, model: null, requestId: null, asked: 0, usage: null,
+    notAsked: [{ ...openEntry('quantity', QUANTITY_READS, 'checksum_retry_slot') }] });
+  const v18Lost = card(await scanned(service({ version: 18, disputedRows: [disputedRow([quantity])], checksumRetryAttempted: true, checksumRetryModel: 'gpt-5.6-terra',
+    attempts: cheapAndStrong(true).concat([extraAttempt('checksum_retry')]) })));
   const lost = await scanned(service({ disputedRows: [disputedRow([quantity])], checksumRetryAttempted: true, checksumRetryModel: 'gpt-5.6-terra',
-    attempts: cheapAndStrong(true).concat([extraAttempt('checksum_retry')]),
-    secondStrongRead: record({ stage: 'checksum_retry', asked: 1,
-      open: [openEntry('quantity', QUANTITY_READS, 'disagrees', { stage: 'checksum_retry', value: 9 })] }) }));
+    attempts: cheapAndStrong(true).concat([extraAttempt('checksum_retry')]), secondStrongRead: slotRecord }));
   assert.equal(lost.run('receiptSelectedStrongerModel(aiScanResponse.perDocument[0])'), 'gpt-5.6-terra');
   const lostBox = card(lost);
-  assert.ok(lostBox.includes('<div dir="rtl">כמות: 6 מול 13, 17 · קריאה רביעית: 9</div>'), lostBox);
+  assert.equal(lostBox, v18Lost);
+  assert.ok(lostBox.includes('<div dir="rtl">כמות: 6 מול 13</div>'), lostBox);
   assert.match(lostBox, decided);
-  assert.match(lostBox, fourthDisagrees);
-  // קריאת ההצלה ניצחה: היא הקריאה שנבחרה ואינה מצביעה על עצמה — הכרטיס של 142 (שירות 18).
+  assert.doesNotMatch(lostBox, /רביעית/);
+  // קריאת ההצלה ניצחה: היא הקריאה שנבחרה, כמו בשירות 18.
   const won = await scanned(service({ disputedRows: [disputedRow([quantity])], escalationSelected: false,
     checksumRetryAttempted: true, checksumRetryModel: 'gpt-5.6-terra',
-    attempts: cheapAndStrong(false).concat([extraAttempt('checksum_retry', true)]),
-    secondStrongRead: record({ stage: 'checksum_retry', outcome: 'selected', asked: 1 }) }));
+    attempts: cheapAndStrong(false).concat([extraAttempt('checksum_retry', true)]), secondStrongRead: slotRecord }));
   assert.equal(won.run('receiptSelectedStrongerModel(aiScanResponse.perDocument[0])'), 'gpt-5.6-terra');
   const wonBox = card(won);
   assert.match(wonBox, decided);
@@ -262,27 +232,35 @@ test('v143: the second strong read is never the selected read — the wording an
 });
 
 test('v143: the diagnostics count the tokens of every paid read, the second strong read included, and say what it settled', async () => {
-  const c = await scanned(service({ disputedRows: [disputedRow([total])], secondStrongRead: record({
-    closed: [closedEntry('quantity', QUANTITY_READS)],
-    open: [openEntry('lineTotalExVat', TOTAL_READS, 'disagrees', { stage: 'second_strong_read', value: 20.28 })] }) }));
+  const c = await scanned(service({ disputedRows: [], secondStrongRead: record({
+    closed: [closedEntry('quantity', QUANTITY_READS), closedEntry('lineTotalExVat', TOTAL_READS)] }) }));
   const lines = diagnostics(c);
   for (const expected of [
     'טוקנים · תעודה 1 · consensus_1 · gpt-5.6-luna: כניסה 101 · יציאה 11',
     'טוקנים · תעודה 1 · consensus_2 · gpt-5.6-luna: כניסה 102 · יציאה 12',
     'טוקנים · תעודה 1 · consensus_escalation · gpt-5.6-terra: כניסה 201 · יציאה 21',
     'טוקנים · תעודה 1 · second_strong_read · gpt-5.6-terra: כניסה 301 · יציאה 31',
-    'קריאה חזקה שנייה · תעודה 1 · second_strong_read · gpt-5.6-terra: נשאלו 2 שדות · התקבלו 1 · נשארו לעובד 1',
+    'קריאה חזקה שנייה · תעודה 1 · second_strong_read · gpt-5.6-terra: נשאלו 2 שדות · התקבלו 2 · נשארו לעובד 0 · הקריאה כולה זהה',
     'התקבל · שורה 2: כמות 6 · consensus_escalation=6✓ consensus_1=13 consensus_2=17 second_strong_read=6',
-    'לעובד (disagrees) · שורה 2: סכום שורה 20.82 · consensus_escalation=20.82✓ consensus_1=45.11 consensus_2=58.99 second_strong_read=20.28'
+    'התקבל · שורה 2: סכום שורה 20.82 · consensus_escalation=20.82✓ consensus_1=45.11 consensus_2=58.99 second_strong_read=20.82'
   ]) assert.ok(lines.includes(expected), expected + '\n' + lines);
+  // הקריאה כולה אינה זהה: שום דבר אינו מתקבל, וההבדל הראשון נאמר.
+  const differs = await scanned(service({ disputedRows: [disputedRow([quantity, total])], secondStrongRead: notIdentical([rowDifference(1, 'quantity', [10, 11])],
+    [openEntry('quantity', QUANTITY_READS, 'not_identical'), openEntry('lineTotalExVat', TOTAL_READS, 'not_identical')]) }));
+  const differsLines = diagnostics(differs);
+  for (const expected of [
+    'קריאה חזקה שנייה · תעודה 1 · second_strong_read · gpt-5.6-terra: נשאלו 2 שדות · התקבלו 0 · נשארו לעובד 2 · הקריאה כולה אינה זהה (ההבדל הראשון: שורה 1, כמות: 10 מול 11)',
+    'לעובד (not_identical) · שורה 2: כמות 6 · consensus_escalation=6✓ consensus_1=13 consensus_2=17',
+    'לעובד (not_identical) · שורה 2: סכום שורה 20.82 · consensus_escalation=20.82✓ consensus_1=45.11 consensus_2=58.99'
+  ]) assert.ok(differsLines.includes(expected), expected + '\n' + differsLines);
 
-  // (a) הקריאה הרביעית היא קריאת ההצלה — גם הטוקנים שלה נספרים, ושלב ההצבעה נאמר.
+  // (a) המשבצת של קריאת ההצלה: הטוקנים שלה נספרים, ואין שורה של קריאה חזקה שנייה — היא לא נשאלה.
   const slot = await scanned(service({ disputedRows: [], checksumRetryAttempted: true, checksumRetryModel: 'gpt-5.6-terra',
     attempts: cheapAndStrong(true).concat([extraAttempt('checksum_retry')]),
-    secondStrongRead: record({ stage: 'checksum_retry', asked: 1, closed: [closedEntry('quantity', QUANTITY_READS, 'checksum_retry')] }) }));
+    secondStrongRead: record({ outcome: 'checksum_retry_slot', stage: null, model: null, requestId: null, asked: 0, usage: null }) }));
   const slotLines = diagnostics(slot);
   assert.ok(slotLines.includes('טוקנים · תעודה 1 · checksum_retry · gpt-5.6-terra: כניסה 301 · יציאה 31'), slotLines);
-  assert.ok(slotLines.includes('קריאה חזקה שנייה · תעודה 1 · checksum_retry · gpt-5.6-terra: נשאלו 1 שדות · התקבלו 1 · נשארו לעובד 0'), slotLines);
+  assert.doesNotMatch(slotLines, /קריאה חזקה שנייה/);
   // קריאה רביעית שנכשלה.
   const failed = await scanned(service({ disputedRows: [disputedRow([quantity])], secondStrongRead: record({ outcome: 'failed',
     error: 'openai_network_error', usage: null, asked: 1, open: [openEntry('quantity', QUANTITY_READS, 'failed')] }) }));
