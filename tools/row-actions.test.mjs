@@ -73,7 +73,7 @@ test('a code disagreement the catalog can settle by itself is not a question for
   // שאר השורות של התעודה הזאת (קוד שלא נקרא ושורת מחיר) אינן קשורות.
   assert.equal(list.total, 2);
   // מה שהוכרע נאמר, ולא נעלם בשקט.
-  assert.match(html(c), /1 מחלוקות בין שתי הקריאות הוכרעו מול המאגר/);
+  assert.match(html(c), /מחלוקת אחת בין שתי הקריאות הוכרעה מול המאגר/);
 });
 
 test('equal-price identities accept the stronger model without changing the chosen product or money', async () => {
@@ -85,7 +85,7 @@ test('equal-price identities accept the stronger model without changing the chos
   assert.equal(list.settled, 1);
   assert.equal(list.modelSettled, 1);
   assert.equal(list.total, 2, 'unrelated unread identity and price difference remain');
-  assert.match(html(c), /הוכרעו אוטומטית לפי המודל החזק — המחיר זהה/);
+  assert.match(html(c), /הוכרע[הו] אוטומטית לפי המודל החזק — המחיר זהה/);
   assert.equal(c.run('JSON.stringify(aiScanResponse)'), before, 'the original reading and disagreement stay in the audit');
   assert.equal(c.run('aiScanResponse.scan.documents[0].rows[0].__tnuvaProductId'), 'p_yolo_chocolate');
   assert.equal(c.run('aiScanResponse.scan.documents[0].rows[0].quantity'), 10);
@@ -391,7 +391,7 @@ test('when the losing read holds the only code the catalog knows, the row is mat
   const list = actions(c);
   assert.deepEqual(list.unidentified.map(item => item.line), [3], 'only the row with no code at all is left');
   assert.equal(list.autoMatched, 1);
-  assert.match(html(c), /1 שורות שויכו אוטומטית כשהמחיר אישר את הקוד/);
+  assert.match(html(c), /שורה אחת שויכה אוטומטית כשהמחיר אישר את הקוד/);
   assert.equal(c.run("JSON.stringify((aiEvaluateInvoiceScan(aiScanResponse).autoResolutions||[]).map(x=>x.method))"), '["tnuva_code_second_read"]');
   // אבל היא אינה ראיה למחיר: בדיקת המחירים לא תאשר מחיר על סמך זהות שהמחיר בחר.
   assert.equal(JSON.parse(c.run("JSON.stringify(receiptPriceAudit().rows.find(r => r.line === 2).capability)")), 'unidentified');
@@ -455,18 +455,18 @@ test('the green fold needs the matched product to still cost what the paper prin
   // מחיר המאגר השתנה אחרי השיוך: המחיר כבר אינו מאשר את הזהות.
   const changed = await scanned(autoOnlyCase);
   changed.run("products.find(p => p.id === 'p_yolo_layers').price = 3.99");
-  assert.match(html(changed), /<details data-price-panel open><summary[^>]*><span role="status">בדיקת המחירים אינה מלאה · 1\/2 לא נבדקו/);
+  assert.match(html(changed), /<details data-price-panel open><summary[^>]*><span role="status">בדיקת המחירים אינה מלאה · 1 מתוך 2 שורות לא נבדקו/);
   // שורה שאין לה מוצר כלל (קוד שלא נקרא) עדיין מחכה להחלטה, ולכן הבדיקה נשארת פתוחה.
   const mixed = await scanned(autoOnlyPaper([rows[2]]));
   assert.equal(actions(mixed).autoMatched, 1);
   assert.deepEqual(actions(mixed).unidentified.map(item => item.line), [3]);
-  assert.match(html(mixed), /<details data-price-panel open><summary[^>]*><span role="status">בדיקת המחירים אינה מלאה · 2\/3 לא נבדקו/);
+  assert.match(html(mixed), /<details data-price-panel open><summary[^>]*><span role="status">בדיקת המחירים אינה מלאה · 2 מתוך 3 שורות לא נבדקו/);
   mixed.run("scanPurpose = 'receiving'; refreshPriceScannerNotice()");
   assert.equal(mixed.node('scanPriceNotice').textContent, 'בדיקת המחירים אינה מלאה — פתח לבדיקה');
   // מחלוקת על הכמות באותה שורה אינה נסגרת בזהות המוצר.
   const quantity = await scanned(autoOnlyPaper([], [{ field: 'code', selected: '88888888', other: '14761414' }, { field: 'quantity', selected: 6, other: 8 }]));
   assert.equal(JSON.parse(quantity.run("JSON.stringify(aiScanResponse.scan.documents[0].rows[1].__tnuvaProductId)")), 'p_yolo_layers');
-  assert.match(html(quantity), /<span role="status">בדיקת המחירים אינה מלאה · 1\/2 לא נבדקו/);
+  assert.match(html(quantity), /<span role="status">בדיקת המחירים אינה מלאה · 1 מתוך 2 שורות לא נבדקו/);
   // ופער מחיר אמיתי נשאר פער מחיר.
   const priced = await scanned(autoOnlyPaper([rows[3]]));
   assert.match(html(priced), /<span role="status">המחיר בתעודה שונה מהמחיר שבמאגר/);
@@ -483,7 +483,7 @@ test('an active promotion on the auto-matched product keeps the price check open
     start: '2026-09-01', end: '2026-09-30', productIds }] });
   const alone = await scanned(Object.assign({}, autoOnlyCase, promo(['p_yolo_layers'])));
   assert.equal(alone.run('receiptPriceAuditAutoOnly(receiptPriceAudit())'), false);
-  assert.match(html(alone), /<details data-price-panel open><summary[^>]*><span role="status">בדיקת המחירים אינה מלאה · 1\/2 לא נבדקו/);
+  assert.match(html(alone), /<details data-price-panel open><summary[^>]*><span role="status">בדיקת המחירים אינה מלאה · 1 מתוך 2 שורות לא נבדקו/);
   alone.run("scanPurpose = 'receiving'; refreshPriceScannerNotice()");
   assert.doesNotMatch(alone.node('scanPriceNotice').textContent, /אין צורך בפעולה/);
   // סל של 12 יחידות: 10 בשורה שזוהתה בקוד ו-6 בשורה ששויכה — רק יחד הן מגיעות לסף.
@@ -503,7 +503,7 @@ test('a product the user picked is acknowledged as their decision, not as the ca
   assert.equal(list.userSettled, 1);
   const view = html(c);
   assert.match(view, /שורה אחת שויכה על ידך למוצר/);
-  assert.doesNotMatch(view, /מחלוקות בין שתי הקריאות הוכרעו מול המאגר/, 'the user settled it, not the catalog');
+  assert.doesNotMatch(view, /בין שתי הקריאות הוכרע[הו] מול המאגר/, 'the user settled it, not the catalog');
 });
 
 test('a code that swallowed digits from the next column still points at one product', async () => {
@@ -875,7 +875,7 @@ test('approving a price for the document alone leaves the catalog untouched, and
   assert.equal(c.writes.length, 0, 'nothing was written to the cloud');
   assert.deepEqual(actions(c).priced, []);
   assert.equal(actions(c).decided, 1);
-  assert.match(html(c), /1 שורות אושרו ידנית/);
+  assert.match(html(c), /שורה אחת אושרה ידנית/);
   // ההחלטה שורדת שמירה וטעינה מחדש של הטיוטה.
   const b = harness.runtime('tnuva', { storage: c.storage, data: JSON.parse(JSON.stringify(data)) });
   b.run("currentView='receiving'; mainMode='receiving'");
