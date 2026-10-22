@@ -72,7 +72,7 @@ test('a catalog promotion the paper did not apply is named directly, not hidden 
   assert.equal(a.complete, true);
   assert.deepEqual(a.rows.filter(r => r.result === 'difference').map(r => r.productId), ['top']);
   assert.match(a.documents[0].summaryStatus, /המבצע לא הופעל בשורה: יופלה און טופ פצפוצים 157 גרם/);
-  assert.match(view(c), /המחיר בתעודה שונה מהמחיר שבמאגר · 1\/4 עם פער/);
+  assert.match(view(c), /המחיר בתעודה שונה מהמחיר שבמאגר · פער מחיר ב־1 מתוך 4 שורות/);
 });
 
 test('the decision card names the promotion the paper did not apply, not a ₪0.00 price gap', async () => {
@@ -140,8 +140,8 @@ test('a reason shared by every row is said once, and unchecked prices never read
   const html = view(c), help = c.run('receiptPriceSummaryHelpHtml(receiptPriceAudit(), true)');
   assert.match(help, /כל 4 השורות: הפענוח חלקי או חסר עמוד\/מסמך/);
   assert.equal((help.match(/הפענוח חלקי או חסר עמוד/g) || []).length, 1);
-  assert.doesNotMatch(html, /0\/4 מחירי בסיס תואמים/);
-  assert.match(html, /4\/4 לא נבדקו/);
+  assert.doesNotMatch(html, /המחיר תואם ב־0 מתוך 4/);
+  assert.match(html, /4 מתוך 4 שורות לא נבדקו/);
 });
 
 test('no printed document number appears anywhere, and a single paper gets no ordinal either', async () => {

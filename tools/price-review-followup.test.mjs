@@ -60,9 +60,9 @@ test('a hidden repaired identity becomes an actionable blocker without discardin
   assert.equal(a.rows.filter(r => r.basePriceCheckable && !r.printedVsCatalog.off).length, 5);
   const html = view(c);
   assert.match(html, /זה גיל מהדרין 200 מ&quot;ל — אשר זיהוי/);
-  assert.match(html, /5\/6 מחירי בסיס תואמים/);
-  assert.doesNotMatch(html, /6\/6 לא נבדקו|התאריך לא נקרא|הבדיקה מניחה/);
-  assert.match(html, /הנחה שעדיין צריך להסביר: ₪5.29/);
+  assert.match(html, /המחיר תואם ב־5 מתוך 6 שורות/);
+  assert.doesNotMatch(html, /6 מתוך 6 שורות לא נבדקו|התאריך לא נקרא|הבדיקה מניחה/);
+  assert.match(html, /₪5\.29 מההנחה עדיין לא מוסברים על ידי המבצעים שבמאגר — כנראה המבצע שחסר במאגר/);
   assert.match(html, /data-role="price-add-promo" data-doc="0" data-row="3"/);
   assert.match(html, /<details data-price-date><summary/);
 });
@@ -74,7 +74,7 @@ test('identity confirmation alone does not invent the missing promotion or chang
   assert.equal(read(c, 'receiptRowActions().total'), 0);
   assert.equal(audit(c).documents[0].summaryPending, true);
   assert.equal(audit(c).documents[0].summaryRemainder, 5.29);
-  assert.match(view(c), /6\/6 מחירי בסיס תואמים/);
+  assert.match(view(c), /המחיר תואם ב־6 מתוך 6 שורות/);
   assert.equal(raw(c), before);
   assert.equal(c.run('JSON.stringify(receiptList)'), counted);
   assert.equal(c.writes.length, 0);

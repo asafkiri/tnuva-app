@@ -58,7 +58,7 @@ test('when the first of two papers was not read, the rows of the second still sa
 test('rows waiting for another paper say which rows and which paper', async () => {
   const c = await scan([paper([['milk', 96], ['oat', 4], ['cream', 10], ['top', 6]]), paper([['cheese', 12], ['milk', 10], ['cream', 4]], { returns: true })]);
   const help = text(c.run('receiptPriceSummaryHelpHtml(receiptPriceAudit(), true)'));
-  assert.match(help, /מה נשאר להשלמת בדיקת המבצעים בתעודה 1\?/);
+  assert.match(help, /למה הבדיקה בתעודה 1 עדיין לא הושלמה\?/);
   assert.match(help, /כל 4 השורות בתעודה 1 ממתינות לתעודה 2: התעודה כוללת החזרות/);
   assert.doesNotMatch(help, /: תעודה 2:/);
 });
