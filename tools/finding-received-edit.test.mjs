@@ -103,6 +103,25 @@ test('v146 "הגיע הכול" closes the shortage: the row stays in place, gree
   assert.ok(!html.includes('הכול תואם'), 'the all-clear status is gone');
 });
 
+test('v146 when the fix balances the receipt (manual anchors), the scan step stays with its green row until "המשך"', async () => {
+  const data = harness.fixture('tnuva');
+  data.items = [];
+  const r = harness.runtime('tnuva', { data });
+  r.run("openScanner=()=>{}; closeScanner=()=>{}; scanBeep=()=>{}; buzz=()=>{}; refreshScanHost=()=>{};");
+  await r.scan(1);
+  r.run("receiptNotes = [{ amount: 50, lines: 1 }]; recomputeNoteTotal(); receiptAnchorSource = 'manual'; saveReceiptDraft(); openReconcile();");
+  assert.equal(r.run('rcStep'), 'ai');
+  r.click('ai-recv-set', 'milk', { qty: '10' });
+  assert.equal(r.run('reconcileIsBalanced()'), true);
+  assert.equal(r.run('rcStep'), 'ai', 'balanced, but the scan step stays');
+  assert.ok(strip(rowHtml(r.node('app').innerHTML, 'חלב בדיקה')).startsWith('חלב בדיקה הגיע הכול · 10 יח׳'));
+  // The memory is the only thing holding the screen: without it the comparison moves on to "מאוזן".
+  assert.equal(r.run("const keep = aiReceivedEdits; aiReceivedEdits = {}; renderReconcile(); const step = rcStep; aiReceivedEdits = keep; rcStep = 'ai'; renderReconcile(); step"), 'balanced');
+  assert.equal(r.run('rcStep'), 'ai');
+  r.click('ai-apply');
+  assert.equal(r.run('rcStep'), 'balanced', '"המשך" leads on as before');
+});
+
 test('plus and minus step the received quantity by one unit', async () => {
   const r = await shortageScreen();
   r.click('ai-recv-step', 'milk', { delta: '1' });

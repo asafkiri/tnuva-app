@@ -14480,7 +14480,7 @@ function aiSetFindingReceived(productId, value) {
     if (!p) { showToast('המוצר לא נמצא במאגר', null, null, 2600); return false; }
     const day = activeReceiptDate(), base = r2(Number(p.price) || 0);
     const promo = promoForProduct(p.id, day), on = promoTriggered(promo, day), pct = on ? (Number(promo.pct) || 0) : 0;
-    line = { productId: p.id, name: p.name || '', barcode: p.barcode || '', received: 0, noteQty: 0, price: on ? discountedUnitPrice(base, pct) : base, basePrice: base, promoPct: pct, promoOn: on, checked: false };
+    line = { productId: p.id, name: p.name || '', barcode: p.barcode || '', received: 0, noteQty: reconcilePaperEntered ? 0 : qty, price: on ? discountedUnitPrice(base, pct) : base, basePrice: base, promoPct: pct, promoOn: on, checked: false }; // v146: "בנייר" משקף את הספירה עד שהנייר מוזן — כמו בשחזור ההשוואה
     reconcileData.unshift(line);
   }
   const before = Math.max(0, Math.round(Number(line.received) || 0));
@@ -15507,7 +15507,11 @@ function renderReconcile() {
     }
   }
   // אם התאזן בכל שלב — עוברים ל"מאוזן"
-  if (balanced && !needsPaperReview) rcStep = 'balanced';
+  // v146: חוץ מכשמסך הסריקה פתוח ויש בו שורות שתוקנו ממנו (ירוקות) — אז ההשוואה
+  // לא קופצת ל"מאוזן" מעצמה ברגע שהחוסר האחרון נסגר, כדי שהשורה הירוקה תישאר
+  // על המסך ותאפשר חזרה מטעות; "הכול תואם — המשך" הוא שמוביל הלאה.
+  const keepAiStep = rcStep === 'ai' && !!aiScanEvaluation && Object.keys(aiReceivedEditsSanitize(aiReceivedEdits)).length > 0;
+  if (balanced && !needsPaperReview && !keepAiStep) rcStep = 'balanced';
   else if (!balanced && rcStep === 'balanced') rcStep = 'choose';
 
   const header = receiptPriceAuditHtml() + '<div class="px-1 py-1 mb-3"><h2 class="font-black text-2xl text-slate-800">בדיקת תעודה</h2></div>';
