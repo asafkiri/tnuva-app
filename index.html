@@ -11374,8 +11374,11 @@ function receiptDisputeOpenFields(row, dispute) {
     const doc = receiptScanDoc(row && row.documentIndex);
     const mapped = doc && Array.isArray(doc.rows) ? doc.rows[Number(row && row.rowIndex)] : null;
     if (mapped && String(mapped.barcodeMatchMethod || '') === 'user_confirmed') return false;
-    // v147: הסכמת קריאות שהשורה שויכה לפיה, או שהקוד המוסכם אינו במאגר — אינה מחלוקת.
-    if (receiptCodeAgreementState(item, mapped, built)) return false;
+    // v147: הסכמת קריאות שהשורה שויכה לפיה (המתאם כבר אימת מחיר שווה בדיוק ושכנים), או שהקוד
+    // המוסכם אינו במאגר — אינה מחלוקת. הסכמה על הקוד שנבחר עצמו ('same') אינה מקצרת דרך: המחיר,
+    // העד המאשר (108) ושתי הזהויות באותו מחיר (109) מוכרעים בכללים שלמטה, בדיוק כמו ב-146.
+    const agreementState = receiptCodeAgreementState(item, mapped, built);
+    if (agreementState === 'applied' || agreementState === 'missing') return false;
     // הקוד שנבחר חייב להיות מזוהה, והמחיר המודפס חייב לאשר אותו.
     if (!row || !row.productId || !row.printedVsCatalog || row.printedVsCatalog.off) return true;
     // v108: קוד מזוהה שהמחיר מאשר וגם קריאה נוספת של הצילום קראה כך (שירות 14

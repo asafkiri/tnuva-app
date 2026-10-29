@@ -179,6 +179,27 @@ test('v147: a same-price neighbour still asks, unless both strong reads agreed a
   assert.deepEqual([actions(neighbourCheap).autoMatched, actions(neighbourCheap).agreementSettled], [1, 0]);
 });
 
+test('v147: an agreement on the selected code itself is no shortcut — the price, the confirming witness and rule 109 decide as in 146', async () => {
+  // Terra נבחרה וקראה את הקוד של קוטג' 9% (במאגר); הזולות קראו קוטג' 5% (אותו מחיר); הקריאה הרביעית קראה כמו Terra.
+  // ההסכמה היא על הקוד שנבחר (state 'same'): הזהות אינה משתנה, והשאלה מוכרעת ככלל 109 — לפי המודל החזק, עם השמירות.
+  const same = codeField([read('consensus_escalation', code('cottage9m'), true), read('consensus_1', code('cottage5m')), read('consensus_2', code('cottage5m')), read('second_strong_read', code('cottage9m'))],
+    agreement('strong_strong', code('cottage9m'), ['consensus_escalation', 'second_strong_read']));
+  const decided = await scanned({ escalationSelected: true, selectedCode: code('cottage9m'), field: same });
+  assert.deepEqual([rowTwo(decided).product, rowTwo(decided).method], ['cottage9m', 'exact_full']);
+  assert.deepEqual([actions(decided).total, actions(decided).modelSettled, actions(decided).agreementSettled], [0, 1, 0]);
+  assert.match(html(decided), /מחלוקת אחת על זהות המוצר הוכרעה אוטומטית לפי המודל החזק — המחיר זהה/);
+  // אותה הסכמה, אבל מבצע פעיל רק על אחד מהשניים: שמירה של 109 נכשלת, והשאלה פתוחה — ההסכמה אינה מקצרת דרך.
+  const promo = { id: 'p9', name: "קוטג' 9% במבצע", pct: 10, start: '2026-10-01', end: '2026-10-31', minQty: 1, minUnit: 'unit', type: 'receipt', productIds: ['cottage9m'] };
+  const guarded = await scanned({ escalationSelected: true, selectedCode: code('cottage9m'), promos: [promo], field: same });
+  // המבצע על קוטג' 9% גם מציג פער מחיר בשורות 2 ו-3 (המבצע לא ירד בנייר): הכרטיס האדום של 141, והשאלה על הזהות אינה נסגרת.
+  assert.ok(actions(guarded).total >= 1, 'the row still asks');
+  assert.deepEqual([actions(guarded).agreementSettled, actions(guarded).modelSettled, actions(guarded).settled], [0, 0, 0]);
+  // והמחיר שאינו מחיר המאגר: השאלה נשארת פתוחה כמו ב-146, גם כשהקריאות הסכימו על הקוד שנבחר.
+  const priced = await scanned({ escalationSelected: true, selectedCode: code('cottage9m'), line: { description: "קוטג'9%", quantity: 18, unitPriceExVat: 4.9 }, field: same });
+  assert.equal(actions(priced).agreementSettled, 0);
+  assert.ok(actions(priced).total >= 1, 'a price difference is still a decision for the worker');
+});
+
 test('v147: an agreed code that is not in the catalog is no dispute and no guess — the row is left to be picked, with the reads on the card', async () => {
   // 23.9: "יופ.שזיף" נרשם כ"יופלה פירות יער" אחרי תיקון ספרה. כאן הקריאה שנבחרה והמודל החזק קראו 4136916
   // (אינו במאגר), הזולה השנייה 4136619; תיקון ספרה של 4136916 היה מוצא את 4130916 (פירות יער, ₪3.69) —
