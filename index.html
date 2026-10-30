@@ -311,8 +311,9 @@
       </div>
     </div>
 
-    <!-- הודעת ביטול (Undo) -->
-    <div id="toast" role="status" aria-live="polite" class="hidden fixed bottom-24 inset-x-0 justify-center px-4 z-[60] pointer-events-none">
+    <!-- הודעת ביטול (Undo). v148: z-75 — מעל חלונות הדו-שיח (z-70), כדי שהודעה כמו "הזן מחיר קנייה"
+         או "השמירה בענן נכשלה" תיראה גם כשעורך המוצר פתוח; עד כאן היא נבלעה מאחורי הרקע הכהה שלו -->
+    <div id="toast" role="status" aria-live="polite" class="hidden fixed bottom-24 inset-x-0 justify-center px-4 z-[75] pointer-events-none">
       <div class="pointer-events-auto bg-slate-900 text-white rounded-2xl shadow-2xl px-4 py-3 flex items-center gap-3 max-w-sm w-full">
         <span id="toastMsg" class="flex-1 text-sm font-bold"></span>
         <button id="toastBtn" class="hidden btn-tap text-blue-300 font-black text-sm px-3 py-1 rounded-lg">בטל</button>

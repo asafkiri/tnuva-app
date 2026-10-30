@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
 import * as harness from './receipt-scan-harness.mjs';
 
 // גרסה 148: הרצף מ-30.10 — שני מוצרים נפתחים מהאשף, שורה בלי ברקוד מדולגת, ואז
@@ -126,4 +127,11 @@ test('a cloud check that answers in time still blocks a duplicate barcode', asyn
   assert.equal(modalOpen(c), true);
   assert.equal(c.node('prod_save').disabled, true);
   assert.deepEqual(json(c.toasts.at(-1)), 'הפריט כבר קיים: ולנסיה ישן');
+});
+
+test('a message shown while the product editor is open is drawn above it, below the camera screens', () => {
+  const html = fs.readFileSync(new URL('../index.html', import.meta.url), 'utf8');
+  const z = id => Number((html.match(new RegExp('id="' + id + '"[^>]*\\bz-\\[(\\d+)\\]')) || [])[1]);
+  assert.ok(z('toast') > z('prodModal'), 'toast z-index ' + z('toast') + ' must exceed the editor z-index ' + z('prodModal'));
+  assert.ok(z('toast') < z('aiOrientationModal') && z('toast') < z('aiLiveCamModal'), 'camera screens stay on top');
 });
