@@ -744,7 +744,7 @@ let receiptDupConfirmed = false; // אישור שמירה למרות חשד לכ
 const RECEIPT_DRAFT_KEY = 'tn_receipt_draft';
 let receivingDigitsMissTimer = null;
 let receivingDigitsMissNotified = '';
-const APP_VERSION = '147'; // קיזוז אוטומטי לפי מחיר ליחידה זהה — בתוך התעודה ובין תעודות, עם "בטל"
+const APP_VERSION = '148'; // ייבוא מבצעים: המסך מתעדכן אחרי "לא להוסיף" ו"ביטול", ו"שמור מוצר" תמיד עונה
 // גרסה 73: מוצר בלי מחיר קופה — חלון הכמות מציג מיד את העלות ליח׳ (ללא מע״מ) ופותח שדה להקלדת המחיר שעובר בקופה, בלי לנדוד למסך המחירים
 // v40: תג גרסה קבוע בפינת המסך — לדעת בשנייה איזו גרסה באמת רצה על המכשיר
 // (עוזר במיוחד מול מטמון ה-PWA). pointer-events:none — לעולם לא חוסם מגע.
@@ -782,6 +782,11 @@ let qtyProduct = null, qtyTarget = 'receipt'; // חלון כמות בסריקה
 let qtyNextMode = 'scanner'; // מאיפה נפתח החלון: סריקה או בוחר ארגזים
 let priceEditId = null, priceFromScan = false, priceQuery = ''; // מוצרים ומחירים
 let productCreateId = null, prodAfterSaveTarget = null, productEditorScanReturn = false;
+// v148: שמירת מוצר שהעורך שלה נסגר ב"ביטול" בזמן ההמתנה לענן לא ממשיכה ברקע.
+// prodSaveSession מתקדם בכל "שמור מוצר" ובכל סגירת העורך; שמירה שהמספר שלה כבר
+// אינו העדכני נעצרת לפני הכתיבה. prodSaveChecking הוא מספר השמירה שבדיקת
+// הברקוד בענן שלה רצה עכשיו (0 = אין), כדי שהחיווי שלה יירד מיד עם "ביטול".
+let prodSaveSession = 0, prodSaveChecking = 0;
 let aiUnknownProductCreateContext = null; // שורת AI בטוחה שממתינה ליצירת מוצר, ללא קריאה נוספת
 let receiptRowDecisions = {};    // v97: החלטות המשתמש על שורות התעודה — ראו receiptRowActions
 let tnuvaRowProductContext = null; // שורת תעודה שממתינה לסריקת ברקוד או ליצירת מוצר
@@ -884,7 +889,13 @@ async function findCloudProductByBarcode(value, exceptId) {
   if (!key || !db || !navigator.onLine) return null;
   try {
     const ref = collection(db, 'artifacts', appId, 'public', 'data', 'products');
-    const snap = await getDocs(ref);
+    // v148: בקליטה חלשה הקריאה יכולה להמתין בלי סוף, וכפתור "שמור מוצר" נראה מת.
+    // אחרי 8 שניות הבדיקה מוותרת — כמו בכשל: החסימה המקומית והטרנזקציה עדיין מגינות.
+    let timer = null;
+    const snap = await Promise.race([
+      getDocs(ref),
+      new Promise((_, reject) => { timer = setTimeout(() => reject(new Error('בדיקת הברקוד בענן ארכה יותר מ-8 שניות')), 8000); })
+    ]).finally(() => clearTimeout(timer));
     const hit = snap.docs.find(d => d.id !== exceptId && normalizeBarcode((d.data() || {}).barcode) === key);
     return hit ? { id: hit.id, ...hit.data() } : null;
   } catch (e) {
@@ -19016,7 +19027,15 @@ function hideProdModal() {
   setAiUnknownProductBarcodeLock(false);
   setProductBarcodeBlocked(false);
   priceEditId = null; priceFromScan = false; productCreateId = null; prodAfterSaveTarget = null; productEditorScanReturn = false; aiUnknownProductCreateContext = null; tnuvaRowProductContext = null;
-  if (promoImport) promoImport.creatingRowKey = null;
+  // v148: שמירה שעדיין בודקת ברקוד בענן נעצרת כאן, והחיווי שלה יורד מיד.
+  prodSaveSession++;
+  if (prodSaveChecking) { prodSaveChecking = 0; hideCloudBusy(); }
+  if (promoImport) {
+    promoImport.creatingRowKey = null;
+    // v148: אחרי "ביטול" בעורך, מסך המבצעים מצויר מחדש לשלב הנוכחי של הייבוא.
+    // עד כאן נשאר על המסך כרטיס השלב הקודם, שכל כפתוריו חוץ מ"בטל ייבוא" היו מתים.
+    if (currentView === 'promos') renderPromos();
+  }
 }
 function calcCartonPrice() {
   const cp = parseFloat(($('prod_cartonPrice').value || '').toString().replace(',', '.'));
@@ -19043,6 +19062,7 @@ function scanProdBarcode() {
 async function saveProd(again) {
   const name = ($('prod_name').value || '').trim();
   const barcode = ($('prod_barcode').value || '').trim();
+  const saveSession = ++prodSaveSession; // v148
   const promoNameContext = prodAfterSaveTarget === 'promo_import_name' && promoImport
     ? { session: promoImport, rowKey: promoImport.creatingRowKey } : null;
   if (promoNameContext && !tnvEan13Ok(normalizeBarcode(barcode))) {
@@ -19110,7 +19130,14 @@ async function saveProd(again) {
     if (cloudMatches.length > 1) { showToast('הברקוד קיים ביותר ממוצר אחד בענן — יש לתקן את הכפילות לפני המשך', null, null, 4500); return; }
     if (cloudMatches.length === 1) { aiAdoptExistingUnknownProduct(cloudMatches[0], unknownCreateContext); return; }
   } else {
-    const cloudDuplicate = await findCloudProductByBarcode(barcode, docId);
+    // v148: עד כאן לחיצה על "שמור מוצר" לא הראתה דבר בזמן הבדיקה מול הענן, ו"ביטול"
+    // לא עצר שמירה שעוד המתינה לה. עכשיו הבדיקה מוצגת, ושמירה שהעורך שלה נסגר נעצרת.
+    prodSaveChecking = saveSession;
+    showCloudBusy('בודק שהברקוד אינו קיים כבר בענן...');
+    let cloudDuplicate = null;
+    try { cloudDuplicate = await findCloudProductByBarcode(barcode, docId); }
+    finally { if (prodSaveChecking === saveSession) { prodSaveChecking = 0; hideCloudBusy(); } }
+    if (saveSession !== prodSaveSession) return;
     if (cloudDuplicate) { setProductBarcodeBlocked(true); showDuplicateBarcode(cloudDuplicate, $('prod_barcode')); return; }
   }
   const category = ($('prod_category').value || '').trim() || null;
@@ -19969,6 +19996,9 @@ function promoImportOpenNextMissing() {
   $('prod_name').value = next.name || '';
   if (Number(next.price) > 0) $('prod_price').value = next.price;
   updateProdRecHint();
+  // v148: גם המסך שמאחורי העורך עובר לשלב הזה. בלי זה, "ביטול" בעורך החזיר את כרטיס
+  // "בחר מוצר למבצע" של המוצר הקודם, שכל כפתוריו חוץ מ"בטל ייבוא" כבר לא עשו דבר.
+  if (currentView === 'promos') renderPromos();
 }
 function tnvPromoSourceName(parts) {
   const numeric = p => String(p.s).replace(/[₪\s]/g, '');
