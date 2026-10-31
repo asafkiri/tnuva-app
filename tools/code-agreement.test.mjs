@@ -1,4 +1,4 @@
-// v147: הסכמת קריאות על הקוד (שירות 20). בתעודה של 29.10 שתי הקריאות הזולות נחלקו על הקוד של
+// v150: הסכמת קריאות על הקוד (שירות 20). בתעודה של 29.10 שתי הקריאות הזולות נחלקו על הקוד של
 // שורה 27 (4172329 מול 4127329), הזולה הראשונה נבחרה על הכסף, ו-Terra קראה כמו השנייה. הכרעת
 // הבעלים: קריאה חזקה שקראה כמו זולה, או שתי חזקות שקראו אותו קוד, סוגרות את הקוד בלי לשאול כשהקוד
 // המוסכם במאגר ומחירו שווה בדיוק למודפס; שכן באותו מחיר שואל, אלא אם שתי החזקות הסכימו (ואז
@@ -79,7 +79,7 @@ const evaluation = c => json(c, '(function(){ const e = aiEvaluateInvoiceScan(ai
 const todayReads = [read('consensus_1', '4172329', true), read('consensus_2', '4127329'), read('consensus_escalation', '4127329')];
 const todayAgreement = agreement('strong_cheap', '4127329', ['consensus_2', 'consensus_escalation']);
 
-test('v147: a strong read that read the code like a cheap read settles the row — identified, checkable, no card, said in the settled line', async () => {
+test('v150: a strong read that read the code like a cheap read settles the row — identified, checkable, no card, said in the settled line', async () => {
   const c = await scanned({ field: codeField(todayReads, todayAgreement), secondStrongRead: agreedRecord(todayAgreement) });
   assert.deepEqual(rowTwo(c), { product: 'cottage5m', method: 'tnuva_code_agreed', observed: '4172329',
     repair: { from: '4172329', to: '4127329', agreement: { kind: 'strong_cheap', stages: ['consensus_2', 'consensus_escalation'] } } });
@@ -111,7 +111,7 @@ test('v147: a strong read that read the code like a cheap read settles the row �
   assert.equal(restored.requests.filter(r => r.url.endsWith('/scan')).length, 0);
 });
 
-test('v147: a fourth read that matched a cheap read, and two cheap reads alike, settle the row the same way — each said by name', async () => {
+test('v150: a fourth read that matched a cheap read, and two cheap reads alike, settle the row the same way — each said by name', async () => {
   // Terra נבחרה וקראה 4172329 (אינו במאגר), הזולות נחלקו (4127329 ו-4136916), והקריאה הרביעית קראה כמו
   // הזולה הראשונה — חזקה שמתאימה לזולה.
   const viaFourth = await scanned({ escalationSelected: true,
@@ -136,7 +136,7 @@ test('v147: a fourth read that matched a cheap read, and two cheap reads alike, 
   assert.ok(evaluation(cheapCheap).warnings.some(w => w.includes('ושתי הקריאות הזולות קראו 4127329')));
 });
 
-test('v147: a same-price neighbour still asks, unless both strong reads agreed and rule 109\'s guards hold', async () => {
+test('v150: a same-price neighbour still asks, unless both strong reads agreed and rule 109\'s guards hold', async () => {
   // הקריאה שנבחרה קראה את הקוד של קוטג' 9% (במאגר, ₪4.60); הזולה השנייה ו-Terra קראו קוטג' 5% (גם ₪4.60).
   const twins = [read('consensus_1', code('cottage9m'), true), read('consensus_2', code('cottage5m')), read('consensus_escalation', code('cottage5m'))];
   const asked = await scanned({ selectedCode: code('cottage9m'), field: codeField(twins, agreement('strong_cheap', code('cottage5m'), ['consensus_2', 'consensus_escalation'])) });
@@ -179,7 +179,7 @@ test('v147: a same-price neighbour still asks, unless both strong reads agreed a
   assert.deepEqual([actions(neighbourCheap).autoMatched, actions(neighbourCheap).agreementSettled], [1, 0]);
 });
 
-test('v147: an agreement on the selected code itself is no shortcut — the price, the confirming witness and rule 109 decide as in 146', async () => {
+test('v150: an agreement on the selected code itself is no shortcut — the price, the confirming witness and rule 109 decide as in 146', async () => {
   // Terra נבחרה וקראה את הקוד של קוטג' 9% (במאגר); הזולות קראו קוטג' 5% (אותו מחיר); הקריאה הרביעית קראה כמו Terra.
   // ההסכמה היא על הקוד שנבחר (state 'same'): הזהות אינה משתנה, והשאלה מוכרעת ככלל 109 — לפי המודל החזק, עם השמירות.
   const same = codeField([read('consensus_escalation', code('cottage9m'), true), read('consensus_1', code('cottage5m')), read('consensus_2', code('cottage5m')), read('second_strong_read', code('cottage9m'))],
@@ -200,7 +200,7 @@ test('v147: an agreement on the selected code itself is no shortcut — the pric
   assert.ok(actions(priced).total >= 1, 'a price difference is still a decision for the worker');
 });
 
-test('v147: an agreed code that is not in the catalog is no dispute and no guess — the row is left to be picked, with the reads on the card', async () => {
+test('v150: an agreed code that is not in the catalog is no dispute and no guess — the row is left to be picked, with the reads on the card', async () => {
   // 23.9: "יופ.שזיף" נרשם כ"יופלה פירות יער" אחרי תיקון ספרה. כאן הקריאה שנבחרה והמודל החזק קראו 4136916
   // (אינו במאגר), הזולה השנייה 4136619; תיקון ספרה של 4136916 היה מוצא את 4130916 (פירות יער, ₪3.69) —
   // ולכן אסור לו לרוץ: הקריאות הסכימו על קוד, והוא פשוט חסר במאגר.
@@ -232,7 +232,7 @@ test('v147: an agreed code that is not in the catalog is no dispute and no guess
   assert.equal(actions(kept).total, 0);
 });
 
-test('v147: no agreement, or no service-20 data, is exactly version 146 — with what every read saw added to the card', async () => {
+test('v150: no agreement, or no service-20 data, is exactly version 149 — with what every read saw added to the card', async () => {
   // הקריאה שנבחרה קראה את הקוד של קוטג' 9% (במאגר), הזולה השנייה קוטג' 5%, Terra קוד שלישי, והקריאה הרביעית
   // לא הושלמה: אין הסכמה, ושני מוצרים באותו מחיר — הכרטיס של 146, ועליו מה כל קריאה קראה.
   const none = await scanned({ selectedCode: code('cottage9m'),
@@ -252,7 +252,7 @@ test('v147: no agreement, or no service-20 data, is exactly version 146 — with
   const unseen = await scanned({ selectedCode: code('cottage9m'),
     field: codeField([read('consensus_1', code('cottage9m'), true), read('consensus_2', code('cottage5m')), { stage: 'consensus_escalation', value: null, seen: false, unmatched: 'numbers_differ' }], null) });
   assert.ok(html(unseen).includes('המודל החזק לא קראה את השורה</div>'), html(unseen));
-  // שירות 19 (בלי reads ובלי agreement): הכרטיס של 146, תו בתו.
+  // שירות 19 (בלי reads ובלי agreement): הכרטיס של 149, תו בתו.
   const v19 = await scanned({ version: 19, selectedCode: code('cottage9m'), field: { field: 'code', selected: code('cottage9m'), other: code('cottage5m'), confirmed: 0 } });
   assert.deepEqual(actions(v19).disputed, [{ line: 2, fields: ['code'] }]);
   const v19View = html(v19);
@@ -269,7 +269,7 @@ test('v147: no agreement, or no service-20 data, is exactly version 146 — with
   assert.equal(actions(odd).agreementSettled, 0);
 });
 
-test('v147: the price must equal exactly, and an ambiguous or missing catalog product settles nothing', async () => {
+test('v150: the price must equal exactly, and an ambiguous or missing catalog product settles nothing', async () => {
   // המחיר המודפס ₪4.62 — אגורותיים מעל מחיר המאגר: לא "בדיוק", ולכן אין הכרעה אוטומטית; תיקון הספרה של 146 (סבילות שתי אגורות) עדיין מציע בלחיצה.
   const offByTwo = await scanned({ line: { description: "קוטג'5%'' 250 ו.מהדרין", quantity: 18, unitPriceExVat: 4.62 }, field: codeField(todayReads, todayAgreement) });
   assert.equal(rowTwo(offByTwo).method, 'tnuva_code_repair');
