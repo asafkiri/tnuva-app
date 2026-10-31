@@ -745,7 +745,7 @@ let receiptDupConfirmed = false; // אישור שמירה למרות חשד לכ
 const RECEIPT_DRAFT_KEY = 'tn_receipt_draft';
 let receivingDigitsMissTimer = null;
 let receivingDigitsMissNotified = '';
-const APP_VERSION = '149'; // עמודת 📦 במסך עריכת המוצרים קובעת רק את גודל הארגז — לא מקשיחה את הבלש
+const APP_VERSION = '150'; // הסכמת קריאות על הקוד (שירות 20): מחלוקת על קוד שקריאה חזקה וזולה, או שתי חזקות, הסכימו עליו נסגרת לבד כשהמחיר מאשר
 // גרסה 73: מוצר בלי מחיר קופה — חלון הכמות מציג מיד את העלות ליח׳ (ללא מע״מ) ופותח שדה להקלדת המחיר שעובר בקופה, בלי לנדוד למסך המחירים
 // v40: תג גרסה קבוע בפינת המסך — לדעת בשנייה איזו גרסה באמת רצה על המכשיר
 // (עוזר במיוחד מול מטמון ה-PWA). pointer-events:none — לעולם לא חוסם מגע.
@@ -1473,6 +1473,8 @@ async function tnuvaShowServiceVersion() {
       // v143: שירות 19 אומר אם הקריאה החזקה השנייה פעילה (SECOND_STRONG_READ=off מכבה אותה,
       // וגם היעדר מודל הסלמה). שירות 18 ומטה אינו שולח את השדה, ואז אין מה להציג.
       (typeof status.secondStrongRead === 'boolean' ? ' · קריאה חזקה שנייה: ' + (status.secondStrongRead ? 'פעילה' : 'כבויה') : '') +
+      // v150: שירות 20 מוסר מה כל קריאה קראה בקוד ואת ההסכמה (codeAgreement). שירות 19 ומטה — אין מה להציג.
+      (status.codeAgreement === true ? ' · הסכמת קריאות על קוד: פעילה' : '') +
       (status.keyConfigured ? '' : ' · חסר מפתח');
     if (line) line.textContent = text;
   } catch (error) {
@@ -1545,9 +1547,19 @@ function tnuvaScanHistoryHtml(audit) {
 // השמורה, רואים אילו שדות התקבלו כך ובאיזה ערך — הערך של הקריאה שנבחרה.
 function tnuvaSecondStrongClosedHtml(scanAudit) {
   const closed = receiptSecondStrongEntries(scanAudit, 'closed');
-  if (!closed.length) return '';
-  return '<div data-second-strong-closed class="text-emerald-800">התקבלו בקריאה חזקה שנייה, בלי אישור ידני: ' +
+  const closedHtml = !closed.length ? '' : '<div data-second-strong-closed class="text-emerald-800">התקבלו בקריאה חזקה שנייה, בלי אישור ידני: ' +
     htmlEscape(receiptSecondStrongPlacesText(closed)) + '</div>';
+  return closedHtml + tnuvaCodeAgreementHistoryHtml(scanAudit);
+}
+// v150: קודים שקריאות הצילום הסכימו עליהם (שירות 20) — מה שנשאל בקריאה החזקה השנייה (codes) ומה
+// שכבר היה מוסכם בלעדיה (notAsked עם agreed). "שורה 27: 4127329 (המודל החזק וקריאה זולה קראו שניהם)".
+function tnuvaCodeAgreementHistoryHtml(scanAudit) {
+  const entries = receiptSecondStrongEntries(scanAudit, 'codes').concat(receiptSecondStrongEntries(scanAudit, 'notAsked').filter(item => item.reason === 'agreed'))
+    .filter(item => item.agreement && typeof item.agreement === 'object' && TNUVA_CODE_AGREEMENT_KINDS.has(String(item.agreement.kind || '')));
+  if (!entries.length) return '';
+  const text = entries.map(item => 'שורה ' + (Number(item.lineNumber) || (Number(item.rowIndex) + 1) || '?') + ': ' + String(item.agreement.code) +
+    ' (' + receiptCodeAgreementWho(item.agreement) + ')').join(' · ');
+  return '<div data-code-agreed class="text-emerald-800">קוד לפי הסכמת הקריאות: ' + htmlEscape(text) + '</div>';
 }
 // Switching capture methods keeps the current count, notes, images and cached OCR.
 function rememberReceiptManualInput() {
@@ -3043,7 +3055,7 @@ async function logAction(type, title, details, meta) {
     await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'actionLog', id), {
       timestamp: Date.now(), type: type || 'system', title: title || 'פעולה', details: details || '',
       deviceName: actionDeviceLabel(), uid: (auth && auth.currentUser && auth.currentUser.uid) || '',
-      appVersion: 'v143_second_strong_read', meta: cloneSafe(meta || {})
+      appVersion: 'v150_code_agreement', meta: cloneSafe(meta || {})
     });
   } catch (e) { console.warn('action log failed', e); }
 }
@@ -3127,7 +3139,7 @@ async function exportFullBackup() {
       backupType: 'tnuva-firestore-full',
       backupVersion: 1,
       appId,
-      appVersion: 'v143_second_strong_read',
+      appVersion: 'v150_code_agreement',
       exportedAt: Date.now(),
       exportedAtIso: new Date().toISOString(),
       collections: {},
@@ -11350,6 +11362,28 @@ function receiptSamePriceModelDecision(row, dispute, built = tnuvaBuildCodeIndex
   }
   return JSON.stringify(ownPromos.sort()) === JSON.stringify(rivalPromos.sort());
 }
+// v150: מה הסכמת הקריאות (שירות 20) עשתה בשורה: 'applied' — השורה שויכה לפי הקוד המוסכם;
+// 'same' — הקוד המוסכם הוא הקוד שהשורה מזוהה לפיו; 'missing' — הקוד המוסכם אינו במאגר והשורה
+// לא זוהתה (הכרטיס הופך ל"בחר מוצר"); null — אין הסכמה, או הסכמה שלא שויכה (קוד אחר באותו מחיר).
+function receiptCodeAgreementState(item, mapped, built = tnuvaBuildCodeIndex()) {
+  const agreement = item && item.agreement && typeof item.agreement === 'object' ? item.agreement : null;
+  if (!agreement || !mapped || !TNUVA_CODE_AGREEMENT_KINDS.has(String(agreement.kind || ''))) return null;
+  const code = tnuvaCodeOf(agreement.code);
+  if (!code || built.ambiguous.has(code)) return null;
+  const method = String(mapped.barcodeMatchMethod || '');
+  if (method === 'tnuva_code_agreed') return 'applied';
+  const product = built.map.get(code) || null;
+  // "אותו מוצר" רק כשהזהות היא לפי הקוד עצמו; זהות שנבחרה בעזרת המחיר (תיקון ספרה, הקריאה השנייה)
+  // נשארת בכללים שלה — ההסכמה לא אישרה אותה, כי המחיר לא היה שווה בדיוק.
+  if (product && mapped.__tnuvaProductId && String(mapped.__tnuvaProductId) === String(product.id) && (method === 'exact_full' || method === 'tnuva_code_exact')) return 'same';
+  if (!product && !mapped.__tnuvaProductId) return 'missing';
+  return null;
+}
+// מי הסכים: לנוסח הכרטיס, האזהרה ופרטי הפענוח.
+function receiptCodeAgreementWho(agreement) {
+  const kind = String((agreement && agreement.kind) || '');
+  return kind === 'strong_strong' ? 'שתי הקריאות החזקות קראו' : kind === 'cheap_cheap' ? 'שתי הקריאות הזולות קראו' : 'המודל החזק וקריאה זולה קראו שניהם';
+}
 function receiptDisputeOpenFields(row, dispute) {
   if (!dispute || !Array.isArray(dispute.fields)) return [];
   const built = tnuvaBuildCodeIndex();
@@ -11361,6 +11395,11 @@ function receiptDisputeOpenFields(row, dispute) {
     const doc = receiptScanDoc(row && row.documentIndex);
     const mapped = doc && Array.isArray(doc.rows) ? doc.rows[Number(row && row.rowIndex)] : null;
     if (mapped && String(mapped.barcodeMatchMethod || '') === 'user_confirmed') return false;
+    // v150: הסכמת קריאות שהשורה שויכה לפיה (המתאם כבר אימת מחיר שווה בדיוק ושכנים), או שהקוד
+    // המוסכם אינו במאגר — אינה מחלוקת. הסכמה על הקוד שנבחר עצמו ('same') אינה מקצרת דרך: המחיר,
+    // העד המאשר (108) ושתי הזהויות באותו מחיר (109) מוכרעים בכללים שלמטה, בדיוק כמו ב-146.
+    const agreementState = receiptCodeAgreementState(item, mapped, built);
+    if (agreementState === 'applied' || agreementState === 'missing') return false;
     // הקוד שנבחר חייב להיות מזוהה, והמחיר המודפס חייב לאשר אותו.
     if (!row || !row.productId || !row.printedVsCatalog || row.printedVsCatalog.off) return true;
     // v108: קוד מזוהה שהמחיר מאשר וגם קריאה נוספת של הצילום קראה כך (שירות 14
@@ -11384,6 +11423,8 @@ function receiptRivalCandidate(row, dispute) {
   const field = dispute.fields.find(item => String((item && item.field) || '') === 'code');
   const code = field ? (tnuvaCodeOf(field.other) || String(field.other == null ? '' : field.other).replace(/\D/g, '').replace(/^0+/, '')) : '';
   if (!code) return null;
+  // v150: כשהקריאות הסכימו על קוד אחר (שירות 20), הקוד של הקריאה השנייה אינו הצעה — הוא קריאה שהוכרעה נגדה.
+  if (field.agreement && TNUVA_CODE_AGREEMENT_KINDS.has(String(field.agreement.kind || '')) && tnuvaCodeOf(field.agreement.code) !== code) return null;
   const built = tnuvaBuildCodeIndex();
   const product = built.ambiguous.has(code) ? null : built.map.get(code);
   const printed = Number(row.originalUnitPrice);
@@ -11415,7 +11456,8 @@ function receiptRowCandidates(row, dispute) {
   const codes = [String(row.code == null ? '' : row.code)]
     .concat((dispute && Array.isArray(dispute.fields) ? dispute.fields : [])
       .filter(item => String((item && item.field) || '') === 'code')
-      .reduce((all, item) => all.concat([item.selected, item.other]), []))
+      // v150: גם מה שכל קריאה קראה (שירות 20) — ספרות שנדבקו מהעמודה הסמוכה נראות בכל קריאה.
+      .reduce((all, item) => all.concat([item.selected, item.other], (Array.isArray(item.reads) ? item.reads : []).map(read => read && read.value)), []))
     .map(value => String(value == null ? '' : value).replace(/\D/g, '').replace(/^0+/, ''))
     .filter(Boolean);
   const out = new Map();
@@ -11473,9 +11515,10 @@ function receiptFindAuditRow(documentIndex, sourceIndex) {
 }
 function receiptRowActions(report) {
   const a = report || receiptPriceAudit();
-  const out = { state: a.state, unidentified: [], disputed: [], priced: [], decided: 0, settled: 0, modelSettled: 0, userSettled: 0, userMatched: 0, autoMatched: 0, total: 0 };
+  const out = { state: a.state, unidentified: [], disputed: [], priced: [], decided: 0, settled: 0, modelSettled: 0, userSettled: 0, agreementSettled: 0, agreementMissing: 0, userMatched: 0, autoMatched: 0, total: 0 };
   if (a.state !== 'ready') return out;
   const disputes = receiptConsensusDisputes();
+  const built = tnuvaBuildCodeIndex();
   a.rows.forEach(row => {
     const dispute = disputes.get(Number(row.documentIndex) + ':' + Number(row.sourceIndex)) || null;
     const openFields = receiptDisputeOpenFields(row, dispute);
@@ -11488,8 +11531,13 @@ function receiptRowActions(report) {
     const userPicked = !!(mapped && String(mapped.barcodeMatchMethod || '') === 'user_confirmed');
     if (dispute && !open) {
       out.settled += 1;
+      // v150: מחלוקת על קוד שנסגרה לפי הסכמת הקריאות (שירות 20) נאמרת בשמה.
+      const codeItem = dispute.fields.find(item => String((item && item.field) || '') === 'code');
+      const agreementState = codeItem ? receiptCodeAgreementState(codeItem, mapped, built) : null;
       if (receiptSamePriceModelDecision(row, dispute)) out.modelSettled += 1;
-      else if (userPicked && dispute.fields.some(item => String((item && item.field) || '') === 'code')) out.userSettled += 1;
+      else if (userPicked && codeItem) out.userSettled += 1;
+      else if (agreementState === 'missing') out.agreementMissing += 1;
+      else if (agreementState) out.agreementSettled += 1;
     }
     const summary = a.documents.find(d => Number(d.index) === Number(row.documentIndex));
     const identityPending = row.capability === 'unidentified' && mapped && mapped.__tnuvaProductId
@@ -11518,10 +11566,41 @@ function receiptRowActionButton(role, row, label, classes) {
   return '<button data-role="' + role + '" data-doc="' + Number(row.documentIndex) + '" data-row="' + Number(row.sourceIndex) +
     '" class="btn-tap rounded-lg py-2.5 px-3 text-sm font-black ' + classes + '">' + label + '</button>';
 }
+// v150: שמות הקריאות בכרטיס המחלוקת (שירות 20 מוסר מה כל קריאה קראה בקוד). שלב של ניסיון חוזר
+// אחרי נתק (consensus_1_retry) הוא אותה קריאה.
+const RECEIPT_READ_STAGE_NAMES = { initial: 'הקריאה', consensus_1: 'קריאה זולה 1', consensus_2: 'קריאה זולה 2', consensus_3: 'קריאה זולה 3',
+  consensus_escalation: 'המודל החזק', checksum_retry: 'קריאת ההצלה', second_strong_read: 'קריאה חזקה שנייה' };
+function receiptReadStageName(read) {
+  const raw = String((read && read.stage) || '');
+  const stage = RECEIPT_READ_STAGE_NAMES[raw] ? raw : raw.replace(/_retry$/, '');
+  return (RECEIPT_READ_STAGE_NAMES[stage] || stage || 'קריאה') + (read && read.selected === true ? ' (נבחרה)' : '');
+}
+// שורת הקוד בכרטיס כשיש reads: מה כל קריאה קראה, ומשפט ההסכמה. state — מה ההסכמה עשתה בשורה
+// (receiptCodeAgreementState), כדי לומר למה בכל זאת שואלים.
+function receiptCodeReadsHtml(item, state) {
+  const reads = Array.isArray(item && item.reads) ? item.reads.filter(read => read && typeof read === 'object') : [];
+  if (!reads.length) return '';
+  const show = value => value == null || value === '' ? 'לא נקרא' : String(value);
+  const parts = reads.map(read => htmlEscape(receiptReadStageName(read)) + ' ' + htmlEscape(read.seen === false ? 'לא קראה את השורה' : show(read.value)));
+  const agreement = item.agreement && TNUVA_CODE_AGREEMENT_KINDS.has(String(item.agreement.kind || '')) ? item.agreement : null;
+  const verdict = !agreement ? 'אף שתי קריאות לא הסכימו על הקוד.'
+    : receiptCodeAgreementWho(agreement) + ' ' + htmlEscape(show(agreement.code)) +
+      (state === 'missing' ? ' — והוא אינו במאגר.' : state ? '.' : ' — אבל גם קוד אחר שנקרא מוביל למוצר באותו מחיר, ולכן ההכרעה שלך.');
+  return '<div dir="rtl">קוד: ' + parts.join(' · ') + '</div><div dir="rtl" data-code-agreement>' + verdict + '</div>';
+}
 function receiptRowDisputeHtml(dispute) {
   if (!dispute || !Array.isArray(dispute.fields) || !dispute.fields.length) return '';
   const names = RECEIPT_DISPUTE_FIELD_NAMES;
   const show = value => value == null || value === '' ? 'לא נקרא' : String(value);
+  // v150: הקריאות הסכימו על הקוד, והוא אינו במאגר — זו אינה מחלוקת בין קריאות אלא קוד שחסר במאגר.
+  const scanDoc = receiptScanDoc(dispute.docIndex);
+  const mapped = scanDoc && Array.isArray(scanDoc.rows) ? scanDoc.rows[Number(dispute.rowIndex)] : null;
+  const codeItem = dispute.fields.find(item => item && item.field === 'code');
+  const agreementState = codeItem ? receiptCodeAgreementState(codeItem, mapped) : null;
+  if (agreementState === 'missing' && dispute.fields.every(item => item.field === 'code' || RECEIPT_DISPUTE_INFORMATIONAL_FIELDS.has(item.field))) {
+    return '<div class="mt-2 rounded-lg bg-amber-50 border border-amber-200 p-2 text-[11px] font-bold text-amber-900">' +
+      '<div>הקריאות של הצילום הסכימו על הקוד שבשורה, והוא אינו במאגר:</div>' + receiptCodeReadsHtml(codeItem, agreementState) + '</div>';
+  }
   // v143: שדה שהקריאה החזקה השנייה של שירות 19 נשאלה עליו ולא סגרה. הערך שמוצג ראשון נשאר של
   // הקריאה שנבחרה; אחריו מה שכל קריאה זולה ראתה (reads, בלי הקריאה שנבחרה). הכרעת הבעלים הסופית:
   // הקריאה הרביעית מוכרעת על התעודה כולה ולא על השדה, ולכן אין לה ערך לפי שדה — השורה האחרונה
@@ -11536,6 +11615,9 @@ function receiptRowDisputeHtml(dispute) {
   const line = item => item.field === 'row' ? 'רק הקריאה שנבחרה ראתה את השורה הזאת'
     : htmlEscape(names[item.field] || item.field) + ': ' + htmlEscape(show(item.selected)) + ' מול ' + htmlEscape(others(item)) +
       (Number(item.confirmed) > 0 ? ' · קריאה נוספת קראה כמו הקריאה שנבחרה' : '');
+  // v150: לקוד עם reads (שירות 20) — מה כל קריאה קראה ומשפט ההסכמה, במקום "X מול Y".
+  const lineHtml = item => item.field === 'code' && Array.isArray(item.reads) && item.reads.length
+    ? receiptCodeReadsHtml(item, agreementState) : '<div dir="rtl">' + line(item) + '</div>';
   const asked = dispute.fields.filter(askedOf);
   const firstDifference = second && Array.isArray(second.differences) ? receiptSecondStrongDifferenceText(second.differences[0]) : '';
   const fourthLine = asked.length ? '<div class="mt-1" data-fourth-read>נערכה גם קריאה רביעית של כל התעודה ב־' + htmlEscape(second.model || 'המודל היקר') +
@@ -11549,7 +11631,7 @@ function receiptRowDisputeHtml(dispute) {
     : (dispute.escalated && dispute.selectedStrongerModel) || '';
   return '<div class="mt-2 rounded-lg bg-amber-50 border border-amber-200 p-2 text-[11px] font-bold text-amber-900">' +
     '<div>שתי הסריקות של הצילום לא קראו את השורה אותו דבר:</div>' +
-    dispute.fields.map(item => '<div dir="rtl">' + line(item) + '</div>').join('') +
+    dispute.fields.map(lineHtml).join('') +
     (decidedBy ? '<div class="mt-1">הכריע ' + htmlEscape(decidedBy) + ' בקריאה שלישית.</div>'
       : dispute.escalated ? '<div class="mt-1">נערכה קריאה שלישית ב־' + htmlEscape(dispute.escalationModel || 'המודל היקר') +
         ', אבל נבחרה הקריאה שנסגרה טוב יותר מול הנייר — ההכרעה כאן שלך.</div>'
@@ -11596,12 +11678,15 @@ function receiptRowCandidatesHtml(row, dispute, hasRival) {
 }
 function receiptRowActionsHtml(report) {
   const actions = receiptRowActions(report);
-  const catalogSettled = actions.settled - actions.modelSettled - actions.userSettled;
+  const catalogSettled = actions.settled - actions.modelSettled - actions.userSettled - actions.agreementSettled - actions.agreementMissing;
   // v144: יחיד ורבים. "1 שורות דורשות החלטה" ו"1 מחלוקות הוכרעו" נקראו כמו טבלה, לא כמו משפט.
   const count = (n, one, many) => n === 1 ? one : n + ' ' + many;
   const mine = actions.userMatched ? count(actions.userMatched, 'שורה אחת שויכה על ידך למוצר', 'שורות שויכו על ידך למוצרים') : '';
   const settledLine = [catalogSettled ? count(catalogSettled, 'מחלוקת אחת בין שתי הקריאות הוכרעה מול המאגר', 'מחלוקות בין שתי הקריאות הוכרעו מול המאגר') : '',
     actions.modelSettled ? count(actions.modelSettled, 'מחלוקת אחת על זהות המוצר הוכרעה אוטומטית לפי המודל החזק — המחיר זהה', 'מחלוקות על זהות המוצר הוכרעו אוטומטית לפי המודל החזק — המחיר זהה') : '',
+    // v150: הסכמת קריאות על הקוד (שירות 20).
+    actions.agreementSettled ? count(actions.agreementSettled, 'מחלוקת אחת על הקוד הוכרעה לפי הסכמת הקריאות — המחיר אישר', 'מחלוקות על הקוד הוכרעו לפי הסכמת הקריאות — המחיר אישר') : '',
+    actions.agreementMissing ? count(actions.agreementMissing, 'בשורה אחת הקריאות הסכימו על קוד שאינו במאגר', 'שורות שהקריאות הסכימו בהן על קוד שאינו במאגר') : '',
     actions.autoMatched ? count(actions.autoMatched, 'שורה אחת שויכה אוטומטית כשהמחיר אישר את הקוד', 'שורות שויכו אוטומטית כשהמחיר אישר את הקוד') : ''].filter(Boolean).join(' · ');
   if (!actions.total) {
     const parts = [actions.decided ? count(actions.decided, 'שורה אחת אושרה ידנית בתעודה הזאת', 'שורות אושרו ידנית בתעודה הזאת') : '', mine, settledLine].filter(Boolean);
@@ -12334,6 +12419,13 @@ function aiResolveInvoiceBarcode(row) {
     if (p) return { product: p, barcode: normalizeBarcode(p.barcode || ''), observed: String((row.__tnuvaRepair && row.__tnuvaRepair.from) || row.supplierItemCode || ''), method: 'tnuva_code_repair' };
     return { error: 'המוצר שהותאם לפי הקוד המתוקן אינו קיים עוד במאגר' };
   }
+  // v150: הקוד שקריאות הצילום הסכימו עליו (שירות 20) — קריאה חזקה כמו זולה, או שתי חזקות — כשהוא
+  // מוביל למוצר יחיד והמחיר המודפס שווה לו בדיוק. זהות שנקראה מהנייר, לא שנבחרה לפי מחיר.
+  if (String(row && row.barcodeMatchMethod || '') === 'tnuva_code_agreed') {
+    const p = (products || []).find(x => x.id === (row && row.__tnuvaProductId));
+    if (p) return { product: p, barcode: normalizeBarcode(p.barcode || ''), observed: String((row.__tnuvaRepair && row.__tnuvaRepair.from) || row.supplierItemCode || ''), method: 'tnuva_code_agreed' };
+    return { error: 'המוצר שהותאם לפי הקוד המוסכם אינו קיים עוד במאגר' };
+  }
   const readType = String(row && row.barcodeReadType || '');
   const method = String(row && row.barcodeMatchMethod || '');
   const observedRaw = row && row.barcodeObserved != null ? row.barcodeObserved : (row && row.barcodePattern != null ? row.barcodePattern : '');
@@ -12632,6 +12724,7 @@ function aiAutoResolveMethodHe(method) {
   if (method === 'auto_local_name_promo') return 'הכוכבית והמבצע הכריעו בין מועמדים באותו מחיר';
   if (method === 'tnuva_code_repair') return 'תיקון ספרה אחת בקוד — המחיר אישר';
   if (method === 'tnuva_code_second_read') return 'הקוד של הקריאה השנייה — המחיר אישר';
+  if (method === 'tnuva_code_agreed') return 'הקוד שקריאות הצילום הסכימו עליו — המחיר אישר';
   if (method.indexOf('_qty_price') !== -1) return 'התאמת כמות ומחיר';
   if (method.indexOf('_qty') !== -1) return 'התאמת כמות לספירה';
   if (method === 'auto_name_price_unique') return 'המחיר מבדיל בין השמות הדומים';
@@ -13028,9 +13121,12 @@ function aiEvaluateInvoiceScan(payload) {
       if (barcodeMatch.method === 'verified_name_price') warnings.push(product.name + ': הותאם לפי שם יחיד והצלבת מחיר/חשבון מקומית');
       // v47: תיקון ספרה בקוד — נספר ומתועד ביומן בדיוק כמו הכרעה אוטומטית.
       // v103: וכך גם שיוך לפי הקוד של הקריאה השנייה — אותה רמת ראיה, מקור אחר.
-      if (barcodeMatch.method === 'tnuva_code_repair' || barcodeMatch.method === 'tnuva_code_second_read') {
+      // v150: וכך גם שיוך לפי הקוד שקריאות הצילום הסכימו עליו (שירות 20).
+      if (barcodeMatch.method === 'tnuva_code_repair' || barcodeMatch.method === 'tnuva_code_second_read' || barcodeMatch.method === 'tnuva_code_agreed') {
         const rep = row.__tnuvaRepair || {};
-        warnings.push(product.name + (barcodeMatch.method === 'tnuva_code_second_read'
+        warnings.push(product.name + (barcodeMatch.method === 'tnuva_code_agreed'
+          ? ': הקריאה שנבחרה קראה את הקוד ' + (rep.from || '?') + ', ו' + receiptCodeAgreementWho(rep.agreement) + ' ' + (rep.to || '?') + ' — הוא במאגר ומחיר הקטלוג אישר אותו'
+          : barcodeMatch.method === 'tnuva_code_second_read'
           ? ': הקוד נקרא ' + (rep.from || '?') + ' בקריאה אחת ו־' + (rep.to || '?') + ' בשנייה — רק השני קיים במאגר ומחיר הקטלוג אישר אותו'
           : ': הקוד המודפס נקרא ' + (rep.from || '?') + ' ותוקן ל־' + (rep.to || '?') + ' — ספרה אחת, מחיר הקטלוג אישר'));
         autoResolutions.push({ documentIndex: index, rowIndex, lineNumber: rowNumber, sourcePage: Number(row.sourcePage), productId: product.id, productName: String(product.name || '').slice(0, 160), barcode, method: barcodeMatch.method, printedDescription: String(row.description || '').slice(0, 160), observed: rep.from || null, quantity: qty, lineTotalExVat: cents == null ? null : r2(cents / 100), rowConfidence: isFinite(rowConfidence) ? rowConfidence : 0 });
@@ -13491,6 +13587,7 @@ async function aiRequestInvoiceScan(token, documents) {
     body: JSON.stringify({
       // v142: כמו aiRequestSingleDocScan — כל בקשה שמתחילה סריקה מבקשת את בחירת הקריאה לפי הנייר.
       strongReadSelection: true,
+      codeAgreement: true, // v150: ראו aiRequestSingleDocScan
       // v221 עוגן לסריקה: הסכום והיחידות שהוקלדו לכל תעודה נשלחים לשרת —
       // נכנסים לפרומפט כסכום-ביקורת ומופעלים לאימות + קריאה חוזרת בשרת (v133).
       documents: documents.map(d => ({
@@ -13618,6 +13715,84 @@ function tnuvaSecondReadCode(rawIndex, row, built, consensus) {
   if (!options.some(option => option != null && Math.abs(option - effective) <= 2)) return null;
   return { code: candidate, product };
 }
+// v150: הסכמת קריאות על הקוד (שירות 20). שדה הקוד של השורה ב-disputedRows נושא reads — מה כל
+// קריאה קראה בקוד של השורה המודפסת הזאת — ו-agreement: {code, kind, stages}. הכרעת הבעלים (29.10):
+// קריאה חזקה שקראה כמו קריאה זולה (strong_cheap), או שתי הקריאות החזקות שקראו אותו קוד
+// (strong_strong), ובנוסף שתי זולות שהסכימו (cheap_cheap, שלב 1 של שירות 19) — סוגרות את הקוד בלי
+// לשאול, כשהקוד המוסכם מוביל במאגר למוצר יחיד שמחירו שווה בדיוק למחיר המודפס. השרת אינו מכיר את
+// המאגר; ההכרעה כולה כאן.
+const TNUVA_CODE_AGREEMENT_KINDS = new Set(['strong_strong', 'strong_cheap', 'cheap_cheap']);
+function tnuvaCodeAgreementField(rawIndex, consensus) {
+  const disputed = consensus && Array.isArray(consensus.disputedRows) ? consensus.disputedRows : [];
+  const entry = disputed.find(item => Number(item && item.rowIndex) === Number(rawIndex));
+  const field = entry && Array.isArray(entry.fields) ? entry.fields.find(item => String((item && item.field) || '') === 'code') : null;
+  return field && field.agreement && typeof field.agreement === 'object' && TNUVA_CODE_AGREEMENT_KINDS.has(String(field.agreement.kind || '')) ? field : null;
+}
+// המחיר המודפס ליחידה באגורות: מחיר היחידה, או הסכום חלקי הכמות.
+function tnuvaPrintedUnitCents(row) {
+  const unit = row && row.unitPriceExVat != null ? Number(row.unitPriceExVat) : null;
+  const qty = row && row.quantity != null ? Number(row.quantity) : null;
+  const total = row && row.lineTotalExVat != null ? Number(row.lineTotalExVat) : null;
+  return unit != null && isFinite(unit) ? aiMoneyCents(unit)
+    : (qty != null && qty > 0 && total != null && isFinite(total) ? Math.round(aiMoneyCents(total) / qty) : null);
+}
+// השמירות של כלל 109 בין שני מוצרים באותו מחיר: אותו מחיר (לאגורה), אותו פיקדון, אותה יחידה
+// ואריזת חיוב, ארגז/פיקדון כמו השני, ואותם מבצעים פעילים (שאינם דורשים מינימום). כאן בלי שורת
+// בדיקת מחירים (המתאם רץ לפני הבדיקה), ולכן מול היום.
+function tnuvaSamePriceTwinGuards(selected, rival, day) {
+  if (!selected || !rival || selected.id === rival.id) return false;
+  const price = priceAuditNumber(selected.price);
+  if (!(price > 0) || price !== priceAuditNumber(rival.price)) return false;
+  const deposit = product => product.deposit == null || product.deposit === '' ? 0 : priceAuditNumber(product.deposit);
+  if (deposit(selected) == null || deposit(selected) !== deposit(rival)) return false;
+  for (const field of ['priceUnit', 'unitOfMeasure', 'billingPackId', 'billingPackSize']) {
+    if (String(selected[field] || '') !== String(rival[field] || '')) return false;
+  }
+  if (isCrateOrDepositLine(selected) !== isCrateOrDepositLine(rival)) return false;
+  const ownPromos = [], rivalPromos = [];
+  for (const pr of promos || []) {
+    if (!pr || !Array.isArray(pr.productIds) || !promoActive(pr, day)) continue;
+    const own = pr.productIds.includes(selected.id), other = pr.productIds.includes(rival.id);
+    if (own === other) continue;
+    if (promoMinUnitsP(pr) > 1 || (pr.minUnit === 'carton' && !(Number(pr.cartonSize) > 0))) return false;
+    (own ? ownPromos : rivalPromos).push(String(pr.type || 'receipt') + ':' + Number(pr.pct));
+  }
+  return JSON.stringify(ownPromos.sort()) === JSON.stringify(rivalPromos.sort());
+}
+// מה ההסכמה אומרת על השורה הזאת מול המאגר: {product, code, kind, stages} — לשייך; {missing:true} —
+// הקוד המוסכם אינו במאגר (ואין זהות לפי הקוד שנבחר): בלי ניחושים, השורה לבחירה; null — אין מה
+// לעשות בה (אין הסכמה, המחיר אינו שווה, או שכן באותו מחיר ששולח לעובד).
+function tnuvaAgreedCode(field, exact, row, built) {
+  if (!field || !field.agreement) return null;
+  const code = tnuvaCodeOf(field.agreement.code);
+  if (!code || built.ambiguous.has(code)) return null;
+  const kind = String(field.agreement.kind || ''), stages = Array.isArray(field.agreement.stages) ? field.agreement.stages.slice() : [];
+  const product = built.map.get(code) || null;
+  if (!product) return exact ? null : { code, kind, stages, missing: true };
+  if (exact && exact.id === product.id) return { product, code, kind, stages, same: true };
+  // המחיר המודפס שווה בדיוק (לאגורה) למחיר המאגר — או למחיר המבצע הפעיל של המוצר.
+  const printed = tnuvaPrintedUnitCents(row);
+  const base = Number(product.price);
+  if (printed == null || !isFinite(base) || base <= 0) return null;
+  const options = [aiMoneyCents(base)];
+  const pr = promoForProduct(product.id, todayStr());
+  if (promoActive(pr, todayStr())) options.push(aiMoneyCents(discountedUnitPrice(base, Number(pr.pct) || 0)));
+  if (!options.includes(printed)) return null;
+  // קוד אחר שנקרא (או הזהות לפי הקוד שנבחר) שמוביל למוצר אחר באותו מחיר: שואלים — אלא אם שתי
+  // הקריאות החזקות הסכימו, ואז מכריעים כמו בכלל 109, עם השמירות שלו.
+  const rivalCodes = [field.selected, field.other].concat((Array.isArray(field.reads) ? field.reads : []).map(read => read && read.value))
+    .map(value => tnuvaCodeOf(value)).filter(value => value && value !== code && !built.ambiguous.has(value));
+  const rivals = new Map();
+  if (exact) rivals.set(exact.id, exact);
+  rivalCodes.forEach(value => { const rival = built.map.get(value); if (rival && rival.id !== product.id) rivals.set(rival.id, rival); });
+  const printedPrice = printed / 100;
+  const samePrice = [...rivals.values()].filter(rival => Number(rival.price) > 0 && Math.abs(Number(rival.price) - printedPrice) <= PRICE_AUDIT_UNIT_TOLERANCE);
+  if (samePrice.length) {
+    if (kind !== 'strong_strong') return null;
+    if (!samePrice.every(rival => tnuvaSamePriceTwinGuards(product, rival, todayStr()))) return null;
+  }
+  return { product, code, kind, stages };
+}
 function tnuvaRepairCode(code, row, built) {
   if (!code || code.length < 4) return null; // קודים קצרצרים — אין מספיק ראיות לתיקון
   const hits = [];
@@ -13682,12 +13857,20 @@ function tnuvaAdaptScanPayload(payload) {
     const rawIndexOf = new Map(rows.map((row, index) => [row, index]));
     doc.rows = kept.map(row => {
       const code = tnuvaCodeOf(row && row.code);
-      let product = code && !built.ambiguous.has(code) ? (built.map.get(code) || null) : null;
+      const exact = code && !built.ambiguous.has(code) ? (built.map.get(code) || null) : null;
+      let product = exact;
+      // v150: הסכמת קריאות על הקוד (שירות 20) — לפני תיקון ספרה ולפני הקוד של הקריאה השנייה: הקוד
+      // המוסכם משייך את המוצר כשהמחיר מאשר אותו בדיוק; קוד מוסכם שאינו במאגר עוצר את הניחושים.
+      const agreementField = tnuvaCodeAgreementField(rawIndexOf.get(row), payload && payload.consensus);
+      const agreed = agreementField ? tnuvaAgreedCode(agreementField, exact, row, built) : null;
+      const agreedApplied = !!(agreed && agreed.product && !agreed.same);
+      if (agreedApplied) product = agreed.product;
+      const guess = !(agreed && agreed.missing);
       // v47 (הכרעתו 8.8): קוד שלא נמצא — ניסיון תיקון של ספרה אחת. נרשם ביומן.
       let repair = null, secondRead = null;
-      if (!product && code) { repair = tnuvaRepairCode(code, row, built); if (repair) product = repair.product; }
+      if (!product && code && guess) { repair = tnuvaRepairCode(code, row, built); if (repair) product = repair.product; }
       // v103: עדיין לא זוהה — הקוד שהקריאה השנייה של אותו צילום קראה לשורה הזאת.
-      if (!product) {
+      if (!product && guess) {
         secondRead = tnuvaSecondReadCode(rawIndexOf.get(row), row, built, payload && payload.consensus);
         if (secondRead) product = secondRead.product;
       }
@@ -13702,10 +13885,11 @@ function tnuvaAdaptScanPayload(payload) {
         // הוותיקה מאמתת לפי barcodeMatchMethod+barcodeObserved; בלעדיהם כל
         // שורה נפלה לשגיאה הגנרית (הבאג שנמצא 7.8). ברקוד קצר (<6 ספרות —
         // ארגזים/פיקדון) לא עומד בכלל הראיות של exact_full ומקבל ענף ייעודי.
-        barcodeObserved: (repair || secondRead) ? code : (fullBarcode || null),
-        barcodeMatchMethod: fullBarcode ? (secondRead ? 'tnuva_code_second_read' : repair ? 'tnuva_code_repair' : (fullBarcode.length < 6 ? 'tnuva_code_exact' : 'exact_full')) : null,
+        barcodeObserved: (repair || secondRead || agreedApplied) ? code : (fullBarcode || null),
+        barcodeMatchMethod: fullBarcode ? (agreedApplied ? 'tnuva_code_agreed' : secondRead ? 'tnuva_code_second_read' : repair ? 'tnuva_code_repair' : (fullBarcode.length < 6 ? 'tnuva_code_exact' : 'exact_full')) : null,
         __tnuvaProductId: product ? product.id : null,
-        __tnuvaRepair: repair ? { from: code, to: repair.code } : (secondRead ? { from: code, to: secondRead.code, secondRead: true } : null),
+        __tnuvaRepair: agreedApplied ? { from: code, to: agreed.code, agreement: { kind: agreed.kind, stages: agreed.stages } }
+          : repair ? { from: code, to: repair.code } : (secondRead ? { from: code, to: secondRead.code, secondRead: true } : null),
         catalogHintId: null,
         catalogCandidateHintIds: [],
         supplierItemCode: row && row.code != null ? String(row.code) : null,
@@ -13803,6 +13987,9 @@ async function aiRequestSingleDocScan(token, pages, expected) {
     // איסוף (resume) אינו מתחיל סריקה, ולכן אינו נושא אותו — העבודה שכבר רצה
     // בשרת נשארת עם מה שנשלח כשהתחילה, ומפתח שהשרת אינו מכיר שולח שוב את fullBody.
     strongReadSelection: true,
+    // v150: האפליקציה יודעת להשתמש ב-reads וב-agreement של מחלוקת על קוד (שירות 20), ולכן
+    // מבקשת גם קריאה חזקה שנייה לקוד שאף קריאה לא הסכימה עליו. שרת ישן מתעלם משדה שאינו מכיר.
+    codeAgreement: true,
     // v34 תנובה: עוגן כסף + מונה "פריטים" (שורות). בלי קטלוג ובלי מזהים —
     // ההתאמה קוד→מוצר נעשית כולה בטלפון, במתאם שאחרי התשובה.
     documents: [{
@@ -14788,7 +14975,13 @@ function aiScanDiagnosticsHtml(ev) {
           ': נשאלו ' + Number(second.asked) + ' שדות · התקבלו ' + closed.length + ' · נשארו לעובד ' + open.length +
           (second.outcome === 'failed' ? ' · לא הושלמה (' + String(second.error || '') + ')'
             : second.outcome === 'not_identical' ? ' · הקריאה כולה אינה זהה' + (differences.length ? ' (ההבדל הראשון: ' + receiptSecondStrongDifferenceText(differences[0]) + ')' : '')
-              : second.outcome === 'identical' ? ' · הקריאה כולה זהה' : ''));
+              : second.outcome === 'identical' ? ' · הקריאה כולה זהה'
+              // v150: שירות 20 — נשאלה רק על קוד.
+              : second.outcome === 'code_agreed' ? ' · הקוד הוסכם' : second.outcome === 'code_not_agreed' ? ' · הקוד לא הוסכם' : ''));
+        // v150: מקומות הקוד שנשאלו (שירות 20) — מה כל קריאה קראה, וההסכמה.
+        (Array.isArray(second.codes) ? second.codes : []).slice(0, 8).forEach(entry => lines.push('קוד · שורה ' + (Number(entry.lineNumber) || (Number(entry.rowIndex) + 1) || '?') +
+          ' · ' + (entry.agreement ? 'הוסכם ' + String(entry.agreement.code) + ' (' + String(entry.agreement.kind) + ')' : 'לא הוסכם') + ' · ' +
+          (Array.isArray(entry.reads) ? entry.reads : []).map(read => String(read && read.stage || '') + '=' + (read && read.value != null ? String(read.value) : '—') + (read && read.selected ? '✓' : '')).join(' ')));
         const reads = entry => (Array.isArray(entry.reads) ? entry.reads : []).map(read => String(read && read.stage || '') + '=' +
           (read && read.value != null ? String(read.value) : '—') + (read && read.selected ? '✓' : '')).join(' ');
         closed.concat(open).slice(0, 8).forEach(entry => lines.push((entry.closedBy ? 'התקבל' : 'לעובד (' + String(entry.reason || '') + ')') +
