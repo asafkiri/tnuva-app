@@ -745,7 +745,7 @@ let receiptDupConfirmed = false; // אישור שמירה למרות חשד לכ
 const RECEIPT_DRAFT_KEY = 'tn_receipt_draft';
 let receivingDigitsMissTimer = null;
 let receivingDigitsMissNotified = '';
-const APP_VERSION = '148'; // ייבוא מבצעים: המסך מתעדכן אחרי "לא להוסיף" ו"ביטול", ו"שמור מוצר" תמיד עונה
+const APP_VERSION = '149'; // עמודת 📦 במסך עריכת המוצרים קובעת רק את גודל הארגז — לא מקשיחה את הבלש
 // גרסה 73: מוצר בלי מחיר קופה — חלון הכמות מציג מיד את העלות ליח׳ (ללא מע״מ) ופותח שדה להקלדת המחיר שעובר בקופה, בלי לנדוד למסך המחירים
 // v40: תג גרסה קבוע בפינת המסך — לדעת בשנייה איזו גרסה באמת רצה על המכשיר
 // (עוזר במיוחד מול מטמון ה-PWA). pointer-events:none — לעולם לא חוסם מגע.
@@ -4504,14 +4504,23 @@ function saveAvg(id, val) {
   clearTimeout(avgTimers[id]);
   avgTimers[id] = setTimeout(() => { runCloudTaskSilent('save average', { op: 'update', path: dataPath('products', id), data: { average: avg }, operationId: makeOperationId('avg') }); }, 700);
 }
-const boxTimers = {};
+const boxTimers = {}, boxStrictBase = {};
+// v149: עמודת 📦 במסך העריכה קובעת רק את גודל הארגז (כפתור "+ ארגז" בקליטה), כמו
+// שההסבר מעל הרשימה אומר. עד כאן היא כתבה רק boxSize, ומוצר שמעולם לא נשמר מהכרטיס
+// (בלי דגל boxStrict) נעשה "רק ארגזים שלמים" לבלש בלי שאיש סימן זאת. עכשיו מצב
+// האכיפה נשמר כפי שהיה לפני ההקלדה — מוצר ותיק עם ארגז ובלי דגל נשאר קפדני (כלל
+// detectiveBoxSize), ומוצר בלי ארגז אינו הופך לקפדני. המצב נלכד בהקשה הראשונה
+// ונשמר עד הכתיבה לענן, כדי שהקלדת "12" לא תאבד אותו בדרך דרך "1".
 function saveBoxSize(id, val) {
   const n = parseInt(String(val).replace(/[^0-9]/g, ''), 10);
   const box = (isNaN(n) || n < 2) ? 0 : n; // 0 = ללא הגדרת ארגז
-  const p = products.find(x => x.id === id); if (p) p.boxSize = box;
+  const p = products.find(x => x.id === id);
+  if (!(id in boxStrictBase)) boxStrictBase[id] = detectiveBoxSize(p) > 0;
+  const strict = boxStrictBase[id] && box >= 2;
+  if (p) { p.boxSize = box; p.boxStrict = strict; }
   if (!db) return;
   clearTimeout(boxTimers[id]);
-  boxTimers[id] = setTimeout(() => { runCloudTaskSilent('save box size', { op: 'update', path: dataPath('products', id), data: { boxSize: box }, operationId: makeOperationId('box') }); }, 700);
+  boxTimers[id] = setTimeout(() => { delete boxStrictBase[id]; runCloudTaskSilent('save box size', { op: 'update', path: dataPath('products', id), data: { boxSize: box, boxStrict: strict }, operationId: makeOperationId('box') }); }, 700);
 }
 function addProduct() { openProdModal(null, false, ''); }
 async function delProduct(id) {
