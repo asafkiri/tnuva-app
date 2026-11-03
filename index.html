@@ -364,8 +364,9 @@
 
     <div id="receiptQuantityModal" role="dialog" aria-modal="true" aria-label="בדיקת כמויות ידנית" class="hidden fixed inset-0 bg-slate-900/60 backdrop-blur-sm items-center justify-center p-3 z-[70]" dir="rtl">
       <div class="bg-white rounded-2xl shadow-2xl w-full max-w-lg flex flex-col" style="max-height:90vh;max-height:90dvh">
-        <div class="p-4 border-b border-slate-100 shrink-0"><div class="flex items-center justify-between gap-2"><h3 class="font-black text-xl text-slate-800">חוסרים ועודפים</h3><button id="receiptQuantityClose" class="btn-tap p-2 text-slate-600 font-bold" aria-label="סגור בדיקת כמויות">חזרה</button></div>
-          <p class="text-sm text-slate-600 mt-2">חפש את המוצר, בחר "חוסר" או "עודף" וכתוב כמה יחידות. את שאר המוצרים אל תשנה — בסיום הם יאושרו כמו בתעודה.</p>
+        <div class="p-4 border-b border-slate-100 shrink-0"><div class="flex items-center justify-between gap-2"><h3 id="receiptQuantityTitle" tabindex="-1" class="font-black text-xl text-slate-800 outline-none">חוסרים ועודפים</h3><button id="receiptQuantityClose" class="btn-tap p-2 text-slate-600 font-bold" aria-label="סגור בדיקת כמויות">חזרה</button></div>
+          <p id="receiptQuantityIntro" class="text-sm text-slate-600 mt-2">חפש את המוצר, בחר "חוסר" או "עודף" וכתוב כמה יחידות. את שאר המוצרים אל תשנה — בסיום הם יאושרו כמו בתעודה.</p>
+          <div id="receiptQuantityProgress" class="hidden text-sm font-black text-slate-700 mt-2" role="status" aria-live="polite"></div>
           <input id="receiptQuantitySearch" type="search" placeholder="חפש מוצר, גם אם אינו בתעודה" aria-label="חיפוש מוצר בבדיקה הידנית" class="w-full border-2 border-slate-200 rounded-xl p-3 mt-3 text-base">
         </div>
         <div class="p-4 overflow-y-auto min-h-0"><div id="receiptQuantityRows"></div><div id="receiptQuantityExtras"></div></div>
@@ -745,7 +746,7 @@ let receiptDupConfirmed = false; // אישור שמירה למרות חשד לכ
 const RECEIPT_DRAFT_KEY = 'tn_receipt_draft';
 let receivingDigitsMissTimer = null;
 let receivingDigitsMissNotified = '';
-const APP_VERSION = '150'; // הסכמת קריאות על הקוד (שירות 20): מחלוקת על קוד שקריאה חזקה וזולה, או שתי חזקות, הסכימו עליו נסגרת לבד כשהמחיר מאשר
+const APP_VERSION = '151'; // בדיקה שורה-שורה בטלפון, לכל תעודה בנפרד; "התעודה הזאת לא שלנו"; כרטיס הקליטה לפי תעודות
 // גרסה 73: מוצר בלי מחיר קופה — חלון הכמות מציג מיד את העלות ליח׳ (ללא מע״מ) ופותח שדה להקלדת המחיר שעובר בקופה, בלי לנדוד למסך המחירים
 // v40: תג גרסה קבוע בפינת המסך — לדעת בשנייה איזו גרסה באמת רצה על המכשיר
 // (עוזר במיוחד מול מטמון ה-PWA). pointer-events:none — לעולם לא חוסם מגע.
@@ -6383,6 +6384,7 @@ function receiptQuantityButtonsHtml() {
   if (receiptUsesManualQuantities()) return '<div class="space-y-3 mb-3">' +
     '<div class="rounded-xl bg-emerald-50 border border-emerald-200 p-3"><div class="text-xs font-black text-emerald-700"><i class="fa-solid fa-circle-check"></i> התעודה נקראה ואומתה</div>' +
     '<div class="text-lg font-black text-slate-800 mt-1">הגיע בדיוק מה שכתוב בתעודה?</div></div>' +
+    receiptLineCheckButtonHtml('rc-quantity-lines', 'w-full rounded-xl py-4 px-3 text-base', 'כל תעודה בנפרד — בכל שורה: הגיע, כמות אחרת או לא הגיע') + // v151
     '<button data-role="rc-quantity-all" class="btn-tap w-full bg-emerald-600 text-white rounded-xl py-4 px-3 font-black text-base">כן — הכול הגיע כמו בתעודה</button>' +
     '<button data-role="rc-quantity-differences" class="btn-tap w-full bg-white border-2 border-blue-300 text-blue-800 rounded-xl py-4 px-3 font-black text-base">לא — חסר או עודף משהו<span class="block text-xs font-bold text-blue-600 mt-0.5">תבחר את המוצר ותכתוב כמה יחידות</span></button></div>';
   // Folded to its own question. Counting by scanner is the ordinary path, so the
@@ -6391,6 +6393,7 @@ function receiptQuantityButtonsHtml() {
     ' class="bg-white border border-slate-200 rounded-xl p-2 mb-2">' +
     '<summary data-role="rc-quantity-toggle" class="flex items-center justify-between gap-2 cursor-pointer text-xs font-black text-slate-700">' +
     '<span>בדקת ידנית את הכמויות מול התעודה?</span><i class="fa-solid fa-chevron-down hist-chevron shrink-0"></i></summary>' +
+    receiptLineCheckButtonHtml('rc-quantity-lines', 'w-full mt-2 rounded-xl py-2.5 text-sm', '') + // v151
     '<div class="flex gap-2 mt-2">' +
     '<button data-role="rc-quantity-all" class="btn-tap flex-1 bg-emerald-600 text-white rounded-xl py-2.5 font-black text-sm">כל הכמויות תואמות</button>' +
     '<button data-role="rc-quantity-differences" class="btn-tap flex-1 bg-white border-2 border-blue-300 text-blue-800 rounded-xl py-2.5 font-black text-sm">יש חוסרים או עודפים</button></div></details>';
@@ -6408,7 +6411,8 @@ function startReceiptQuantityReview(allMatch) {
   const begin = () => {
     receiptCountingMode = 'manual'; saveReceiptDraft(); renderReceiving();
     const key = receiptQuantityPaperKey(), itemsKey = JSON.stringify(receiptList);
-    if (!allMatch && receiptQuantityReview && receiptQuantityReview.key === key && receiptQuantityReview.itemsKey === itemsKey
+    // v151: בדיקה שורה-שורה שנשמרה אינה "יש חוסרים או עודפים" — החלון הרגיל נבנה מחדש מהספירה
+    if (!allMatch && receiptQuantityReview && receiptQuantityReview.mode !== 'lines' && receiptQuantityReview.key === key && receiptQuantityReview.itemsKey === itemsKey
       && receiptQuantityReview.paperRows === receiptQuantityRowsSignature(paperRows)) {
       renderReceiptQuantityReview(); return;
     }
@@ -6501,13 +6505,16 @@ function receiptQuantityRowSummary(row) {
 }
 function renderReceiptQuantityReview() {
   if (!receiptQuantityReview) return;
+  const lines = receiptQuantityReview.mode === 'lines'; // v151: אותו חלון, בבדיקה שורה-שורה
+  receiptQuantityModalMode(lines);
   $('receiptQuantitySearch').value = '';
   renderReceiptQuantityRows('');
   const m = $('receiptQuantityModal'); m.classList.remove('hidden'); m.classList.add('flex');
-  $('receiptQuantitySearch').focus();
+  if (lines) $('receiptQuantityTitle').focus(); else $('receiptQuantitySearch').focus();
 }
 function renderReceiptQuantityRows(term) {
   if (!receiptQuantityReview) return;
+  if (receiptQuantityReview.mode === 'lines') { renderReceiptLineRows(); return; } // v151
   const query = String(term || '').trim().toLowerCase();
   const matches = r => !query || [r.name, r.barcode, r.code, r.sku, r.supplierItemCode].some(v => String(v || '').toLowerCase().includes(query));
   const rows = receiptQuantityReview.rows;
@@ -6538,6 +6545,12 @@ function receiptQuantityCheckAudit() {
   // התעודה נסגרה בלי הפרש, אבל הפער שהיה נשאר כתוב בה. בלי זה אי אפשר לדעת
   // חודש אחר כך שהכמויות יושרו בהחלטה ולא נספרו כך.
   if (r.settledToPaper) audit.settledToPaper = cloneSafe(r.settledToPaper);
+  // v151: בדיקה שורה-שורה — מה סומן בכל תעודה (לכרטיס בהיסטוריה). בלי מערכים בתוך מערכים (Firestore)
+  if (r.mode === 'lines') {
+    audit.byLine = true;
+    audit.papers = (r.docs || []).map(d => ({ number: d.number || null, amount: d.amount == null ? null : d.amount,
+      lines: (d.lines || []).map(l => ({ productId: l.productId, paperQty: l.paperQty, got: receiptLineGot(l) })) }));
+  }
   return audit;
 }
 function commitReceiptQuantityReview() {
@@ -6565,6 +6578,371 @@ function commitReceiptQuantityReview() {
   if (currentView === 'reconcile' && aiScanAllGood(aiScanEvaluation)
     && !receiptPriceAudit().rows.some(row => row.result === 'difference')) aiApplyInvoiceResult();
   return true;
+}
+
+// ===== v151: בדיקה שורה-שורה בטלפון =====
+// כמו בברמן (גרסה 154 שם): דרך נוספת לבדיקה הידנית, ליד "כל הכמויות תואמות" ו"יש חוסרים או עודפים" — ושתי הקיימות לא
+// משתנות. השורות של כל תעודה בנפרד, עם הפרדה בין התעודות, וכל שורה מסומנת בעצמה — הגיע / כמות אחרת / לא הגיע. בלי
+// "סמן הכל"; "סיום" רק כשכל השורות סומנו. מוצר שמופיע בשתי תעודות — בכל אחת בנפרד, לא בשורה אחת. תעודה שאינה שלנו
+// יוצאת מהקליטה מהכותרת שלה (receivingDropScanDoc — כמו "הסר תעודה" במסך הצילום). "סיום" עובר בדיוק כמו "יש חוסרים
+// או עודפים" (commitReceiptQuantityReview), ולכן ההשוואה, השמירה והתעודה לא משתנות. המצב נשמר בטיוטה
+// (receiptQuantityReview.mode = 'lines') ועובר בין טלפונים כמו הבדיקה הידנית. התעודות מזוהות לפי הסדר בצילום והסכום
+// שנקרא בהן (v141: מספר התעודה המודפס אינו מוצג).
+// receiptLineNotice — הודעה בראש החלון (במקום ההתקדמות) עד הפעולה הבאה: הודעה רגילה (showToast) נשארת מתחת לחלון
+let receiptLineDropAsk = null, receiptLineSearchTerm = '', receiptLineNotice = null;
+function receiptLineCheckButtonHtml(role, cls, sub) {
+  return '<button data-role="' + role + '" class="btn-tap ' + cls + ' bg-indigo-600 text-white font-black"><span class="flex items-center justify-center gap-2"><i class="fa-solid fa-list-check" aria-hidden="true"></i> בדוק שורה-שורה בטלפון</span>' +
+    (sub ? '<span class="block text-xs font-bold text-indigo-100 mt-0.5">' + sub + '</span>' : '') + '</button>';
+}
+function receiptLineRowsText(n) { n = Number(n) || 0; return n === 1 ? 'שורה אחת' : n + ' שורות'; }
+// מספר התעודה כפי שנקרא (המתאם כותב invoiceNumber מ-docNumber) — נשמר בבדיקה, אינו מוצג (v141)
+function receiptLineDocNumber(doc) {
+  const v = doc && (doc.invoiceNumber != null && doc.invoiceNumber !== '' ? doc.invoiceNumber : doc.docNumber);
+  return v == null ? '' : String(v).trim();
+}
+function receiptLineDocAmount(doc) { const v = doc && doc.subtotalExVat; return v == null || v === '' || !Number.isFinite(Number(v)) ? null : r2(Number(v)); }
+// "תעודה 2 (₪1,234.56)" — לפי הסדר בצילום, ואחריו הסכום שנקרא בה
+function receiptLineDocName(d, di) {
+  const i = d && d.doc != null ? d.doc : di;
+  return 'תעודה ' + (Number(i) + 1) + (d && d.amount != null ? ' (₪' + fmtMoney(d.amount) + ')' : '');
+}
+// השורות של כל תעודה בנפרד, עם אותו מיפוי מוצר כמו הבדיקה הידנית (receiptQuantityPaperRows → aiEvaluateInvoiceScan): הזיהוי
+// של השורה (ברקוד, קוד תנובה, תיקון ספרה, הקריאה השנייה, הסכמת הקריאות), ואחריו ההכרעה האוטומטית של אותה שורה. שורת
+// פיקדון אינה סחורה (כמו בהשוואה). הסכום לכל מוצר חייב להיות בדיוק מה שהבדיקה הידנית רואה — אחרת אין פירוק (null).
+// חשבונית זיכוי בתוך הקליטה — לא כאן.
+function receiptLineCheckDocs() {
+  const paperRows = receiptQuantityPaperRows();
+  if (!paperRows) return null;
+  const previous = reconcileData;
+  try {
+    reconcileData = [];
+    const ev = aiEvaluateInvoiceScan(aiScanResponse);
+    const auto = new Map((ev.autoResolutions || []).map(a => [a.documentIndex + ':' + a.rowIndex, a.productId]));
+    const scanDocs = (aiScanResponse.scan.documents || []).slice().sort((a, b) => Number(a.noteIndex) - Number(b.noteIndex));
+    if (scanDocs.length !== aiScanDocuments.length || scanDocs.some((doc, i) => Number(doc.noteIndex) !== i)) return null;
+    const sums = new Map(), docs = [];
+    for (let i = 0; i < scanDocs.length; i++) {
+      const doc = scanDocs[i], rows = Array.isArray(doc.rows) ? doc.rows : [], lines = [];
+      if (doc.__tnuvaCredit) return null;
+      for (let j = 0; j < rows.length; j++) {
+        const row = rows[j] || {};
+        const hit = aiResolveInvoiceBarcode(row);
+        if (aiIsSeparateDepositRow(row, hit)) continue; // פיקדון אינו סחורה (כמו בהשוואה)
+        const raw = row.quantity == null || row.quantity === '' ? NaN : Number(row.quantity);
+        if (!(isFinite(raw) && raw >= 0 && Math.abs(raw - Math.round(raw)) < 0.001)) return null;
+        const qty = Math.round(raw);
+        if (!qty) continue;
+        const pid = hit && hit.barcode && hit.product ? hit.product.id : auto.get(i + ':' + j);
+        const p = pid ? products.find(x => x.id === pid) : null;
+        if (!p) return null;
+        lines.push({ productId: p.id, name: p.name, barcode: p.barcode || '', paperQty: qty, line: Number(row.lineNumber) || j + 1, mark: '', got: '' });
+        sums.set(p.id, (sums.get(p.id) || 0) + qty);
+      }
+      docs.push({ doc: i, scanId: (aiScanDocuments[i] && aiScanDocuments[i].scanId) || null, number: receiptLineDocNumber(doc), amount: receiptLineDocAmount(doc), lines });
+    }
+    if (sums.size !== paperRows.length || paperRows.some(r => sums.get(r.productId) !== r.paperQty)) return null;
+    return { docs, paperRows };
+  } finally { reconcileData = previous; }
+}
+// בדיקה חדשה; מה שכבר סומן (prev) נשאר בשורות שעדיין קיימות — אחרי שתעודה יצאה מהקליטה, או כשחוזרים לבדיקה
+function receiptLineCheckFresh(found, prev) {
+  const keyOf = (d, l) => (d.scanId || '#' + d.doc) + '|' + l.line + '|' + l.productId;
+  const old = new Map();
+  if (prev && prev.mode === 'lines') (prev.docs || []).forEach(d => (d.lines || []).forEach(l => old.set(keyOf(d, l), l)));
+  const docs = found.docs.map(d => ({ ...d, lines: d.lines.map(l => { const o = old.get(keyOf(d, l)); return o && o.paperQty === l.paperQty ? { ...l, mark: o.mark || '', got: o.got || '' } : l; }) }));
+  const onPaper = new Set(found.paperRows.map(r => r.productId));
+  // מה שנספר ואינו בתעודות — "הגיע משהו נוסף" (כמו העודפים שנספרו ב"יש חוסרים או עודפים"); מה שכבר הוסף שם — נשאר
+  const extras = (prev && prev.mode === 'lines' ? (prev.extras || []) : []).filter(x => x && !onPaper.has(x.productId));
+  receiptList.forEach(l => { if (l && !onPaper.has(l.productId) && Number(l.qty) > 0 && !extras.some(x => x.productId === l.productId)) extras.push({ productId: l.productId, name: l.name, barcode: l.barcode || '', got: String(l.qty) }); });
+  const r = { mode: 'lines', key: receiptQuantityPaperKey(), itemsKey: JSON.stringify(receiptList), paperRows: receiptQuantityRowsSignature(found.paperRows), rows: [], confirmedAt: null,
+    products: found.paperRows.map(p => ({ productId: p.productId, name: p.name, barcode: p.barcode, paperQty: p.paperQty })), docs, extras };
+  r.rows = receiptLineRows(r);
+  return r;
+}
+// השורות לכל מוצר — אותו מבנה כמו "יש חוסרים או עודפים". מתעדכנות עם כל סימון, ושורה שעוד לא סומנה נחשבת "הגיע" (כמו
+// בבדיקה הקיימת): טלפון בגרסה 150 שממשיך את הקליטה רואה את הבדיקה הרגילה עם מה שכבר סומן, ולא רשימה ריקה. בסיום כל
+// השורות סומנו, וזו בדיוק התוצאה.
+function receiptLineRows(r) {
+  const got = new Map();
+  (r.docs || []).forEach(d => (d.lines || []).forEach(l => { const g = receiptLineGot(l); got.set(l.productId, (got.get(l.productId) || 0) + (g == null ? l.paperQty : g)); }));
+  return (r.products || []).map(p => {
+    const diff = (got.has(p.productId) ? got.get(p.productId) : p.paperQty) - p.paperQty;
+    return { productId: p.productId, name: p.name, barcode: p.barcode, paperQty: p.paperQty, kind: diff < 0 ? 'shortage' : diff > 0 ? 'surplus' : 'match', difference: String(Math.abs(diff)) };
+  }).concat((r.extras || []).filter(x => receiptLineExtraGot(x) != null).map(x => ({ productId: x.productId, name: x.name, barcode: x.barcode, paperQty: 0, kind: 'surplus', difference: String(receiptLineExtraGot(x)) })));
+}
+// כמה הגיע בשורה: הגיע — כמו בתעודה; לא הגיע — 0; כמות אחרת — מה שהוקלד (מספר שלם, 0 ומעלה). לא סומנה — null
+function receiptLineGot(l) {
+  if (!l) return null;
+  if (l.mark === 'ok') return l.paperQty;
+  if (l.mark === 'none') return 0;
+  if (l.mark === 'qty') { const t = String(l.got == null ? '' : l.got).trim(); return /^\d{1,5}$/.test(t) ? Number(t) : null; }
+  return null;
+}
+function receiptLineExtraGot(x) { const t = String(x && x.got != null ? x.got : '').trim(); return /^\d{1,5}$/.test(t) && Number(t) > 0 ? Number(t) : null; }
+// השורה הראשונה שעוד לא הושלמה (או "נוסף" בלי כמות) — לסיום ולמונה
+function receiptLineCheckOpen(r) {
+  const out = [];
+  (r.docs || []).forEach((d, di) => (d.lines || []).forEach((l, li) => { if (receiptLineGot(l) == null) out.push({ di, li }); }));
+  (r.extras || []).forEach((x, k) => { if (receiptLineExtraGot(x) == null) out.push({ extra: k }); });
+  return out;
+}
+function receiptLineCheckTotal(r) { return (r.docs || []).reduce((a, d) => a + (d.lines || []).length, 0); }
+// הכותרת, ההסבר וכפתור הסיום של החלון — לפי הבדיקה (הבדיקה הקיימת מקבלת בדיוק את הטקסטים שהיו בה)
+function receiptQuantityModalMode(lines) {
+  const title = $('receiptQuantityTitle'), intro = $('receiptQuantityIntro'), progress = $('receiptQuantityProgress'), search = $('receiptQuantitySearch'), ok = $('receiptQuantityConfirm');
+  if (!lines) {
+    title.textContent = 'חוסרים ועודפים';
+    intro.textContent = 'חפש את המוצר, בחר "חוסר" או "עודף" וכתוב כמה יחידות. את שאר המוצרים אל תשנה — בסיום הם יאושרו כמו בתעודה.';
+    progress.className = 'hidden text-sm font-black text-slate-700 mt-2'; progress.textContent = '';
+    search.classList.remove('hidden');
+    ok.className = 'btn-tap w-full bg-blue-600 text-white rounded-xl py-3 font-black text-base'; ok.textContent = 'אשר הפרשים — שאר הכמויות תואמות'; ok.removeAttribute('aria-disabled');
+    return;
+  }
+  title.textContent = 'בדיקה שורה-שורה';
+  intro.textContent = 'עבור על הסחורה וסמן כל שורה: הגיע, כמות אחרת או לא הגיע. כל תעודה בנפרד.';
+  search.classList.add('hidden');
+  refreshReceiptLineProgress();
+}
+function refreshReceiptLineProgress() {
+  const r = receiptQuantityReview; if (!r || r.mode !== 'lines') return;
+  const total = receiptLineCheckTotal(r), open = receiptLineCheckOpen(r), openLines = open.filter(x => x.extra == null).length;
+  const progress = $('receiptQuantityProgress'), ok = $('receiptQuantityConfirm');
+  if (progress) {
+    const n = receiptLineNotice;
+    progress.className = 'text-sm font-black mt-2 ' + (n ? (n.tone === 'warn' ? 'text-rose-700' : 'text-emerald-700') : 'text-slate-700');
+    progress.textContent = n ? n.text : !open.length ? 'כל ' + receiptLineRowsText(total) + ' סומנו — אפשר לסיים' : 'סומנו ' + (total - openLines) + ' מתוך ' + receiptLineRowsText(total);
+  }
+  // אפור ולא מושבת — לחיצה כשאי אפשר לסיים אומרת מה נשאר ומביאה אליו
+  if (ok) {
+    ok.className = 'btn-tap w-full rounded-xl py-3 font-black text-base text-white ' + (open.length ? 'bg-slate-400' : 'bg-blue-600');
+    ok.textContent = open.length ? 'סיום (נשארו ' + open.length + ')' : 'סיום — שמור את הבדיקה';
+    ok.setAttribute('aria-disabled', open.length ? 'true' : 'false');
+  }
+}
+function receiptLineSumText(l) {
+  const n = receiptLineGot(l);
+  if (n == null) return 'הקלד כמה יחידות הגיעו';
+  return n === l.paperQty ? 'כמו בתעודה' : 'התקבלו ' + n + ' · ' + (n < l.paperQty ? 'חוסר ' + (l.paperQty - n) : 'עודף ' + (n - l.paperQty));
+}
+function receiptLineRowHtml(di, li, l) {
+  const id = di + ':' + li;
+  const tone = { ok: 'border-emerald-300 bg-emerald-50', qty: 'border-amber-300 bg-amber-50', none: 'border-rose-300 bg-rose-50' }[l.mark] || 'border-slate-200 bg-white';
+  const btn = (mark, icon, text, on) => '<button type="button" data-line-mark="' + id + ':' + mark + '" aria-pressed="' + (l.mark === mark ? 'true' : 'false') + '" class="btn-tap min-h-[44px] rounded-lg px-1 text-sm font-black flex items-center justify-center gap-1 ' +
+    (l.mark === mark ? on : 'bg-white border border-slate-300 text-slate-700') + '"><i class="fa-solid ' + icon + '" aria-hidden="true"></i> ' + text + '</button>';
+  return '<div id="lineCheck_' + di + '_' + li + '" class="rounded-xl border-2 p-3 mb-2 ' + tone + '">' +
+    '<div class="flex items-start justify-between gap-2"><div class="font-black text-base text-slate-800 min-w-0">' + htmlEscape(l.name) + '</div>' +
+      '<div class="shrink-0 text-sm font-black text-slate-600">בתעודה: ' + l.paperQty + '</div></div>' +
+    '<div class="grid grid-cols-3 gap-1.5 mt-2" role="group" aria-label="' + htmlEscape(l.name) + ' — מה הגיע">' +
+      btn('ok', 'fa-check', 'הגיע', 'bg-emerald-600 text-white') + btn('qty', 'fa-pen', 'כמות אחרת', 'bg-amber-500 text-white') + btn('none', 'fa-xmark', 'לא הגיע', 'bg-rose-600 text-white') +
+    '</div>' +
+    (l.mark === 'qty' ? '<label class="flex items-center gap-2 mt-2 text-sm font-bold text-slate-700">כמה הגיע?<input data-line-got="' + id + '" type="text" inputmode="numeric" autocomplete="off" value="' + htmlEscape(l.got) + '" aria-label="כמה הגיע: ' + htmlEscape(l.name) + '" class="w-24 border-2 border-amber-300 rounded-lg p-2 text-base text-center font-black bg-white"></label>' +
+      '<div id="lineCheckSum_' + di + '_' + li + '" class="text-sm font-bold mt-1 text-amber-800" aria-live="polite">' + receiptLineSumText(l) + '</div>' : '') +
+  '</div>';
+}
+function receiptLineSearchResultsHtml(term) {
+  const r = receiptQuantityReview, q = String(term || '').trim().toLowerCase();
+  if (!r || !q) return '';
+  const taken = new Set((r.docs || []).flatMap(d => (d.lines || []).map(l => l.productId)).concat((r.extras || []).map(x => x.productId)));
+  const list = products.filter(p => p && !taken.has(p.id) && [p.name, p.barcode, p.code, p.sku, p.supplierItemCode].some(v => String(v || '').toLowerCase().includes(q))).slice(0, 8);
+  return list.length ? list.map(p => '<button type="button" data-extra-add="' + htmlEscape(p.id) + '" class="btn-tap block w-full border border-amber-300 text-amber-900 bg-white rounded-xl p-3 mb-2 text-right text-base font-bold">+ ' + htmlEscape(p.name) + '</button>').join('')
+    : '<div class="text-sm font-bold text-slate-500 py-2">לא נמצא מוצר כזה</div>';
+}
+function receiptLineExtrasHtml(r) {
+  const rows = (r.extras || []).map((x, k) => '<div id="lineExtra_' + k + '" class="rounded-xl border-2 border-amber-300 bg-amber-50 p-3 mb-2">' +
+    '<div class="flex items-center justify-between gap-2"><div class="font-black text-base text-slate-800 min-w-0">' + htmlEscape(x.name) + '</div>' +
+      '<button type="button" data-extra-remove="' + k + '" class="btn-tap shrink-0 min-h-[44px] px-3 text-rose-700 font-black text-sm" aria-label="הסר: ' + htmlEscape(x.name) + '">הסר</button></div>' +
+    '<label class="flex items-center gap-2 mt-1 text-sm font-bold text-slate-700">כמה הגיע?<input data-extra-got="' + k + '" type="text" inputmode="numeric" autocomplete="off" value="' + htmlEscape(x.got) + '" aria-label="כמה הגיע: ' + htmlEscape(x.name) + '" class="w-24 border-2 border-amber-300 rounded-lg p-2 text-base text-center font-black bg-white"></label></div>').join('');
+  return '<section class="mt-4 pt-3 border-t-2 border-slate-200" aria-label="הגיע משהו נוסף">' +
+    '<div class="font-black text-base text-slate-800">הגיע משהו נוסף?</div>' +
+    '<div class="text-sm font-bold text-slate-600 mb-2">מוצר שאינו באף תעודה — חפש אותו והקלד כמה הגיע.</div>' + rows +
+    '<input data-line-search type="search" value="' + htmlEscape(receiptLineSearchTerm) + '" placeholder="חפש מוצר לפי שם או ברקוד" aria-label="חיפוש מוצר שהגיע בנוסף" class="w-full border-2 border-slate-200 rounded-xl p-3 text-base">' +
+    '<div id="receiptLineSearchResults" class="mt-2">' + receiptLineSearchResultsHtml(receiptLineSearchTerm) + '</div></section>';
+}
+function receiptLineCheckHtml(r) {
+  const multi = r.docs.length > 1;
+  // "לא שלנו" — רק כשיש עוד תעודה בקליטה (תעודה יחידה שאינה שלנו: מבטלים את הקליטה)
+  const canDrop = multi;
+  return r.docs.map((d, di) => {
+    const units = d.lines.reduce((a, l) => a + l.paperQty, 0);
+    const sep = di ? '<div class="flex items-center gap-2 my-4 text-xs font-black text-slate-500" aria-hidden="true"><span class="flex-1 border-t-2 border-dashed border-slate-300"></span>תעודה נפרדת<span class="flex-1 border-t-2 border-dashed border-slate-300"></span></div>' : '';
+    const ask = canDrop && receiptLineDropAsk === di
+      ? '<div class="mt-2 bg-white border-2 border-rose-300 rounded-xl p-3"><div class="text-sm font-black text-rose-800">להוציא את ' + htmlEscape(receiptLineDocName(d, di)) + ' מהקליטה?</div>' +
+          '<div class="text-sm font-bold text-slate-700 mt-1">השורות שלה לא ייספרו, והצילום והקריאה שלה נמחקים מהטלפון — כמו "הסר תעודה" במסך הצילום. אם זו התעודה שלך, לחץ "ביטול".</div>' +
+          '<div class="grid grid-cols-2 gap-2 mt-2"><button type="button" data-line-drop-yes="' + di + '" class="btn-tap min-h-[44px] rounded-lg bg-rose-600 text-white font-black text-sm">הוצא מהקליטה</button>' +
+          '<button type="button" data-line-drop-no="' + di + '" class="btn-tap min-h-[44px] rounded-lg bg-white border border-slate-300 text-slate-700 font-black text-sm">ביטול</button></div></div>' : '';
+    const head = '<div class="bg-slate-100 border-r-4 border-blue-500 rounded-xl p-3 mb-2">' +
+      '<div class="flex items-start justify-between gap-2"><div class="min-w-0">' +
+        '<div class="font-black text-base text-slate-800">' + (multi ? 'תעודה ' + (di + 1) + ' מתוך ' + r.docs.length : 'התעודה') + '</div>' +
+        '<div class="text-sm font-bold text-slate-700">' + (d.amount != null ? '₪' + fmtMoney(d.amount) + ' בנייר · ' : '') + receiptLineRowsText(d.lines.length) + ' · ' + units + ' יח׳</div></div>' +
+        (canDrop && receiptLineDropAsk !== di ? '<button type="button" data-line-drop="' + di + '" class="btn-tap shrink-0 min-h-[44px] px-3 rounded-lg bg-white border border-rose-300 text-rose-700 text-xs font-black">התעודה הזאת לא שלנו</button>' : '') +
+      '</div>' + ask + '</div>';
+    return '<section aria-label="' + htmlEscape(receiptLineDocName(d, di)) + '">' + sep + head + d.lines.map((l, li) => receiptLineRowHtml(di, li, l)).join('') + '</section>';
+  }).join('') + receiptLineExtrasHtml(r);
+}
+// focus: הכפתור או השדה שהיו בפוקוס — חוזרים אליו אחרי הציור (בלי לגלול). שדה כמות חדש — עם גלילה אליו, כדי
+// שהמקלדת שנפתחת לא תסתיר אותו
+function renderReceiptLineRows(focus) {
+  const r = receiptQuantityReview; if (!r || r.mode !== 'lines') return;
+  $('receiptQuantityRows').innerHTML = receiptLineCheckHtml(r);
+  $('receiptQuantityExtras').innerHTML = '';
+  refreshReceiptLineProgress();
+  if (focus) {
+    const el = $('receiptQuantityRows').querySelector(focus);
+    if (el) { if (el.tagName === 'INPUT') el.focus(); else { try { el.focus({ preventScroll: true }); } catch (e) { el.focus(); } } }
+  }
+}
+function receiptLineCheckChanged() {
+  const r = receiptQuantityReview;
+  if (r) { r.confirmedAt = null; if (r.mode === 'lines') r.rows = receiptLineRows(r); }
+  saveReceiptDraft();
+}
+function startReceiptLineCheck() {
+  if (!canEditDraft('receiving')) return;
+  const found = receiptLineCheckDocs();
+  if (!found) {
+    if (!receiptQuantityPaperRows()) {
+      showToast('צריך להשלים את זיהוי המוצרים ובדיקת הפענוח לפני אישור הכמויות', null, null, 4500);
+      if (aiScanResponse && !aiScanBusy && receiptPaperScanState === 'ok') openReconcile();
+    } else showToast('בקליטה הזאת אי אפשר לחלק את השורות לפי תעודה — בחר "כל הכמויות תואמות" או "יש חוסרים או עודפים"', null, null, 5000);
+    return;
+  }
+  const r = receiptQuantityReview;
+  const resume = !!r && r.mode === 'lines' && r.key === receiptQuantityPaperKey() && r.itemsKey === JSON.stringify(receiptList) && r.paperRows === receiptQuantityRowsSignature(found.paperRows);
+  const begin = () => {
+    receiptCountingMode = 'manual';
+    // הקליטה השתנתה מאז (תעודה נוספת נכנסה, למשל) — בדיקה חדשה, ומה שכבר סומן בשורות שנשארו כמו שהן — נשאר
+    if (!resume) { receiptQuantityReview = receiptLineCheckFresh(found, r && r.mode === 'lines' ? r : null); receiptLineDropAsk = null; receiptLineSearchTerm = ''; }
+    receiptLineNotice = null;
+    saveReceiptDraft(); renderReceiving();
+    renderReceiptQuantityReview();
+  };
+  const counted = receiptList.reduce((a, l) => a + (Number(l && l.qty) || 0), 0);
+  if (counted > 0 && !resume) showConfirm('בדיקה שורה-שורה', 'כבר נספרו ' + counted + ' יח׳. בסיום הבדיקה הספירה תוחלף במה שסימנת בשורות. מה שנספר ואינו בתעודות יופיע ב"הגיע משהו נוסף".', 'התחל בדיקה', begin);
+  else begin();
+}
+function receiptLineCheckClick(e) {
+  const r = receiptQuantityReview; if (!r || r.mode !== 'lines') return;
+  const t = e.target.closest('[data-line-mark], [data-line-drop], [data-line-drop-yes], [data-line-drop-no], [data-extra-add], [data-extra-remove]');
+  if (!t) return;
+  if (t.dataset.lineMark) {
+    const [di, li, mark] = t.dataset.lineMark.split(':'); const l = r.docs[+di] && r.docs[+di].lines[+li];
+    if (!l || ['ok', 'qty', 'none'].indexOf(mark) === -1) return;
+    if (l.mark !== mark) { l.mark = mark; if (mark !== 'qty') l.got = ''; }
+    receiptLineDropAsk = null; receiptLineNotice = null; receiptLineCheckChanged();
+    renderReceiptLineRows(mark === 'qty' ? '[data-line-got="' + di + ':' + li + '"]' : '[data-line-mark="' + t.dataset.lineMark + '"]');
+    return;
+  }
+  if (t.dataset.lineDrop != null) { receiptLineDropAsk = +t.dataset.lineDrop; receiptLineNotice = null; renderReceiptLineRows('[data-line-drop-no="' + t.dataset.lineDrop + '"]'); return; }
+  if (t.dataset.lineDropNo != null) { const di = t.dataset.lineDropNo; receiptLineDropAsk = null; renderReceiptLineRows('[data-line-drop="' + di + '"]'); return; }
+  if (t.dataset.lineDropYes != null) { receiptLineCheckDrop(+t.dataset.lineDropYes); return; }
+  if (t.dataset.extraAdd) {
+    const p = products.find(x => x.id === t.dataset.extraAdd);
+    if (!p || r.docs.some(d => d.lines.some(l => l.productId === p.id)) || (r.extras || []).some(x => x.productId === p.id)) return;
+    (r.extras = r.extras || []).push({ productId: p.id, name: p.name, barcode: p.barcode || '', got: '1' });
+    receiptLineSearchTerm = ''; receiptLineNotice = null; receiptLineCheckChanged();
+    renderReceiptLineRows('[data-extra-got="' + (r.extras.length - 1) + '"]');
+    return;
+  }
+  if (t.dataset.extraRemove != null) {
+    const k = +t.dataset.extraRemove; if (!r.extras || !r.extras[k]) return;
+    r.extras.splice(k, 1); receiptLineNotice = null; receiptLineCheckChanged(); renderReceiptLineRows('[data-line-search]');
+  }
+}
+function receiptLineCheckInput(e) {
+  const r = receiptQuantityReview, el = e.target; if (!r || r.mode !== 'lines' || !el || !el.dataset) return;
+  if (el.dataset.lineGot) {
+    const [di, li] = el.dataset.lineGot.split(':'); const l = r.docs[+di] && r.docs[+di].lines[+li]; if (!l) return;
+    l.got = el.value; receiptLineNotice = null; receiptLineCheckChanged();
+    const sum = $('lineCheckSum_' + di + '_' + li); if (sum) sum.textContent = receiptLineSumText(l);
+    refreshReceiptLineProgress();
+  } else if (el.dataset.extraGot != null) {
+    const x = r.extras && r.extras[+el.dataset.extraGot]; if (!x) return;
+    x.got = el.value; receiptLineNotice = null; receiptLineCheckChanged(); refreshReceiptLineProgress();
+  } else if (el.dataset.lineSearch != null) {
+    receiptLineSearchTerm = el.value;
+    const box = $('receiptLineSearchResults'); if (box) box.innerHTML = receiptLineSearchResultsHtml(el.value);
+  }
+}
+// סיום: כל השורות סומנו → אותן שורות לכל מוצר כמו "יש חוסרים או עודפים", ומשם בדיוק אותה דרך (commitReceiptQuantityReview)
+function finishReceiptLineCheck() {
+  if (!canEditDraft('receiving')) return false;
+  const r = receiptQuantityReview; if (!r || r.mode !== 'lines') return false;
+  const open = receiptLineCheckOpen(r);
+  if (open.length) {
+    const first = open[0];
+    const lines = open.filter(x => x.extra == null).length;
+    // ההודעה בראש החלון (showToast נשאר מתחת לחלון), והשורה הראשונה שנשארה — מסומנת ובמרכז המסך
+    receiptLineNotice = { tone: 'warn', text: lines ? (lines === 1 ? 'נשארה שורה אחת בלי סימון' : 'נשארו ' + lines + ' שורות בלי סימון') + ' — סמן בכל שורה: הגיע, כמות אחרת או לא הגיע'
+      : 'הקלד כמה הגיע מכל מוצר נוסף, או הסר אותו' };
+    renderReceiptLineRows();
+    const el = first.extra != null ? $('lineExtra_' + first.extra) : $('lineCheck_' + first.di + '_' + first.li);
+    if (el) {
+      el.classList.add('ring-4', 'ring-rose-300');
+      try { el.scrollIntoView({ block: 'center', behavior: 'smooth' }); } catch (err) {}
+      const b = el.querySelector('button, input'); if (b) { try { b.focus({ preventScroll: true }); } catch (err) { b.focus(); } }
+    }
+    return false;
+  }
+  const paperRows = receiptQuantityPaperRows();
+  if (!paperRows || receiptQuantityRowsSignature(r.products || []) !== receiptQuantityRowsSignature(paperRows)) {
+    closeReceiptQuantityReview();
+    showToast('התעודה או הכמויות השתנו. פתח שוב את הבדיקה לפני הסיום.', null, null, 4500);
+    return false;
+  }
+  r.rows = receiptLineRows(r); // כל השורות סומנו — מה שסומן, בדיוק
+  return commitReceiptQuantityReview();
+}
+// "התעודה הזאת לא שלנו": התעודה יוצאת מהקליטה הפתוחה (receivingDropScanDoc), והבדיקה ממשיכה עם התעודות שנשארו —
+// מה שכבר סומן בהן נשאר
+function receiptLineCheckDrop(di) {
+  const r = receiptQuantityReview, d = r && r.mode === 'lines' && r.docs[di];
+  receiptLineDropAsk = null;
+  if (!d) return;
+  if (!canEditDraft('receiving')) { renderReceiptLineRows(); return; }
+  const name = receiptLineDocName(d, di);
+  if (!receivingDropScanDoc(d.doc)) { receiptLineNotice = { tone: 'warn', text: 'לא הצלחתי להוציא את התעודה מהקליטה — נסה שוב' }; renderReceiptLineRows(); return; }
+  const found = receiptLineCheckDocs();
+  receiptQuantityReview = found ? receiptLineCheckFresh(found, r) : null;
+  saveReceiptDraft(); renderReceiving();
+  if (receiptQuantityReview) { receiptLineNotice = { tone: 'ok', text: name + ' יצאה מהקליטה, והצילום שלה נמחק מהטלפון' }; renderReceiptQuantityReview(); }
+  else { closeReceiptQuantityReview(); showToast(name + ' יצאה מהקליטה — בחר שוב איך לבדוק את הכמויות', null, null, 4000); }
+}
+// תעודה שצולמה לקליטה הפתוחה ואינה שלנו — יוצאת ממנה כאילו לא צולמה, בדיוק כמו "הסר תעודה" במסך הצילום
+// (rc-photo-remove-doc): הצילום והקריאה שלה נמחקים מהטלפון, התעודות שנשארו ממוספרות מחדש (receiptRebuildScanResponse),
+// והעוגנים נקראים מחדש מהן (receiptScanChanged → tnuvaAdoptPaperAnchors). רק כשנשארת עוד תעודה, וכל התעודות כבר
+// נקראו ואומתו. אם הקליטה לא חוזרת ל"נקראה ואומתה" — הכול חוזר בדיוק למה שהיה, ו-null.
+function receivingDropScanDoc(docIndex) {
+  const n = aiScanDocuments.length;
+  if (aiScanBusy || receiptEntryMode !== 'photo' || n < 2 || !(docIndex >= 0 && docIndex < n)) return null;
+  receiptRememberScanResults();
+  if (!aiScanDocuments.every(tnuvaCachedDoc)) return null;
+  const before = { docs: aiScanDocuments, notes: receiptNotes, resp: aiScanResponse, evaluation: aiScanEvaluation, reused: aiScanReused,
+    state: receiptPaperScanState, problems: receiptPaperScanProblems, source: receiptAnchorSource, manual: receiptManualInput,
+    reconcile: reconcileData, audit: reconcileAiAudit, pending: pendingReceipt, dup: receiptDupConfirmed, lines: receiptLinesConfirmed,
+    error: aiScanError, rotation: aiScanAutoRotationNote, attempts: aiScanAttemptCount, analyze: [aiAnalyzeResult, aiAnalyzeError, aiAnalyzeBusy],
+    reconcileDraft: receiptReconcileDraft, reconcileSession: receiptReconcileSession, reconcileSource: receiptReconcileSource };
+  aiScanDocuments = aiScanDocuments.filter((d, i) => i !== docIndex);
+  aiScanDocuments.forEach((d, i) => { d.noteIndex = i; });
+  receiptScanChanged(); // הקריאה נבנית מחדש מהתעודות שנשארו, והעוגנים נקראים מהן
+  const ok = receiptPaperScanState === 'ok' && !!aiScanResponse && !!aiScanResponse.scan && aiScanResponse.scan.documents.length === n - 1 && receiptNotes.length === n - 1;
+  if (!ok) {
+    aiScanDocuments = before.docs; aiScanDocuments.forEach((d, i) => { d.noteIndex = i; });
+    aiScanResponse = before.resp; receiptRebuildScanResponse();
+    receiptNotes = before.notes; recomputeNoteTotal();
+    aiScanEvaluation = before.evaluation; aiScanReused = before.reused;
+    receiptPaperScanState = before.state; receiptPaperScanProblems = before.problems; receiptAnchorSource = before.source; receiptManualInput = before.manual;
+    reconcileData = before.reconcile; reconcileAiAudit = before.audit; pendingReceipt = before.pending; receiptDupConfirmed = before.dup; receiptLinesConfirmed = before.lines;
+    aiScanError = before.error; aiScanAutoRotationNote = before.rotation; aiScanAttemptCount = before.attempts;
+    [aiAnalyzeResult, aiAnalyzeError, aiAnalyzeBusy] = before.analyze;
+    receiptReconcileDraft = before.reconcileDraft; receiptReconcileSession = before.reconcileSession; receiptReconcileSource = before.reconcileSource;
+    saveReceiptDraft();
+    return null;
+  }
+  // ההשוואה והסיכום נבנים מחדש מהתעודות שנשארו
+  reconcileData = null; pendingReceipt = null; receiptDupConfirmed = false; receiptLinesConfirmed = false;
+  receiptReconcileDraft = null; receiptReconcileSession = null; receiptReconcileSource = null;
+  saveReceiptDraft();
+  return { docIndex };
 }
 
 function renderReceiving() {
@@ -18295,6 +18673,108 @@ function returnsBalanceBannerHtml() {
   if (balInfo.bal < -0.5) return '<div class="bg-blue-600 text-white rounded-2xl p-4 mb-3 shadow-md"><div class="font-black text-lg flex items-center gap-2"><i class="fa-solid fa-scale-unbalanced-flip"></i> זוכית ₪' + fmtMoney(-balInfo.bal) + ' יותר מסך הכל</div><div class="text-xs text-white/90 mt-1">הספק זיכה אותך יותר ממה שהחזרת — יתקזז מול פער עתידי</div></div>';
   return '<div class="bg-emerald-500 text-white rounded-2xl p-4 mb-3 shadow-md"><div class="font-black text-lg flex items-center gap-2"><i class="fa-solid fa-scale-balanced"></i> מאזן הזיכויים מול הספק מאוזן ✓</div><div class="text-xs text-white/90 mt-1">כל הפערים מתקזזים — אין חוב זיכוי פתוח</div></div>';
 }
+// v151: כרטיס הקליטה — השורות של כל תעודה בנפרד, עם הפרדה, כשבקליטה יותר מתעודה אחת. מהקריאה ששמורה בקליטה
+// (paperScan): כמה מכל מוצר בכל תעודה. מה שנספר — לפי מה שסומן בבדיקה שורה-שורה, כשנשמרה ומתאימה. בלעדיה — רק מה
+// שידוע בוודאות (מוצר שבכמה תעודות עם הפרש — אין לדעת באיזו). כשהמספרים לא נסגרים מול שורות הקליטה (תיקון אחרי השמירה,
+// שורה שלא זוהתה, תעודה בלי שורות, חשבונית זיכוי בתוך הקליטה) — null, והכרטיס בדיוק כמו קודם.
+const receiptStoredScanCache = new WeakMap();
+// הקריאה השמורה בקליטה ארוזה (packReceiptValue): JSON נפתח כאן פעם אחת לכל קליטה; gzip נפתח רק באופן אסינכרוני — ואז הכרטיס כמו קודם
+function receiptStoredScan(rc) {
+  const ps = rc && rc.paperScan;
+  if (!ps || typeof ps !== 'object') return null;
+  if (ps.scan && Array.isArray(ps.scan.documents)) return ps;
+  if (ps.encoding !== 'json' || typeof ps.data !== 'string') return null;
+  if (receiptStoredScanCache.has(ps)) return receiptStoredScanCache.get(ps);
+  let parsed = null;
+  try { parsed = JSON.parse(ps.data); } catch (e) { parsed = null; }
+  if (!parsed || !parsed.scan || !Array.isArray(parsed.scan.documents)) parsed = null;
+  receiptStoredScanCache.set(ps, parsed);
+  return parsed;
+}
+function receiptPaperSections(rc) {
+  const resp = receiptStoredScan(rc);
+  const scanDocs = resp ? resp.scan.documents.slice().sort((a, b) => Number(a.noteIndex) - Number(b.noteIndex)) : [];
+  if (scanDocs.length < 2) return null;
+  if (scanDocs.some(d => !d || d.__tnuvaCredit)) return null;
+  // ההכרעות האוטומטיות של השורות שלא זוהו לפי הקוד — נשמרו ביומן הקליטה
+  const auto = new Map((rc.aiAudit && Array.isArray(rc.aiAudit.clientAutoResolutions) ? rc.aiAudit.clientAutoResolutions : []).map(a => [a.documentIndex + ':' + a.rowIndex, a.productId]));
+  const isDep = l => !!(l && (l.isDeposit || String(l.productId || '').indexOf('deposit-') === 0));
+  const items = (rc.items || []).filter(l => l && !isDep(l));
+  const byPid = new Map();
+  for (const l of items) { if (!l.productId || byPid.has(l.productId)) return null; byPid.set(l.productId, l); }
+  const sections = [], per = new Map();
+  for (let si = 0; si < scanDocs.length; si++) {
+    const doc = scanDocs[si], rows = Array.isArray(doc.rows) ? doc.rows : [], qtys = new Map();
+    let lineCount = 0;
+    for (let ri = 0; ri < rows.length; ri++) {
+      const row = rows[ri];
+      if (!row || aiIsSeparateDepositRow(row)) continue;
+      const raw = row.quantity != null && row.quantity !== '' ? Number(row.quantity) : NaN;
+      if (!(isFinite(raw) && raw >= 0 && Math.abs(raw - Math.round(raw)) < 0.001)) return null;
+      const qty = Math.round(raw);
+      if (!qty) continue;
+      let pid = row.__tnuvaProductId || auto.get(si + ':' + ri) || null;
+      if (!pid) { const hit = aiResolveInvoiceBarcode(row); pid = hit && hit.product ? hit.product.id : null; }
+      if (!pid || !byPid.has(pid)) return null;
+      qtys.set(pid, (qtys.get(pid) || 0) + qty); lineCount++;
+      per.set(pid, (per.get(pid) || 0) + qty);
+    }
+    sections.push({ amount: receiptLineDocAmount(doc), lineCount, qtys, got: new Map() });
+  }
+  const billedOf = l => l.noteQty != null ? Number(l.noteQty) || 0 : Number(l.qty) || 0;
+  if (sections.some(s => !s.lineCount)) return null; // תעודה בלי שורות שנקראו — אין מה לחלק
+  for (const [pid, sum] of per) if (billedOf(byPid.get(pid)) !== sum) return null;
+  if (items.some(l => !per.has(l.productId) && billedOf(l) !== 0)) return null; // חויב משהו שאינו באף תעודה — לא נסגר
+  // מה שסומן בבדיקה שורה-שורה — רק כשמתאים בדיוק לתעודות ולמה שנשמר
+  const qc = rc.quantityCheck;
+  let exact = !!(qc && qc.byLine && Array.isArray(qc.papers) && qc.papers.length === sections.length);
+  if (exact) {
+    const totals = new Map();
+    sections.forEach((s, si) => {
+      const pq = new Map(), pg = new Map();
+      (Array.isArray(qc.papers[si].lines) ? qc.papers[si].lines : []).forEach(x => { pq.set(x.productId, (pq.get(x.productId) || 0) + (Number(x.paperQty) || 0)); pg.set(x.productId, (pg.get(x.productId) || 0) + (Number(x.got) || 0)); });
+      if (pq.size !== s.qtys.size || [...s.qtys].some(([pid, q]) => pq.get(pid) !== q)) exact = false;
+      pg.forEach((g, pid) => { s.got.set(pid, g); totals.set(pid, (totals.get(pid) || 0) + g); });
+    });
+    if (exact && [...per.keys()].some(pid => totals.get(pid) !== (Number(byPid.get(pid).qty) || 0))) exact = false;
+  }
+  if (!exact) {
+    // בלי מה שסומן: מוצר שבתעודה אחת — מה שנספר שלו; מוצר שבכמה תעודות — רק כשהגיע בדיוק מה שחויב (אחרת אין לדעת באיזו
+    // תעודה ההפרש, ולא מנחשים — הכרטיס כמו קודם)
+    for (const [pid, sum] of per) {
+      const where = sections.filter(s => s.qtys.has(pid)), got = Number(byPid.get(pid).qty) || 0;
+      if (where.length > 1 && got !== sum) return null;
+      where.forEach(s => s.got.set(pid, where.length > 1 ? s.qtys.get(pid) : got));
+    }
+  }
+  const row = (l, billed, got) => ({ name: l.name, billed, got, deposit: false });
+  return {
+    sections: sections.map(s => ({ amount: s.amount, lineCount: s.lineCount, units: [...s.qtys.values()].reduce((a, q) => a + q, 0),
+      rows: [...s.qtys].map(([pid, q]) => row(byPid.get(pid), q, s.got.get(pid) || 0)) })),
+    others: items.filter(l => !per.has(l.productId)).map(l => row(l, billedOf(l), Number(l.qty) || 0))
+      .concat((rc.items || []).filter(isDep).map(l => ({ name: l.name, billed: billedOf(l), got: Number(l.qty) || 0, deposit: true })))
+  };
+}
+function receiptPaperSectionsHtml(sec) {
+  // שורה — מה שנספר, ו"חויב" כשיש הפרש (הכסף של הקליטה כולה — בשורת השווי שמתחת, כמו קודם)
+  const rowHtml = x => {
+    const diff = x.billed - x.got;
+    return '<div class="flex items-center justify-between gap-2 py-1 border-b border-slate-100 last:border-0">' +
+      '<div class="min-w-0"><div class="text-sm font-bold text-slate-700 truncate">' + htmlEscape(x.name) + '</div>' +
+        (x.deposit ? '<div class="text-[11px] text-slate-400">פיקדון</div>' : '') + '</div>' +
+      '<div class="text-sm font-black shrink-0 ' + (diff > 0 ? 'text-rose-600' : (diff < 0 ? 'text-amber-600' : 'text-slate-600')) + '">' + x.got + ' יח׳' + (diff ? ' <span class="text-[11px] font-bold">(חויב ' + x.billed + ')</span>' : '') + '</div>' +
+    '</div>';
+  };
+  const sep = '<div class="flex items-center gap-2 my-2 text-[11px] font-black text-slate-500" aria-hidden="true"><span class="flex-1 border-t-2 border-dashed border-slate-300"></span>תעודה נפרדת<span class="flex-1 border-t-2 border-dashed border-slate-300"></span></div>';
+  const n = sec.sections.length;
+  return sec.sections.map((s, i) => (i ? sep : '') +
+    '<div class="bg-slate-50 rounded-xl p-3 border border-slate-100">' +
+      '<div class="border-r-4 border-blue-500 pr-2 mb-1.5"><div class="text-xs font-black text-slate-800">תעודה ' + (i + 1) + ' מתוך ' + n + '</div>' +
+        '<div class="text-[11px] font-bold text-slate-600">' + (s.amount != null ? '₪' + fmtMoney(s.amount) + ' בנייר · ' : '') + '<span class="whitespace-nowrap">' + receiptLineRowsText(s.lineCount) + ' · ' + s.units + ' יח׳</span></div></div>' +
+      s.rows.map(rowHtml).join('') +
+    '</div>').join('') +
+    (sec.others.length ? '<div class="bg-slate-50 rounded-xl p-3 border border-slate-100 mt-2"><div class="text-xs font-black text-slate-800 mb-1.5">לא באף תעודה</div>' + sec.others.map(rowHtml).join('') + '</div>' : '');
+}
 function renderReceiptsHistory() {
   // v140: ארכוב וחתימה ברקע מציירים את המסך מחדש — הטווח שהמשתמש בודק לא מתאפס
   const rangeState = $('rcFrom') && $('rcTo') ? { from: $('rcFrom').value, to: $('rcTo').value,
@@ -18334,6 +18814,7 @@ function renderReceiptsHistory() {
         '<div class="text-sm font-black text-slate-600 shrink-0">₪' + fmtMoney(l.lineTotal) + '</div>' +
       '</div>'
     ).join('');
+    const paperSections = receiptPaperSections(rc); // v151: כמה תעודות בקליטה — השורות של כל אחת בנפרד
     const aiHistoryFindings = rc.aiAudit && Array.isArray(rc.aiAudit.findings)
       ? rc.aiAudit.findings.filter(f => ['shortage', 'surplus', 'price', 'promo_missing'].includes(f.type))
       : [];
@@ -18391,12 +18872,12 @@ function renderReceiptsHistory() {
           '<span><i class="fa-solid fa-file-invoice"></i> תעודת קליטה</span><span class="shrink-0">' + statusTxt + '</span>' +
         '</div>' +
         '<div class="p-4 flex items-center justify-between gap-2">' +
-        '<div class="min-w-0"><div class="font-black text-slate-800 text-sm">' + dateStr + '</div><div class="text-xs text-slate-400 mt-0.5">' + (rc.count || (rc.items || []).length) + ' פריטים' + (rc.noteParts && rc.noteParts.length > 1 ? ' · <span class="text-blue-600 font-black">' + rc.noteParts.length + ' תעודות ספק</span>' : '') + metaStatus + (rc.quantityCheck && rc.quantityCheck.method === 'settled_to_paper' ? ' · <span class="text-slate-600 font-bold">נסגר לפי התעודה' + (rc.quantityCheck.settledToPaper && rc.quantityCheck.settledToPaper.waived && rc.quantityCheck.settledToPaper.waived.length ? ' · ' + rc.quantityCheck.settledToPaper.waived.length + ' שורות יושרו' : '') + '</span>' : rc.quantityCheck && rc.quantityCheck.method === 'manual' ? ' · <span class="text-slate-600 font-bold">הכמויות אושרו ידנית</span>' : '') + '</div></div>' +
+        '<div class="min-w-0"><div class="font-black text-slate-800 text-sm">' + dateStr + '</div><div class="text-xs text-slate-400 mt-0.5">' + (rc.count || (rc.items || []).length) + ' פריטים' + (rc.noteParts && rc.noteParts.length > 1 ? ' · <span class="text-blue-600 font-black">' + rc.noteParts.length + ' תעודות ספק</span>' : '') + metaStatus + (rc.quantityCheck && rc.quantityCheck.method === 'settled_to_paper' ? ' · <span class="text-slate-600 font-bold">נסגר לפי התעודה' + (rc.quantityCheck.settledToPaper && rc.quantityCheck.settledToPaper.waived && rc.quantityCheck.settledToPaper.waived.length ? ' · ' + rc.quantityCheck.settledToPaper.waived.length + ' שורות יושרו' : '') + '</span>' : rc.quantityCheck && rc.quantityCheck.method === 'manual' ? ' · <span class="text-slate-600 font-bold">' + (rc.quantityCheck.byLine ? 'הכמויות נבדקו שורה-שורה' : 'הכמויות אושרו ידנית') + '</span>' : '') + '</div></div>' +
         '<div class="flex items-center gap-2 shrink-0"><div class="text-left"><div class="text-[11px] text-slate-400">לתשלום ללא מע"מ</div><div class="font-black text-slate-800">₪' + fmtMoney(payableEx) + '</div></div><i class="fa-solid fa-chevron-down hist-chevron text-slate-400 transition-transform"></i></div>' +
         '</div>' +
       '</summary>' +
       '<div class="px-4 pb-4">' +
-        '<div class="bg-slate-50 rounded-xl p-3 border border-slate-100">' + rows + '</div>' +
+        (paperSections ? receiptPaperSectionsHtml(paperSections) : '<div class="bg-slate-50 rounded-xl p-3 border border-slate-100">' + rows + '</div>') + // v151: לפי תעודה
         '<div class="flex items-center justify-end mt-2 text-xs text-slate-500 font-bold px-1"><span>שווי שנסרק: ₪' + fmtMoney(rc.receivedExVat != null ? rc.receivedExVat : (rc.calculatedExVat != null ? rc.calculatedExVat : rc.totalExVat)) + ' · לתשלום: ₪' + fmtMoney(payableEx) + '</span></div>' +
         (rc.noteTotalInc != null ? '<div class="text-[11px] text-slate-500 font-bold mt-1 px-1"><i class="fa-solid fa-file-invoice"></i> ' + (rc.noteParts && rc.noteParts.length > 1 ? rc.noteParts.length + ' תעודות ספק: ' + rc.noteParts.map(x => '₪' + fmtMoney(normNote(x).amount)).join(' + ') + ' = ₪' + fmtMoney(rc.noteTotalInc) : 'תעודת ספק: ₪' + fmtMoney(rc.noteTotalInc)) + '</div>' : '') +
         (di.awaitingDoc ? '<div class="mt-2 bg-amber-50 border-2 border-amber-300 rounded-xl p-3">' +
@@ -22640,10 +23121,12 @@ $('piClose').addEventListener('click', hidePromoInfo);
 $('rs_cancel').addEventListener('click', hideReceiptSummary);
 $('rs_ok').addEventListener('click', confirmReceipt);
 $('receiptQuantityClose').addEventListener('click', closeReceiptQuantityReview);
-$('receiptQuantityConfirm').addEventListener('click', commitReceiptQuantityReview);
+// v151: בבדיקה שורה-שורה "סיום" בודק שכל השורות סומנו ומתרגם אותן לאותן שורות כמו "יש חוסרים או עודפים"
+$('receiptQuantityConfirm').addEventListener('click', e => { if (receiptQuantityReview && receiptQuantityReview.mode === 'lines') finishReceiptLineCheck(); else commitReceiptQuantityReview(e); });
 $('receiptQuantityModal').addEventListener('keydown', e => { if (e.key === 'Escape') closeReceiptQuantityReview(); });
 $('receiptQuantitySearch').addEventListener('input', e => renderReceiptQuantityRows(e.target.value));
 $('receiptQuantityRows').addEventListener('input', e => {
+  if (receiptQuantityReview && receiptQuantityReview.mode === 'lines') { receiptLineCheckInput(e); return; } // v151
   const i = e.target.dataset.quantityDifference;
   if (i == null || !receiptQuantityReview || !receiptQuantityReview.rows[i]) return;
   const row = receiptQuantityReview.rows[i]; row.difference = e.target.value; receiptQuantityReview.confirmedAt = null;
@@ -22651,6 +23134,7 @@ $('receiptQuantityRows').addEventListener('input', e => {
   saveReceiptDraft();
 });
 $('receiptQuantityRows').addEventListener('change', e => {
+  if (receiptQuantityReview && receiptQuantityReview.mode === 'lines') return; // v151: אין בבדיקה שורה-שורה בוררים
   const i = e.target.dataset.quantityKind;
   if (i == null || !receiptQuantityReview || !receiptQuantityReview.rows[i]) return;
   const row = receiptQuantityReview.rows[i]; row.kind = e.target.value;
@@ -22658,6 +23142,7 @@ $('receiptQuantityRows').addEventListener('change', e => {
   receiptQuantityReview.confirmedAt = null; saveReceiptDraft(); renderReceiptQuantityRows($('receiptQuantitySearch').value);
 });
 $('receiptQuantityRows').addEventListener('click', e => {
+  if (receiptQuantityReview && receiptQuantityReview.mode === 'lines') { receiptLineCheckClick(e); return; } // v151
   const button = e.target.closest('[data-quantity-remove]');
   if (!button || !receiptQuantityReview) return;
   const i = Number(button.dataset.quantityRemove); if (!receiptQuantityReview.rows[i] || receiptQuantityReview.rows[i].paperQty !== 0) return;
@@ -22996,6 +23481,7 @@ app.addEventListener('click', (e) => {
   const role = t.dataset.role, id = t.dataset.id;
   if (role === 'rc-count-by-scan') { receiptCountingMode = 'scan'; closeReceiptQuantityReview(); saveReceiptDraft(); renderReceiving(); return; }
   if (role === 'rc-quantity-all' || role === 'rc-quantity-differences') { startReceiptQuantityReview(role === 'rc-quantity-all'); return; }
+  if (role === 'rc-quantity-lines') { startReceiptLineCheck(); return; } // v151
   if (role === 'rc-settle-to-paper') { settleReceiptQuantitiesToPaper(); return; }
   // The browser folds the element itself; this only remembers it for the next render.
   if (role === 'rc-quantity-toggle') { receiptQuantityPickerOpen = !receiptQuantityPickerOpen; return; }
