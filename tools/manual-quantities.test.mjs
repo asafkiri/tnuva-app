@@ -299,6 +299,8 @@ function enterPhotoScreen(r) {
  r.run(`aiScanDocuments[0].pages=[{dataUrl:'data:image/jpeg;base64,Zml4dHVyZQ==',orientationConfirmed:true}];renderReceiving()`);
 }
 const photoRole = manual => supplier==='berman' ? (manual?'rc-open-photo-quantity':'rc-open-photo') : (manual?'rc-photo-quantity':'rc-photo-start');
+// v152: במסך הצילום הכפתור הידני הוא "בדוק שורה-שורה בטלפון" (ושני אחיו); rc-photo-quantity נשאר כתפקיד בלי כפתור
+const gateManualRole = supplier==='berman' ? 'rc-open-photo-quantity' : 'rc-photo-lines';
 function assertManualScreen(r) {
  const html=r.node('app').innerHTML;
  assert.match(html,/data-manual-receiving/);
@@ -355,7 +357,7 @@ test(supplier+': manual scan failure and an interrupted reload offer photo recov
  const repair=supplier==='berman'?'rc-paper-rescan':'rc-photo-repair';assert.ok(html.includes('data-role="'+repair+'"'));
  const b=create({data,storage:a.storage});b.run("currentView='receiving';mainMode='receiving';renderReceiving()");
  assertManualScreen(b);assert.ok(b.node('app').innerHTML.includes('data-role="'+repair+'"'));
- b.click(repair);assert.ok(b.node('app').innerHTML.includes('data-role="'+photoRole(true)+'"'));
+ b.click(repair);assert.ok(b.node('app').innerHTML.includes('data-role="'+gateManualRole+'"'));
 });
 // 23.9: "סד הנחה" המודפס 44.10 נקרא 44.11 (בדיוק "הפרש עיגול"). v110 הציג את
 // החשבון, ועדיין לא היה ברור מה לעשות. עכשיו נשאלת שאלה אחת: מה כתוב בנייר.
