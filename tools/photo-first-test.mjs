@@ -19,7 +19,9 @@ const names = ['aiIsSeparateDepositRow','aiScanPageAudit','aiScanPagesFingerprin
   'restoreDraftScan', 'restoreReceiptDraft', 'normNote', 'noteSum', 'noteAnchorSum', 'recomputeNoteTotal',
   'aiScanSingleDocPipeline', 'aiRunInvoiceScan', 'aiTotalPages', 'aiMoneyCents', 'aiDocRowUnits',
   'rememberReceiptManualInput', 'switchReceiptEntryMode', 'receiptBackToPhotosHtml', 'noteEditorBodyHtml', 'parseNoteVal', 'readNoteEntry',
-  'aiSingleDocScore', 'aiSingleDocScoreBetter', 'aiFetchWithRetry', 'aiRequestSingleDocScan'];
+  'aiSingleDocScore', 'aiSingleDocScoreBetter', 'aiFetchWithRetry', 'aiRequestSingleDocScan',
+  // v152: the gate choice that tnuvaAdoptPaperAnchors runs once the paper is adopted (a no-op without a choice).
+  'receiptQuantityIntentRun'];
 function context(extra = {}) {
   const storage = new Map();
   const c = vm.createContext({ console, setTimeout, clearTimeout, AbortController, Date, JSON, Math, Number,
@@ -29,6 +31,7 @@ function context(extra = {}) {
     db:null, receiptStorageWarning:'',receiptDraftId:null,makeOperationId:()=> 'test-' + Math.random(),receiptAnalysisCache:null,aiScanEditingImages:false,
     receiptSync:{revision:0,dirty:false},receiptSyncSignature:null,receiptCloudReady:false,receiptSyncTimer:null,receiptSyncConflict:null,receiptSyncError:'',receiptFinalizing:false,
     receiptCountingMode: 'scan', receiptQuantityReview: null, receiptManualInput: null, $: () => null, htmlEscape: String, fmtMoney: String,
+    receiptQuantityIntent: null, RECEIPT_QUANTITY_INTENTS: ['lines', 'all', 'differences'], // v152
     receiptEntryMode: 'photo', receiptAnchorSource: null, receiptPaperScanState: '', receiptPaperScanProblems: [],
     receiptPhotoCaptureOpen: false, receiptScanHistory: [], aiScanRunId: 0, receiptOpened: false,
     receiptNotes: [], receiptNoteTotal: null, receiptNoteUnits: null, receiptList: [], receiptDepositWaived: false,
