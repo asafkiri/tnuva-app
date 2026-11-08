@@ -42,7 +42,8 @@ test('3. בזמן ריצה הכול כמו קודם: פתיחה, סגירה, ש�
   assert.equal(c.run(`$('receiptQuantityModal').classList.contains('hidden')`), true);
 });
 
-test('4. הגרסה עלתה ל-154, כולל ההערה ב-service worker', () => {
-  assert.match(html, /const APP_VERSION = '154'/);
-  assert.match(fs.readFileSync(new URL('../sw.js', import.meta.url), 'utf8'), /גרסה 154/);
+test('4. הגרסה (154 ומעלה), כולל ההערה ב-service worker', () => {
+  const v = html.match(/const APP_VERSION = '(\d+)'/)[1];
+  assert.ok(Number(v) >= 154, v);
+  assert.match(fs.readFileSync(new URL('../sw.js', import.meta.url), 'utf8'), new RegExp('גרסה ' + v));
 });
