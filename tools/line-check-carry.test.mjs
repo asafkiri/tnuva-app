@@ -183,6 +183,6 @@ test('4. שוויון: בדיקה שהתחילה מסריקה ובדיקה שס�
 
 test('5. הגרסה עלתה ל-155, כולל ההערה ב-service worker', () => {
   const html = fs.readFileSync(new URL('../index.html', import.meta.url), 'utf8');
-  assert.match(html, /const APP_VERSION = '155'/);
-  assert.match(fs.readFileSync(new URL('../sw.js', import.meta.url), 'utf8'), /גרסה 155/);
+  assert.match(html, /const APP_VERSION = '156'/);
+  assert.match(fs.readFileSync(new URL('../sw.js', import.meta.url), 'utf8'), /גרסה 156/);
 });

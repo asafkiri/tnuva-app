@@ -29,7 +29,7 @@ const lastWrite = r => r.writes.at(-1);
 test('the 📦 column explains itself and the card keeps the separate rule', () => {
   assert.match(html, /📦 מציין יחידות בארגז — מפעיל את כפתור "\+ ארגז" בקליטה\. אכיפת ״רק ארגזים שלמים״ לבלש מסומנת בכרטיס המוצר\./);
   assert.match(html, /המוצר מתקבל רק בארגזים שלמים<\/span><span[^>]*>הבלש יבדוק רק כפולות של ארגז שלם\. אל תסמן אם לפעמים מגיעות גם יחידות בודדות\./);
-  assert.match(html, /const APP_VERSION = '155'/); // גרסה 155: מה שנסרק עובר לבדיקה שורה-שורה
+  assert.match(html, /const APP_VERSION = '156'/); // גרסה 156: "עוד כמה?" והמספר קובע את הסימון
 });
 
 test('a product without a crate gets a size for the button only — the detective is not tightened', () => {
