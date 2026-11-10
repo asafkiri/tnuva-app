@@ -11,7 +11,8 @@ function source(name) {
   const end = html.slice(m.index, eol).trimEnd().endsWith('}') ? eol : html.indexOf('\n}', eol) + 2;
   return html.slice(m.index, end);
 }
-const names = ['aiCompressInvoiceImage', 'aiDetectPaperRegion', 'aiMeasurePageQuality', 'aiQualityAdvice', 'aiDrawCropMap', 'aiCropInitFrame', 'aiCropResetOverlay', 'aiCropDraw',
+const names = ['aiCompressInvoiceImage', 'aiRenderInvoiceRegion', 'aiRenderSplitPages', 'aiPlanLongReceiptSplit', 'aiRowInkProfile', 'aiSplitSiblings', 'aiSplitGroupPages', 'aiOrderSplitGroup', 'aiPageLabel',
+  'aiDetectPaperRegion', 'aiMeasurePageQuality', 'aiQualityAdvice', 'aiDrawCropMap', 'aiCropInitFrame', 'aiCropResetOverlay', 'aiCropDraw',
   'aiCropSyncCanvasBox', 'aiCropContainRect', 'aiCropFit', 'aiCropHitTest', 'aiCropPointerPosition',
   'aiCropPointerDown', 'aiCropPointerMove', 'aiCropPointerUp', 'aiApplyCropIfMoved',
   'aiReprocessFromSource', 'aiUnrotateRect', 'aiNormalizeQuarterTurns', 'aiRenderInvoiceRotation',
