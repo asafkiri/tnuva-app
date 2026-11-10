@@ -193,3 +193,20 @@ test('v158: the name score counts each printed word once, and "closest name" nee
   assert.equal(near, 0);
   assert.equal(c.run('RECEIPT_CLOSEST_NAME_MARGIN'), 3);
 });
+
+test('v158: a star read next to a product without a promotion, when the summary discount is already explained, is information — not "define a promotion"', async () => {
+  // הכוכבית של משקה הסויה (שורה 3, מבצע 15% = ₪8.78 בדיוק) נקראה בשורה 2 ליד משקה הווניל — כמו ב-10.11.
+  const soyPromo = { id: 'psoy', name: 'משקה 15%', pct: 15, start: '2026-11-01', end: '2026-11-30', minQty: 1, minUnit: 'unit', type: 'receipt', productIds: ['soy'] };
+  const c = await scanned({ promos: [cottagePromo, soyPromo] });
+  const panel = c.run('receiptPriceAuditHtml()');
+  assert.match(panel, /data-price-next>נשאר לזהות 6 שורות — בכרטיס הסגול למעלה\./, 'identifying is all that remains — no promotion to define');
+  assert.match(panel, /המבצעים שבמאגר מסבירים את כל ההנחה\./);
+  assert.match(panel, /<span data-stray-star>בשורה 2 נקראה כוכבית \(מבצע\) ליד "משקה חלב וניל 2% קרטון 1 ליטר", אבל במאגר אין למוצר מבצע, וההנחה בתעודה מוסברת במלואה על ידי המבצע של "משקה סויה מועשר 1 ליטר" — כנראה הכוכבית נקראה בשורה הלא נכונה\. אין מה לעשות איתה\.<\/span>/);
+  assert.doesNotMatch(panel, /להגדיר מבצע|הגדר את המבצע|price-add-promo|בתעודה המוצר מסומן בכוכבית/);
+  // ההנחה לא מוסברת (אין מבצע לסויה): הכוכבית היא משימה, כמו קודם.
+  const unexplained = await scanned();
+  const before = unexplained.run('receiptPriceAuditHtml()');
+  assert.match(before, /להגדיר מבצע למוצר אחד/);
+  assert.match(before, /data-role="price-add-promo"/);
+  assert.doesNotMatch(before, /data-stray-star/);
+});

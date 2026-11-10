@@ -11958,11 +11958,18 @@ function receiptBlockerLinesHtml(blockers, rowCount, docIndex) {
 function receiptPriceSummaryPending(a, d) {
   const rows = a.rows.filter(r => Number(r.documentIndex) === Number(d.index));
   const unidentified = rows.filter(r => r.capability === 'unidentified');
-  const missingPromos = rows.filter(r => r.basePriceCheckable && r.printedPromo && r.productId && !r.hasActivePromo);
   const otherBlockers = (d.summaryBlockers || []).filter(b => !unidentified.some(r => r.sourceIndex === b.sourceIndex));
   const matches = rows.filter(r => r.basePriceCheckable && r.printedVsCatalog && !r.printedVsCatalog.off);
   const gaps = rows.filter(r => r.basePriceCheckable && r.printedVsCatalog && r.printedVsCatalog.off);
   const remainder = aiMoneyCents(d.summaryRemainder || 0) || 0;
+  // v158: כוכבית שנקראה בשורה שאין לה מבצע במאגר היא משימה ("הגדר מבצע") רק כשנשארה הנחה שאינה מוסברת.
+  // כשהמבצעים שבמאגר מסבירים את כל ההנחה לאגורה, לכוכבית הזאת לא מחובר שום כסף — ב-10.11 הכוכבית של
+  // "משקה סויה מועשר" (שורה 3, מבצע 15% = ₪8.78 בדיוק) נקראה שורה אחת למעלה, ליד "משקה חלב וניל", והמסך
+  // ביקש להגדיר מבצע למוצר שאין לו מבצע בתעודה. כוכבית כזאת נאמרת כמידע, עם המבצע שמסביר את ההנחה.
+  const starred = rows.filter(r => r.basePriceCheckable && r.printedPromo && r.productId && !r.hasActivePromo);
+  const missingPromos = remainder === 0 ? [] : starred;
+  const strayStars = remainder === 0 ? starred : [];
+  const explainingPromos = remainder === 0 ? rows.filter(r => r.hasActivePromo && r.promo) : [];
   const one = (n, single, plural) => n === 1 ? single : plural.replace('{n}', n);
   const next = [];
   if (unidentified.length) next.push(one(unidentified.length, 'לזהות שורה אחת', 'לזהות {n} שורות'));
@@ -11974,7 +11981,7 @@ function receiptPriceSummaryPending(a, d) {
   // "תושלם לבד" נאמר רק כשזיהוי השורה הוא באמת כל מה שחסר: אין מבצע חסר, אין סיבה של
   // התעודה כולה, והמבצעים שבמאגר כבר מסבירים את כל ההנחה.
   const identifyCompletes = !!(unidentified.length && !missingPromos.length && !otherBlockers.length && remainder === 0);
-  return { rows, unidentified, missingPromos, otherBlockers, matches, gaps, remainder, next, brief, actionable, identifyCompletes, one };
+  return { rows, unidentified, missingPromos, strayStars, explainingPromos, otherBlockers, matches, gaps, remainder, next, brief, actionable, identifyCompletes, one };
 }
 // כרטיסי ההחלטה נפתחים רק במסך הקליטה, כי שם יושב מאזין הלחיצות ושם אפשר
 // לסרוק. חלון הסיכום מקבל שורה אחת שמפנה לשם, כדי שלא יאשרו קליטה בלי לדעת.
@@ -12006,6 +12013,10 @@ function receiptPriceSummaryHelpHtml(a, withActions) {
       (p.gaps.length ? line(p.one(p.gaps.length, 'בשורה אחת', 'ב-{n} שורות') + ' המחיר בתעודה שונה מהמחיר במאגר — ראה את הכרטיס האדום למעלה.') : '') +
       (p.unidentified.length ? line(p.one(p.unidentified.length, 'שורה אחת עדיין לא זוהתה: ', '{n} שורות עדיין לא זוהו: ') + names(p.unidentified) +
         '. בלי לדעת איזה מוצר זה, אי אפשר לבדוק את המחיר ואת ההנחה של השורה.') : '') +
+      // v158: כוכבית ליד מוצר בלי מבצע כשההנחה כבר מוסברת — מידע, לא משימה (ראו receiptPriceSummaryPending).
+      (p.strayStars.length ? line('<span data-stray-star>' + p.strayStars.map(r => 'בשורה ' + (r.line != null ? r.line : '?') + ' נקראה כוכבית (מבצע) ליד ' + names([r]) +
+        ', אבל במאגר אין למוצר מבצע, וההנחה בתעודה מוסברת במלואה' + (p.explainingPromos.length ? ' על ידי המבצע של ' + names(p.explainingPromos) : ' על ידי המבצעים שבמאגר') +
+        ' — כנראה הכוכבית נקראה בשורה הלא נכונה. אין מה לעשות איתה.').join(' ') + '</span>') : '') +
       receiptBlockerLinesHtml(p.otherBlockers, p.rows.length, d.index) +
       line('הנחת המבצעים בתעודה: <b>' + money(d.summaryDiscount) + '</b> · מבצעים שנמצאו במאגר לשורות התעודה: <b>' + money(d.knownSummaryDiscount) + '</b>. ' + explained) +
       head('מה לעשות?') + todo.map(line).join('') +
