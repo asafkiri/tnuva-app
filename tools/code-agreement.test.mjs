@@ -120,13 +120,15 @@ test('v150: a fourth read that matched a cheap read, and two cheap reads alike, 
   assert.equal(rowTwo(viaFourth).method, 'tnuva_code_agreed');
   assert.equal(rowTwo(viaFourth).product, 'cottage5m');
   assert.equal(actions(viaFourth).agreementSettled, 1);
-  // בלי הסכמה (הרביעית קראה כמו Terra, ושתיהן קוד שאינו במאגר): "הקוד של הקריאה השנייה" של 146 הוא הקוד של
-  // הזולה הראשונה — 4172329, שאינו במאגר — ולכן אין הצעה, והשורה לבחירה. תיקון ספרה של 4136916 מוצא את
-  // 4130916 (פירות יער), אבל המחיר ₪3.69 אינו ₪4.60.
+  // בלי הסכמה (הרביעית קראה כמו Terra, ושתיהן קוד שאינו במאגר): עד 157 "הקוד של הקריאה השנייה" היה רק
+  // הקוד של הזולה שבאותו מיקום — 4172329, שאינו במאגר — ולכן לא הייתה הצעה והשורה נשארה לבחירה, אף
+  // שהזולה השנייה קראה 4127329, קוטג' 5% ב-₪4.60 בדיוק. v158: כל מה שכל קריאה קראה נבדק מול המאגר
+  // והמחיר, ולכן קוטג' 5% מוצע — כשיוך לפי המחיר, שנספר כשיוך אוטומטי (כלל 119) כשאין הנחת סיכום שממתינה.
+  // תיקון ספרה של 4136916 מוצא את 4130916 (פירות יער), אבל המחיר ₪3.69 אינו ₪4.60.
   const noAgreement = await scanned({ escalationSelected: true, selectedCode: '4136916',
     field: codeField([read('consensus_escalation', '4136916', true), read('consensus_1', '4172329'), read('consensus_2', '4127329'), read('second_strong_read', '4136916')], null) });
-  assert.deepEqual([rowTwo(noAgreement).product, rowTwo(noAgreement).method], [null, null]);
-  assert.deepEqual(actions(noAgreement).unidentified, [{ line: 2, matched: null }]);
+  assert.deepEqual(rowTwo(noAgreement), { product: 'cottage5m', method: 'tnuva_code_second_read', observed: '4136916', repair: { from: '4136916', to: '4127329', secondRead: true } });
+  assert.deepEqual([actions(noAgreement).autoMatched, actions(noAgreement).agreementSettled, actions(noAgreement).unidentified], [1, 0, []]);
   // שתי זולות שהסכימו, ו-Terra (שנבחרה) חולקת: שלב 1 של שירות 19 — הן מכריעות.
   const cheapCheap = await scanned({ escalationSelected: true,
     field: codeField([read('consensus_escalation', '4172329', true), read('consensus_1', '4127329'), read('consensus_2', '4127329')],

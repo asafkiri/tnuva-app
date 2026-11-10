@@ -61,7 +61,7 @@ function makeDocument() {
   };
 }
 
-const NAMES = ['aiMeasurePageQuality', 'aiTextAnchorBox', 'aiTextCropBox', 'aiDetectPaperRegion'];
+const NAMES = ['aiMeasurePageQuality', 'aiTextAnchorBox', 'aiTextCropBox', 'aiDetectPaperRegion', 'aiRowInkProfile'];
 
 // שער השטח ניתן לכוונון מכאן כדי לבדוק את הפשרה במספרים — כמה סצנות
 // נחתכות מול כמה חיתוכי שווא — במקום לנחש.

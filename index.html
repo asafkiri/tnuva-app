@@ -756,7 +756,10 @@ let receiptDupConfirmed = false; // אישור שמירה למרות חשד לכ
 const RECEIPT_DRAFT_KEY = 'tn_receipt_draft';
 let receivingDigitsMissTimer = null;
 let receivingDigitsMissNotified = '';
-const APP_VERSION = '157'; // בדיקה שורה-שורה: מוצר אחד — שורה אחת, גם כשהוא בשתי תעודות; החלוקה בין התעודות אוטומטית, והחוסר על האחרונה
+const APP_VERSION = '158'; // קליטה קריאה: זיהויים בכרטיס אחד, היפוך כמות/מחיר נסגר מול המאגר, הכרטיסים בסדר התעודה, ותעודה ארוכה מתחלקת לחלקים לפני השליחה
+// v158: תווית הגרסה בגיבויים וביומן הפעולות נגזרת מ-APP_VERSION. עד כאן היא הייתה קבועה ('v150_code_agreement') ונשארה
+// מאחור שמונה גרסאות — הגיבוי של 10.11 אמר 150 בעוד המסך אמר 157.
+const APP_VERSION_LABEL = 'v' + APP_VERSION;
 // גרסה 73: מוצר בלי מחיר קופה — חלון הכמות מציג מיד את העלות ליח׳ (ללא מע״מ) ופותח שדה להקלדת המחיר שעובר בקופה, בלי לנדוד למסך המחירים
 // v40: תג גרסה קבוע בפינת המסך — לדעת בשנייה איזו גרסה באמת רצה על המכשיר
 // (עוזר במיוחד מול מטמון ה-PWA). pointer-events:none — לעולם לא חוסם מגע.
@@ -803,6 +806,9 @@ let aiUnknownProductCreateContext = null; // שורת AI בטוחה שממתינ
 let receiptRowDecisions = {};    // v97: החלטות המשתמש על שורות התעודה — ראו receiptRowActions
 let tnuvaRowProductContext = null; // שורת תעודה שממתינה לסריקת ברקוד או ליצירת מוצר
 let receiptRowProductSearchContext = null; // חיפוש מזהה בלבד — אינו מאשר קבלת כמות
+// v158: זיהויים לפי מחיר שהעובד דחה ("לא, מוצר אחר") — לפי מזהה השורה בבדיקת המחירים. בזיכרון בלבד:
+// אחרי רענון השורה חוזרת להצעה, וזה בסדר; מה שנשמר הוא רק שיוך שאושר.
+const receiptRejectedIdentities = new Set();
 let promoUnitMode = 'unit'; // יחידת סף המבצע: 'unit' | 'carton'
 let promos = [], promoEdit = null, promoSearch = ''; // מבצעי סל
 // v140: מבצעים שהסתיימו עוברים לארכיון (שנתיים) במקום לסל המחזור, וזיכוי המרכזת
@@ -1186,7 +1192,7 @@ function tnuvaPhotoGateHtml() {
     const pages = doc.pages.map((p, j) => '<div class="relative w-24 shrink-0">' +
       '<button data-role="ai-review-page" data-doc="' + i + '" data-page="' + j + '" class="w-24 h-28 border-2 rounded-xl overflow-hidden ' + (p.orientationConfirmed ? 'border-emerald-400' : 'border-amber-400') + '"><img src="' + p.dataUrl + '" class="w-full h-full object-contain" alt="עמוד ' + (j + 1) + '"></button>' +
       '<button data-role="ai-remove-page" data-doc="' + i + '" data-page="' + j + '" class="absolute top-1 left-1 bg-rose-600 text-white rounded-full w-7 h-7" aria-label="מחק עמוד">×</button>' +
-      '<div class="text-xs font-bold text-center">עמוד ' + (j + 1) + (p.orientationConfirmed ? ' ✓' : ' · אשר כיוון') + '</div></div>').join('');
+      '<div class="text-xs font-bold text-center">' + aiPageLabel(p, j) + (p.orientationConfirmed ? ' ✓' : ' · אשר כיוון') + '</div></div>').join('');
     return '<div class="border-2 border-slate-200 rounded-2xl p-3 mt-3"><div class="flex justify-between gap-2 items-center"><b>תעודה ' + (i + 1) + '</b>' +
       (aiScanDocuments.length > 1 ? '<button data-role="rc-photo-remove-doc" data-doc="' + i + '" class="text-xs font-bold text-rose-600">הסר תעודה</button>' : '') + '</div>' +
       (cached ? '<div class="text-sm font-bold text-emerald-700 mt-2">הפענוח שמור — אין צורך בסריקה נוספת</div>' : '') +
@@ -3108,7 +3114,7 @@ async function logAction(type, title, details, meta) {
     await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'actionLog', id), {
       timestamp: Date.now(), type: type || 'system', title: title || 'פעולה', details: details || '',
       deviceName: actionDeviceLabel(), uid: (auth && auth.currentUser && auth.currentUser.uid) || '',
-      appVersion: 'v150_code_agreement', meta: cloneSafe(meta || {})
+      appVersion: APP_VERSION_LABEL, meta: cloneSafe(meta || {})
     });
   } catch (e) { console.warn('action log failed', e); }
 }
@@ -3192,7 +3198,7 @@ async function exportFullBackup() {
       backupType: 'tnuva-firestore-full',
       backupVersion: 1,
       appId,
-      appVersion: 'v150_code_agreement',
+      appVersion: APP_VERSION_LABEL,
       exportedAt: Date.now(),
       exportedAtIso: new Date().toISOString(),
       collections: {},
@@ -9892,6 +9898,68 @@ function aiQualityAdvice(quality) {
 // פיקסלים שנזרקים בצד השני. כשיהיה מספר מדוד (tools/scan-token-report.mjs)
 // אפשר יהיה להדק ל-1450 ולחסוך הקטנה שנייה.
 const AI_INVOICE_MAX_SIDE = 1850;
+// v158: תעודה ארוכה בפריים אחד. הצד הארוך של הנייר נשלח תמיד ב-1850 פיקסל, בלי קשר לאורך התעודה —
+// ולכן תעודה של 12 שורות מקבלת כ-25 פיקסל לגובה ספרה, ותעודה של 30 שורות (54 שורות טקסט עם הכותרת
+// והסיכומים, נמדד 10.11) כ-11 — ושם 7 נראה כמו 1, ו-4 ו-5 כמו 1. כשהמרווח בין שורות הדפוס בתמונה
+// שנשלחת קטן מ-AI_SPLIT_MIN_PITCH והצילום המקורי מכיל מספיק פיקסלים, התמונה מתחלקת ל-2 או 3 חלקים
+// ברווח הלבן שבין שתי שורות, וכל חלק נשלח כעמוד של אותה תעודה. המשתמש מצלם צילום אחד, כמו תמיד.
+const AI_SPLIT_MIN_PITCH = 38;        // פיקסלים לשורת דפוס בתמונה שנשלחת ≈ 17 פיקסל לגובה ספרה
+const AI_SPLIT_MAX_PARTS = 3;
+const AI_SPLIT_MIN_SOURCE_GAIN = 1.3; // המקור חייב להכיל לפחות פי 1.3 פיקסלים מהפלט — אחרת אין מה להרוויח
+const AI_SPLIT_GAP_INK = 0.15;        // שורת פיקסלים "לבנה": עד 15% מהדיו של שורת טקסט אופיינית
+// פרופיל הדיו לאורך הנייר בפרוקסי: כמה פיקסלים כהים בכל שורת פיקסלים בתוך מסגרת הנייר. "כהה" = מתחת
+// ל-60% מלובן הנייר (אחוזון 90 בתוך המסגרת). קריאה בלבד, על הפרוקסי שכבר בזיכרון.
+function aiRowInkProfile(luma, width, height, box) {
+  const x0 = Math.max(0, Math.round(box.x0)), x1 = Math.min(width, Math.round(box.x1));
+  const y0 = Math.max(0, Math.round(box.y0)), y1 = Math.min(height, Math.round(box.y1));
+  if (x1 - x0 < 8 || y1 - y0 < 8) return null;
+  const hist = new Uint32Array(256);
+  let n = 0;
+  for (let y = y0; y < y1; y += 2) for (let x = x0; x < x1; x += 2) { hist[luma[y * width + x]]++; n++; }
+  let cum = 0, white = 255;
+  for (let v = 0; v < 256; v++) { cum += hist[v]; if (cum >= n * 0.9) { white = v; break; } }
+  const ink = white * 0.6;
+  const profile = new Float32Array(y1 - y0);
+  for (let y = y0; y < y1; y++) { let count = 0; const row = y * width; for (let x = x0; x < x1; x += 2) if (luma[row + x] < ink) count++; profile[y - y0] = count; }
+  return profile;
+}
+// תכנון החלוקה — פונקציה טהורה (נבדקת ב-tools/long-receipt-split.test.mjs). הקלט: מרווח השורות במקור
+// (פיקסלים של הצילום המקורי), הצלע הארוכה של הנייר במקור ובפלט, ופרופיל הדיו בפרוקסי (עם תחילתו
+// וקנה המידה שלו). הפלט: { parts: 1, reason } כשאין חלוקה, או { parts, pitchOut, cutsSource } — מקומות
+// החיתוך בפיקסלים של המקור, כל אחד במרכז הרווח הלבן הרחב ביותר בטווח של מרווח שורה אחד סביב המקום
+// האידיאלי. אין רווח ברור באחד המקומות — אין חלוקה כלל.
+function aiPlanLongReceiptSplit(input) {
+  const pitchSource = Number(input && input.pitchSource), sourceLong = Number(input && input.sourceLong), outputLong = Number(input && input.outputLong);
+  const profile = input && input.profile, profileStart = Number(input && input.profileStart) || 0, profileScale = Number(input && input.profileScale);
+  if (!(pitchSource > 0) || !(sourceLong > 0) || !(outputLong > 0)) return { parts: 1, reason: 'no_pitch' };
+  const outScale = Math.min(1, outputLong / sourceLong);
+  const pitchOut = pitchSource * outScale;
+  if (pitchOut >= AI_SPLIT_MIN_PITCH) return { parts: 1, reason: 'pitch_ok', pitchOut };
+  if (sourceLong / outputLong < AI_SPLIT_MIN_SOURCE_GAIN) return { parts: 1, reason: 'source_too_small', pitchOut };
+  if (!profile || !profile.length || !(profileScale > 0)) return { parts: 1, reason: 'no_profile', pitchOut };
+  const parts = Math.min(AI_SPLIT_MAX_PARTS, Math.max(2, Math.ceil(AI_SPLIT_MIN_PITCH / pitchOut)));
+  // רצפת הדיו: המסגרת שזוהתה כוללת שוליים (מחצלת כהה, צל קצה הנייר) שנספרים כ"דיו" בכל שורת פיקסלים —
+  // רווח לבן הוא שורה שקרובה לרצפה, לא לאפס. הרצפה — אחוזון 5 של הפרופיל; שורת טקסט אופיינית — אחוזון 70.
+  const sorted = Array.from(profile).sort((a, b) => a - b);
+  const base = sorted[Math.floor(sorted.length * 0.05)], textInk = sorted[Math.floor(sorted.length * 0.7)];
+  if (!(textInk - base >= 4)) return { parts: 1, reason: 'no_ink', pitchOut };
+  const gapMax = base + (textInk - base) * AI_SPLIT_GAP_INK;
+  const pitchProxy = pitchSource * profileScale;
+  const cuts = [];
+  for (let k = 1; k < parts; k++) {
+    const ideal = profile.length * k / parts;
+    const lo = Math.max(1, Math.round(ideal - pitchProxy)), hi = Math.min(profile.length - 2, Math.round(ideal + pitchProxy));
+    let best = null, runStart = -1;
+    for (let y = lo; y <= hi + 1; y++) {
+      const gap = y <= hi && profile[y] <= gapMax;
+      if (gap && runStart < 0) runStart = y;
+      if (!gap && runStart >= 0) { const length = y - runStart; if (!best || length > best.length) best = { length, centre: runStart + length / 2 }; runStart = -1; }
+    }
+    if (!best || best.length < 2) return { parts: 1, reason: 'no_gap', pitchOut };
+    cuts.push((profileStart + best.centre) / profileScale);
+  }
+  return { parts, pitchOut, cutsSource: cuts };
+}
 // העותק שעליו מזוהה הנייר: גדול מספיק שאריח יהיה משמעותי, קטן מספיק
 // ש-getImageData לא יפיל מכשיר ישן.
 const AI_CROP_PROXY_SIDE = 1500;
@@ -10488,6 +10556,12 @@ function aiDetectPaperRegion(img, sourceWidth, sourceHeight, report) {
   report.reason = 'cropped';
   report.value = Math.round(100 * (1 - areaFraction));
   report.kept = { x: x0 / pw, y: y0 / ph, w: w / pw, h: h / ph };
+  // v158: מרווח שורות הדפוס (פיקסלים של הפרוקסי) ופרופיל הדיו לאורך הנייר — לחלוקת תעודה ארוכה
+  // (aiPlanLongReceiptSplit). המרווח בא מעוגן המחזוריות שכבר נמדד; שום פענוח נוסף.
+  report.rowPitch = resultA && Number.isFinite(resultA.P) && resultA.P > 0 ? resultA.P : null;
+  report.proxyScale = proxyScale;
+  report.profileStart = y0;
+  try { report.inkProfile = aiRowInkProfile(luma, pw, ph, { x0, y0, x1, y1 }); } catch (profileError) { report.inkProfile = null; }
   return region;
 }
 // v180: החיתוך האוטומטי חוזר, אבל הפעם הוא מדווח על עצמו ומסיג לאחור
@@ -10495,7 +10569,73 @@ function aiDetectPaperRegion(img, sourceWidth, sourceHeight, report) {
 // ולכן כאן מגיעים גם cropInfo.kept (תרשים במסך האישור) וגם כפתור
 // "השאר תמונה מלאה". forceFullFrame הוא מסלול השחזור: הוא מדלג על
 // הזיהוי כדי שאפשר יהיה לחזור לפריים המלא מאותו קובץ מקור.
-async function aiCompressInvoiceImage(file, forceFullFrame) {
+// v158: ציור אזור מהמקור לתמונה שנשלחת — הקטנה ל-AI_INVOICE_MAX_SIDE בצד הארוך, שיפור קריאות עדין
+// (v137; כל כשל → ממשיכים עם המקור), קידוד JPEG. משמש גם את הצילום השלם וגם כל חלק של תעודה ארוכה.
+function aiRenderInvoiceRegion(img, region) {
+  const maxSide = AI_INVOICE_MAX_SIDE;
+  const scale = Math.min(1, maxSide / Math.max(region.width, region.height));
+  const width = Math.max(1, Math.round(region.width * scale)), height = Math.max(1, Math.round(region.height * scale));
+  const canvas = document.createElement('canvas'); canvas.width = width; canvas.height = height;
+  const ctx = canvas.getContext('2d', { alpha: false });
+  if (!ctx) throw new Error('canvas_failed');
+  ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, width, height);
+  ctx.drawImage(img, region.x, region.y, region.width, region.height, 0, 0, width, height);
+  try {
+    const pixels = ctx.getImageData(0, 0, width, height);
+    if (aiEnhanceDocumentPixels(pixels.data, width, height)) ctx.putImageData(pixels, 0, 0);
+  } catch (enhanceError) { /* התמונה המקורית נשארת */ }
+  return { encoded: aiCanvasToInvoiceJpeg(canvas, 0.92), width, height, scale };
+}
+// v158: חלקי צילום אחד של תעודה ארוכה. כל חלק הוא עמוד של אותה תעודה, עם אזור המקור שלו (לחיתוך ידני
+// ולשחזור), ועם split: { group, index, count } שקושר אותם: אישור כיוון, סיבוב, מחיקה ו"השאר תמונה
+// מלאה" פועלים על הקבוצה כולה (ראו aiSplitSiblings). החיתוך במרכז רווח לבן בין שורות — אין חפיפה.
+function aiRenderSplitPages(img, file, region, plan, quality, cropInfo, sourceWidth, sourceHeight) {
+  const group = 'split-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 6);
+  const top = region.y, bottom = region.y + region.height;
+  const cuts = plan.cutsSource.map(y => Math.round(Math.min(bottom - 64, Math.max(top + 64, y)))).sort((a, b) => a - b);
+  const bounds = [top].concat(cuts, [bottom]);
+  const stamp = Date.now();
+  const pages = [];
+  for (let i = 0; i < plan.parts; i++) {
+    const tile = { x: region.x, y: bounds[i], width: region.width, height: bounds[i + 1] - bounds[i] };
+    const rendered = aiRenderInvoiceRegion(img, tile);
+    const tileQuality = quality ? Object.assign({}, quality, { paperPx: Math.max(rendered.width, rendered.height),
+      rowPitchPx: Math.round(plan.pitchSource * rendered.scale), splitPart: i + 1, splitParts: plan.parts }) : null;
+    const info = Object.assign({}, cropInfo, { v: 158, reason: 'split', part: i + 1, parts: plan.parts, pitch: Math.round(plan.pitchOut),
+      kept: { x: tile.x / sourceWidth, y: tile.y / sourceHeight, w: tile.width / sourceWidth, h: tile.height / sourceHeight } });
+    pages.push({ dataUrl: rendered.encoded.dataUrl, baseDataUrl: rendered.encoded.dataUrl, rotation: 0, orientationConfirmed: false, cropped: true, autoCropped: true,
+      cropInfo: info, quality: tileQuality, qualityAdvice: aiQualityAdvice(tileQuality), originalImage: null, sourceBlob: file,
+      sourceRegion: { x: tile.x, y: tile.y, width: tile.width, height: tile.height }, processScale: rendered.scale,
+      name: String(file.name || ('עמוד-' + stamp + '.jpg')).replace(/(\.[a-z0-9]+)?$/i, '-' + (i + 1) + '$1'), bytes: rendered.encoded.bytes,
+      split: { group, index: i, count: plan.parts } });
+  }
+  return pages;
+}
+function aiSplitSiblings(doc, page) {
+  if (!doc || !page || !page.split || !Array.isArray(doc.pages)) return [];
+  return doc.pages.filter(other => other !== page && other && other.split && other.split.group === page.split.group);
+}
+function aiSplitGroupPages(doc, page) {
+  if (!doc || !page || !Array.isArray(doc.pages)) return page ? [page] : [];
+  return page.split ? doc.pages.filter(other => other && other.split && other.split.group === page.split.group) : [page];
+}
+// אחרי סיבוב של 180° החלק העליון של התמונה הוא תחתית התעודה — סדר החלקים מתהפך, כדי שהעמוד הראשון
+// שהמודל מקבל יישאר ראש התעודה. בסיבוב אחר הסדר המקורי חוזר.
+function aiOrderSplitGroup(doc, page) {
+  const group = aiSplitGroupPages(doc, page);
+  if (!page || !page.split || group.length < 2) return;
+  const reversed = aiNormalizeQuarterTurns((Number(page.rotation) || 0) / 90) === 2;
+  const ordered = group.slice().sort((a, b) => reversed ? b.split.index - a.split.index : a.split.index - b.split.index);
+  const first = Math.min(...group.map(item => doc.pages.indexOf(item)));
+  const rest = doc.pages.filter(item => !group.includes(item));
+  doc.pages = rest.slice(0, first).concat(ordered, rest.slice(first));
+}
+function aiPageLabel(page, pageIndex) {
+  return page && page.split ? 'חלק ' + (page.split.index + 1) + ' מתוך ' + page.split.count : 'עמוד ' + (pageIndex + 1);
+}
+// מחזירה עמוד אחד — או, לתעודה ארוכה שחולקה (v158), מערך של עמודים. noSplit: בלי חלוקה (כשאין מקום
+// ל-8 עמודים); forceFullFrame: בלי זיהוי ובלי חלוקה — מסלול השחזור.
+async function aiCompressInvoiceImage(file, forceFullFrame, noSplit) {
   const raw = await aiReadFile(file);
   const img = await aiLoadImage(raw);
   const sourceWidth = img.naturalWidth || img.width, sourceHeight = img.naturalHeight || img.height;
@@ -10503,9 +10643,9 @@ async function aiCompressInvoiceImage(file, forceFullFrame) {
   let region = { x: 0, y: 0, width: sourceWidth, height: sourceHeight };
   let autoCropped = false;
   let quality = null;
+  let report = {};
   if (!forceFullFrame) {
     try {
-      const report = {};
       const detected = aiDetectPaperRegion(img, sourceWidth, sourceHeight, report);
       if (report.reason) cropInfo.reason = report.reason;
       if (report.value != null) cropInfo.value = report.value;
@@ -10516,27 +10656,27 @@ async function aiCompressInvoiceImage(file, forceFullFrame) {
       cropInfo.reason = 'error'; cropInfo.value = (error && error.message) || '';
     }
   }
-  const maxSide = AI_INVOICE_MAX_SIDE;
-  const scale = Math.min(1, maxSide / Math.max(region.width, region.height));
-  const width = Math.max(1, Math.round(region.width * scale)), height = Math.max(1, Math.round(region.height * scale));
-  const canvas = document.createElement('canvas'); canvas.width = width; canvas.height = height;
-  const ctx = canvas.getContext('2d', { alpha: false });
-  if (!ctx) throw new Error('canvas_failed');
-  ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, width, height);
-  ctx.drawImage(img, region.x, region.y, region.width, region.height, 0, 0, width, height);
-  // v137: שיפור קריאות עדין. כל כשל (זיכרון במכשיר ישן וכו') → ממשיכים עם המקור.
-  try {
-    const pixels = ctx.getImageData(0, 0, width, height);
-    if (aiEnhanceDocumentPixels(pixels.data, width, height)) ctx.putImageData(pixels, 0, 0);
-  } catch (enhanceError) { /* התמונה המקורית נשארת */ }
+  // v158: תעודה ארוכה — חלוקה לחלקים כשהנייר זוהה, הוא גבוה מרוחבו, מרווח השורות בתמונה שנשלחת קטן
+  // מדי והמקור מכיל את הפיקסלים. כל כשל בתכנון → צילום אחד, כמו היום.
+  if (autoCropped && !noSplit && region.height > region.width && report.rowPitch && report.proxyScale) {
+    try {
+      const plan = aiPlanLongReceiptSplit({ pitchSource: report.rowPitch / report.proxyScale, sourceLong: Math.max(region.width, region.height),
+        outputLong: AI_INVOICE_MAX_SIDE, profile: report.inkProfile, profileStart: report.profileStart, profileScale: report.proxyScale });
+      if (plan && plan.parts > 1) return aiRenderSplitPages(img, file, region, Object.assign({ pitchSource: report.rowPitch / report.proxyScale }, plan), quality, cropInfo, sourceWidth, sourceHeight);
+      if (plan && plan.pitchOut != null) { cropInfo.pitch = Math.round(plan.pitchOut); cropInfo.splitReason = plan.reason || null; }
+    } catch (splitError) { cropInfo.splitReason = 'error'; }
+  }
+  const rendered = aiRenderInvoiceRegion(img, region);
+  const width = rendered.width, height = rendered.height, scale = rendered.scale;
   // הצלע הארוכה של הנייר בתמונה שנשלחת בפועל — המספר שמתרגם ישירות
   // לפיקסלים לאות, ולכן היחיד שאפשר להשוות בין צילומים שונים. כשנחתך,
   // הנייר ממלא את הפלט; אחרת הוא חלקו לפי מה שנמדד בפרוקסי.
   if (quality) {
     quality.paperPx = autoCropped ? Math.max(width, height)
       : (quality.paperLongFrac != null ? Math.round(quality.paperLongFrac * Math.max(width, height)) : null);
+    if (cropInfo.pitch != null) quality.rowPitchPx = cropInfo.pitch;
   }
-  const encoded = aiCanvasToInvoiceJpeg(canvas, 0.92);
+  const encoded = rendered.encoded;
   // v155: הקובץ המקורי והגיאומטריה נשמרים על העמוד, כדי שחיתוך ידני
   // יוכל לרוץ מהמקור הגולמי דרך כל הצינור — סטטיסטיקה נקייה, 3000px מלאים.
   // originalImage נשאר null כשנחתך אוטומטית: הוא אמור להחזיק את הפריים
@@ -10805,6 +10945,8 @@ function aiCropInfoText(page) {
   if (!info || !info.v) return 'צילום שמור';
   if (info.reason === 'full_image') return 'תמונה מלאה · ללא חיתוך';
   const version = 'v' + info.v;
+  // v158: חלק של תעודה ארוכה שחולקה.
+  if (info.reason === 'split') return version + ' · תעודה ארוכה · חלק ' + info.part + ' מתוך ' + info.parts + (info.value != null ? ' · הוסרו ' + info.value + '% מהשוליים' : '');
   if (page.autoCropped) return version + ' · חיתוך אוטומטי · הוסרו ' + (info.value != null ? info.value : '?') + '% מהשוליים';
   if (page.cropped) return version + ' · נחתך' + (info.value != null ? ' ' + info.value + '%' : '');
   if (info.reason === 'too_small') return version + ' · ללא חיתוך: הנייר קטן מדי בפריים' + (info.value != null ? ' (' + info.value + '%)' : '');
@@ -10840,7 +10982,10 @@ function aiUpdateOrientationControls() {
   const reviewOnly = !!session.reviewOnly, cropMode = !!session.cropMode;
   const title = $('aiOrientationTitle'), hint = $('aiOrientationHint'), crop = $('aiOrientationCrop'), restore = $('aiOrientationRestore'), confirm = $('aiOrientationConfirm');
   if (title) title.textContent = reviewOnly ? 'צילום העמוד' : cropMode ? 'חיתוך התמונה' : 'בדיקת התמונה';
-  if (hint) hint.textContent = reviewOnly ? 'צפייה בתמונה ששימשה לפענוח.' : cropMode ? 'גרור את הפינות רק אם צריך. השאר את כל הטקסט והסיכומים בתוך המסגרת.' : session.page.autoCropped ? 'השוליים נחתכו אוטומטית. בתרשים: האזור הבהיר הוא מה שנשלח — ודא שכל הטקסט והסיכומים בתוכו.' : session.page.cropped ? 'מוצגת תמונה חתוכה. אפשר לחזור לתמונה המקורית.' : 'התמונה נשמרת בשלמותה. ודא שהכותרת למעלה ושהטקסט ישר.';
+  if (hint) hint.textContent = reviewOnly ? 'צפייה בתמונה ששימשה לפענוח.' : cropMode ? 'גרור את הפינות רק אם צריך. השאר את כל הטקסט והסיכומים בתוך המסגרת.'
+    // v158: חלק של תעודה ארוכה — אישור אחד מאשר את כל החלקים.
+    : session.page.split ? 'התעודה ארוכה, ולכן חולקה ל-' + session.page.split.count + ' חלקים לקריאה מדויקת יותר. אישור אחד מאשר את כולם. בתרשים: האזור הבהיר הוא החלק הזה.'
+    : session.page.autoCropped ? 'השוליים נחתכו אוטומטית. בתרשים: האזור הבהיר הוא מה שנשלח — ודא שכל הטקסט והסיכומים בתוכו.' : session.page.cropped ? 'מוצגת תמונה חתוכה. אפשר לחזור לתמונה המקורית.' : 'התמונה נשמרת בשלמותה. ודא שהכותרת למעלה ושהטקסט ישר.';
   aiDrawCropMap(cropMode ? null : session.page);
   // הערת האיכות מתווספת להנחיה ואינה מחליפה אותה, ואינה נוגעת בכפתור
   // האישור: היום זו מדידה בלבד.
@@ -10877,10 +11022,17 @@ async function aiRestoreOriginalImage() {
     // New captures reuse the saved full image. Older in-memory pages can recover from the source file.
     // forceFullFrame=true, אחרת הזיהוי היה חותך שוב ו"חזרה לתמונה המלאה"
     // הייתה מחזירה את אותה תמונה חתוכה.
-    const original = page.originalImage || (await aiCompressInvoiceImage(page.sourceBlob, true)).originalImage;
+    const compressed = page.originalImage ? null : await aiCompressInvoiceImage(page.sourceBlob, true);
+    const original = page.originalImage || (Array.isArray(compressed) ? compressed[0] : compressed).originalImage;
     const turns = aiNormalizeQuarterTurns((Number(page.rotation) || 0) / 90 + (original.rotationOffset || 0));
     const rendered = await aiRenderInvoiceRotation(original.dataUrl, turns);
     if (aiOrientationSession !== session || !aiOrientationLocation(page)) return;
+    // v158: הפריים המלא מחליף את כל חלקי התעודה הארוכה — האחרים יורדים.
+    if (page.split) {
+      const siblings = aiSplitSiblings(location.doc, page);
+      location.doc.pages = location.doc.pages.filter(item => !siblings.includes(item));
+      page.split = null;
+    }
     page.originalImage = { ...original, rotationOffset: 0 };
     page.baseDataUrl = original.dataUrl; page.dataUrl = rendered.dataUrl;
     page.bytes = rendered.bytes; page.rotation = turns * 90;
@@ -10899,7 +11051,7 @@ function aiPaintOrientationReview() {
   if (!location) { aiCloseOrientationReview(); return false; }
   const img = $('aiOrientationImage'), label = $('aiOrientationLabel');
   if (img) img.src = location.page.dataUrl;
-  if (label) label.textContent = 'תעודה ' + (location.docIndex + 1) + ' · עמוד ' + (location.pageIndex + 1) + ((Number(location.page.rotation) || 0) ? ' · סיבוב ' + (Number(location.page.rotation) || 0) + '°' : '') + ' · ' + aiCropInfoText(location.page);
+  if (label) label.textContent = 'תעודה ' + (location.docIndex + 1) + ' · ' + aiPageLabel(location.page, location.pageIndex) + ((Number(location.page.rotation) || 0) ? ' · סיבוב ' + (Number(location.page.rotation) || 0) + '°' : '') + ' · ' + aiCropInfoText(location.page);
   aiUpdateOrientationControls();
   return true;
 }
@@ -10947,11 +11099,19 @@ async function aiRotateOrientationReview(deltaTurns) {
     const rendered = await aiRenderInvoiceRotation(baseDataUrl, targetTurns);
     // מעדכנים רק לאחר שסיבוב מלא הצליח, כדי שכשל לא ישאיר חצי שינוי.
     if (!aiOrientationSession || aiOrientationSession.page !== page || !aiOrientationLocation(page)) return;
+    // v158: חלקי תעודה ארוכה מסתובבים יחד, ואחרי 180° סדרם מתהפך (aiOrderSplitGroup).
+    const siblings = aiSplitSiblings(location.doc, page).map(sibling => ({ sibling, base: sibling.baseDataUrl || sibling.dataUrl }));
+    const siblingRenders = [];
+    for (const item of siblings) siblingRenders.push(await aiRenderInvoiceRotation(item.base, targetTurns));
+    if (!aiOrientationSession || aiOrientationSession.page !== page || !aiOrientationLocation(page)) return;
     page.baseDataUrl = baseDataUrl;
     page.dataUrl = rendered.dataUrl;
     page.rotation = targetTurns * 90;
     page.bytes = rendered.bytes;
     page.orientationConfirmed = false;
+    siblings.forEach((item, index) => { item.sibling.baseDataUrl = item.base; item.sibling.dataUrl = siblingRenders[index].dataUrl;
+      item.sibling.rotation = targetTurns * 90; item.sibling.bytes = siblingRenders[index].bytes; item.sibling.orientationConfirmed = false; });
+    aiOrderSplitGroup(location.doc, page);
     tnuvaInvalidatePhotoDoc(location.doc); receiptScanChanged();
     aiPaintOrientationReview();
   } catch (error) {
@@ -10979,6 +11139,8 @@ async function aiConfirmOrientationReview() {
   }
   tnuvaInvalidatePhotoDoc(location.doc);
   location.page.orientationConfirmed = true;
+  // v158: אישור של חלק אחד של תעודה ארוכה מאשר את כל חלקיה — אותו צילום, אותו כיוון.
+  aiSplitSiblings(location.doc, location.page).forEach(sibling => { sibling.orientationConfirmed = true; });
   aiCloseOrientationReview();
   receiptScanChanged();
   refreshScanHost();
@@ -10990,7 +11152,9 @@ function aiCancelOrientationReview() {
   if (!location || aiOrientationBusy) return;
   if (aiOrientationSession.reviewOnly) { aiCloseOrientationReview(); return; }
   tnuvaInvalidatePhotoDoc(location.doc);
-  location.doc.pages.splice(location.pageIndex, 1);
+  // v158: מחיקת חלק של תעודה ארוכה מוחקת את כל חלקיה — חצי תעודה אינה תעודה.
+  const removed = aiSplitGroupPages(location.doc, location.page);
+  location.doc.pages = location.doc.pages.filter(item => !removed.includes(item));
   aiCloseOrientationReview();
   receiptScanChanged();
   refreshScanHost();
@@ -11010,7 +11174,12 @@ async function aiAddInvoiceFiles(docIndex, files) {
   try {
     // Prepare first: failed compression must not discard a paid, valid result.
     const pages = [];
-    for (const file of Array.from(files).slice(0, slots)) pages.push(await aiCompressInvoiceImage(file));
+    for (const file of Array.from(files).slice(0, slots)) {
+      // v158: תעודה ארוכה חוזרת כמערך של חלקים; כשאין להם מקום בתקרת 8 העמודים — צילום אחד, בלי חלוקה.
+      let made = [].concat(await aiCompressInvoiceImage(file));
+      if (made.length > 1 && pages.length + made.length > slots) made = [].concat(await aiCompressInvoiceImage(file, false, true));
+      pages.push(...made);
+    }
     if (generation !== aiScanRunId || aiScanDocuments[docIndex] !== doc) return;
     tnuvaInvalidatePhotoDoc(doc);
     doc.pages.push(...pages);
@@ -11284,7 +11453,9 @@ function aiRemoveInvoicePage(docIndex, pageIndex) {
   if(!canEditDraft('receiving'))return;
   const doc = aiScanDocuments[docIndex]; if (!doc || aiScanBusy) return;
   tnuvaInvalidatePhotoDoc(doc);
-  doc.pages.splice(pageIndex, 1); receiptScanChanged(); refreshScanHost();
+  // v158: חלק של תעודה ארוכה נמחק עם כל חלקיה.
+  const removed = aiSplitGroupPages(doc, doc.pages[pageIndex]);
+  doc.pages = doc.pages.filter(item => !removed.includes(item)); receiptScanChanged(); refreshScanHost();
 }
 async function aiRotateInvoicePage(docIndex, pageIndex) {
   if(!canEditDraft('receiving'))return;
@@ -12301,13 +12472,36 @@ function receiptCodeAgreementWho(agreement) {
   const kind = String((agreement && agreement.kind) || '');
   return kind === 'strong_strong' ? 'שתי הקריאות החזקות קראו' : kind === 'cheap_cheap' ? 'שתי הקריאות הזולות קראו' : 'המודל החזק וקריאה זולה קראו שניהם';
 }
+// v158: היפוך כמות ומחיר. ב-10.11 שלוש שורות הגיעו לעובד כ"הסריקות נחלקו": הקריאה שנבחרה קראה
+// 96 יח׳ × ₪5.36 והזולות 5.36 יח׳ × ₪96 — אותם שני מספרים בסדר הפוך, אותו סכום שורה. הנייר אינו
+// מכריע (a×b = b×a), אבל המאגר כן: ₪5.36 הוא מחיר המאגר של החלב, ו-₪96 אינו מחיר של שום דבר.
+// המחלוקת נסגרת בלי לשאול כשהיא רק על שני השדות האלה, הם הפוכים זה לזה, המוצר מזוהה, המחיר שנבחר
+// הוא המחיר במאגר (או מחיר המבצע), והמחיר ההפוך אינו אף אחד מהם. נספרת כ"הוכרעה מול המאגר".
+function receiptSwapSettled(row, dispute) {
+  if (!row || !dispute || !Array.isArray(dispute.fields) || !row.productId) return false;
+  // שדה הקוד מוכרע בכללים שלו (100, 108, 109, 150); כאן רק הכמות והמחיר, ואסור שיהיה שדה כסף אחר.
+  const decisive = dispute.fields.filter(item => item && !RECEIPT_DISPUTE_INFORMATIONAL_FIELDS.has(String(item.field || '')) && item.field !== 'code');
+  const qty = decisive.find(item => item.field === 'quantity'), unit = decisive.find(item => item.field === 'unitPriceExVat');
+  if (!qty || !unit || decisive.length !== 2) return false;
+  const cents = value => aiMoneyCents(value);
+  if (cents(qty.selected) == null || cents(unit.selected) == null || cents(qty.selected) === cents(unit.selected)) return false;
+  if (cents(qty.selected) !== cents(unit.other) || cents(unit.selected) !== cents(qty.other)) return false;
+  // המחיר שנבחר מאושר במאגר (בסיס או מבצע), וההפוך — לא.
+  if (!row.printedVsCatalog || row.printedVsCatalog.off) return false;
+  const expected = (Array.isArray(row.expectedOptions) ? row.expectedOptions : []).map(option => priceAuditNumber(option && option.price))
+    .concat([priceAuditNumber(row.catalogBasePrice)]).filter(price => price != null && price > 0);
+  if (!expected.length) return false;
+  const swapped = Number(qty.selected);
+  return !expected.some(price => Math.abs(price - swapped) <= PRICE_AUDIT_UNIT_TOLERANCE);
+}
 function receiptDisputeOpenFields(row, dispute) {
   if (!dispute || !Array.isArray(dispute.fields)) return [];
   const built = tnuvaBuildCodeIndex();
+  const swapSettled = receiptSwapSettled(row, dispute);
   return dispute.fields.filter(item => {
     const field = String((item && item.field) || '');
     if (RECEIPT_DISPUTE_INFORMATIONAL_FIELDS.has(field)) return false;
-    if (field !== 'code') return true;
+    if (field !== 'code') return !swapSettled;
     // זהות שהמשתמש כבר אישר במפורש סוגרת את שאלת הקוד, ואין לשאול אותה שוב.
     const doc = receiptScanDoc(row && row.documentIndex);
     const mapped = doc && Array.isArray(doc.rows) ? doc.rows[Number(row && row.rowIndex)] : null;
@@ -12324,9 +12518,11 @@ function receiptDisputeOpenFields(row, dispute) {
     // גם כשהקוד היריב מוביל למוצר באותו מחיר.
     if (Number(item.confirmed) > 0) return false;
     // אם גם הקוד השני מוביל למוצר שהמחיר המודפס מתאים לו — הכסף אינו מכריע.
-    const other = tnuvaCodeOf(item.other) || String(item.other == null ? '' : item.other).replace(/\D/g, '').replace(/^0+/, '');
-    const rival = other && !built.ambiguous.has(other) ? built.map.get(other) : null;
-    if (rival && String(rival.id) === String(row.productId)) return false; // אותו מוצר — אין במה להכריע
+    // v158: "הקוד השני" הוא כל קוד שקריאה אחרת קראה בשורה (reads), לא רק הזולה שבאותו מיקום.
+    const otherCodes = tnuvaFieldOtherCodes(item, tnuvaCodeOf(item.selected));
+    const rivals = otherCodes.map(code => built.ambiguous.has(code) ? null : built.map.get(code)).filter(Boolean);
+    const rival = rivals.find(candidate => String(candidate.id) !== String(row.productId)) || null;
+    if (!rival && rivals.length) return false; // אותו מוצר — אין במה להכריע
     if (receiptSamePriceModelDecision(row, dispute, built)) return false;
     return !!(rival && Math.abs(Number(rival.price) - Number(row.originalUnitPrice)) <= PRICE_AUDIT_UNIT_TOLERANCE);
   });
@@ -12338,36 +12534,55 @@ function receiptDisputeOpenFields(row, dispute) {
 function receiptRivalCandidate(row, dispute) {
   if (!row || !dispute || !Array.isArray(dispute.fields)) return null;
   const field = dispute.fields.find(item => String((item && item.field) || '') === 'code');
-  const code = field ? (tnuvaCodeOf(field.other) || String(field.other == null ? '' : field.other).replace(/\D/g, '').replace(/^0+/, '')) : '';
-  if (!code) return null;
-  // v150: כשהקריאות הסכימו על קוד אחר (שירות 20), הקוד של הקריאה השנייה אינו הצעה — הוא קריאה שהוכרעה נגדה.
-  if (field.agreement && TNUVA_CODE_AGREEMENT_KINDS.has(String(field.agreement.kind || '')) && tnuvaCodeOf(field.agreement.code) !== code) return null;
+  if (!field) return null;
+  // v158: כל מה שכל קריאה קראה בשורה הזאת (reads, שירות 20), לא רק הזולה שבאותו מיקום — כמו במתאם.
+  const codes = tnuvaFieldOtherCodes(field, tnuvaCodeOf(field.selected));
+  if (!codes.length) return null;
+  // v150: כשקריאות שונות הסכימו על קוד אחר (שירות 20), הקוד של הקריאה השנייה אינו הצעה — הוא קריאה שהוכרעה נגדה.
+  // v158: הסכמה של שתי הקריאות החזקות (אותו מודל על אותו צילום) אינה עוצרת (TNUVA_CODE_AGREEMENT_BLOCKS_GUESS).
+  const agreedCode = field.agreement && TNUVA_CODE_AGREEMENT_BLOCKS_GUESS.has(String(field.agreement.kind || '')) ? tnuvaCodeOf(field.agreement.code) : null;
   const built = tnuvaBuildCodeIndex();
-  const product = built.ambiguous.has(code) ? null : built.map.get(code);
   const printed = Number(row.originalUnitPrice);
-  if (!product || !(Number(product.price) > 0) || !isFinite(printed)) return null;
-  // המחיר המודפס הוא שמאשר את הקוד השני. בלעדיו זו סתם קריאה שנייה.
-  if (Math.abs(Number(product.price) - printed) > PRICE_AUDIT_UNIT_TOLERANCE) return null;
-  return { code, product };
+  if (!isFinite(printed)) return null;
+  const hits = new Map();
+  codes.forEach(code => {
+    if (agreedCode && code !== agreedCode) return;
+    const product = built.ambiguous.has(code) ? null : built.map.get(code);
+    // המחיר המודפס הוא שמאשר את הקוד השני. בלעדיו זו סתם קריאה שנייה.
+    if (product && Number(product.price) > 0 && Math.abs(Number(product.price) - printed) <= PRICE_AUDIT_UNIT_TOLERANCE) hits.set(String(product.id), { code, product });
+  });
+  // שני מוצרים שונים באותו מחיר — אין הצעה אחת; שניהם ברשימת המועמדים.
+  return hits.size === 1 ? [...hits.values()][0] : null;
 }
 // v106: שורה שאף קריאה לא נתנה לה קוד שקיים במאגר אינה חידה סתומה. שלוש
 // ראיות חלקיות עדיין יושבות עליה: קוד שנקרא ובלע ספרות מהעמודה הסמוכה ולכן
 // מכיל בתוכו קוד קיים, המחיר המודפס שמצמצם את המאגר, והתיאור המקוצר. יחד הן
 // רשימת מועמדים קצרה שאפשר לבחור ממנה בלחיצה — במקום ללכת לארגז לסרוק ברקוד.
+// v158: כל מילה מהנייר נספרת פעם אחת — ההתאמה הטובה ביותר שלה בשם, לא סכום על כל המילים בשם.
+// ב-10.11 "טונה 400גר פרות" (שם שהמודל המציא) סומן כ"הכי דומה" ל"גבינה צהובה עמק 28% 400 ג' ואקום
+// 400 גרם" רק מפני ש-"400" מופיע בו פעמיים — והמוצר הנכון היה השני ברשימה.
 function receiptNameScore(printed, name) {
   const clean = value => String(value == null ? '' : value).replace(/["'׳״.,()\-\/]/g, ' ').split(/\s+/).filter(token => token.length >= 2);
   const left = clean(printed), right = clean(name);
   let score = 0;
-  left.forEach(token => right.forEach(other => {
-    if (token === other) score += 4;
-    else if (token.length >= 3 && other.startsWith(token)) score += 3;
-    else if (other.length >= 3 && token.startsWith(other)) score += 3;
-    else if (token.slice(0, 2) === other.slice(0, 2)) score += 1;
-  }));
+  left.forEach(token => {
+    let best = 0;
+    right.forEach(other => {
+      const value = token === other ? 4
+        : token.length >= 3 && other.startsWith(token) ? 3
+        : other.length >= 3 && token.startsWith(other) ? 3
+        : token.slice(0, 2) === other.slice(0, 2) ? 1 : 0;
+      if (value > best) best = value;
+    });
+    score += best;
+  });
   return score;
 }
-function receiptRowCandidates(row, dispute) {
+// v158: "השם הכי דומה" מסומן רק כשהפער מהבא אחריו הוא לפחות מילה שלמה (3), לא כל פער.
+const RECEIPT_CLOSEST_NAME_MARGIN = 3;
+function receiptRowCandidates(row, dispute, excludeIds) {
   if (!row) return [];
+  const excluded = new Set((Array.isArray(excludeIds) ? excludeIds : [excludeIds]).filter(Boolean).map(String));
   const printed = Number(row.originalUnitPrice);
   const built = tnuvaBuildCodeIndex();
   const codes = [String(row.code == null ? '' : row.code)]
@@ -12379,9 +12594,16 @@ function receiptRowCandidates(row, dispute) {
     .filter(Boolean);
   const out = new Map();
   const add = (product, reason, weight) => {
-    if (!product || !product.id || out.has(product.id)) return;
+    if (!product || !product.id || out.has(product.id) || excluded.has(String(product.id))) return;
     out.set(product.id, { product, reason, weight });
   };
+  const priceFits = product => Number(product.price) > 0 && Math.abs(Number(product.price) - printed) <= PRICE_AUDIT_UNIT_TOLERANCE;
+  // v158: קוד שקריאה אחרת של הצילום קראה בדיוק, שקיים במאגר והמחיר תואם — קריאה מהנייר, לא ניחוש
+  // מתוך המאגר, ולכן ראשון ברשימה. מגיע לכאן כששתי קריאות קראו שני קודים כאלה (המתאם לא בחר ביניהם).
+  if (isFinite(printed)) codes.slice(1).forEach(code => {
+    const product = code && !built.ambiguous.has(code) ? built.map.get(code) : null;
+    if (product && priceFits(product)) add(product, 'קריאה אחרת של הצילום קראה את הקוד ' + code + ', והמחיר תואם', 200);
+  });
   // קוד שנקרא ומכיל בתוכו קוד קיים במאגר — ספרות שנדבקו מהעמודה הסמוכה —
   // כשהמחיר המודפס מאשר את המוצר. זו הראיה החזקה מבין השלוש.
   if (isFinite(printed)) codes.forEach(code => built.map.forEach((product, candidate) => {
@@ -12400,16 +12622,47 @@ function receiptRowCandidates(row, dispute) {
   }
   return [...out.values()].sort((left, right) => right.weight - left.weight).slice(0, 8);
 }
-function receiptPickRowProduct(documentIndex, sourceIndex, productId) {
+function receiptPickRowProduct(documentIndex, sourceIndex, productId, options) {
   const row = receiptFindAuditRow(documentIndex, sourceIndex);
   const product = (products || []).find(item => String(item.id) === String(productId));
   if (!row || !product) { showToast('המוצר או השורה כבר אינם זמינים — רענן את המסך', null, null, 3400); return false; }
-  if (aiCatalogBarcodeMatches(product.barcode, false).length !== 1) {
+  if (!tnuvaShortCodeProduct(product) && aiCatalogBarcodeMatches(product.barcode, false).length !== 1) {
     showToast('למוצר אין ברקוד ייחודי במאגר — בדוק את כרטיס המוצר לפני השיוך', null, null, 3600); return false;
   }
   const ctx = { documentIndex: Number(documentIndex), sourceIndex: Number(sourceIndex), rowIndex: Number(row.rowIndex),
     code: String(row.code || ''), name: String(row.name || ''), unitPrice: row.originalUnitPrice, quantity: row.quantity };
-  return receiptAssignRowProduct(ctx, product, product.barcode, 'picked_from_catalog');
+  return receiptAssignRowProduct(ctx, product, product.barcode, 'picked_from_catalog', options);
+}
+// v158: ארגזים ופיקדון (ארגז חלב ירוק 59259) — הקוד המודפס הוא-הוא הברקוד במאגר, 4–5 ספרות. כלל הברקוד
+// המלא (6 ספרות ומעלה) קיים כדי שסיומת מקרית לא תתאים למוצר; קוד קצר שהוא בדיוק הברקוד של מוצר יחיד
+// במאגר (tnuva_code_exact במתאם) עומד באותה ודאות. בלעדי זה "אשר זיהוי" על שורת ארגז נכשל בשקט (10.11, שורה 28).
+function tnuvaShortCodeProduct(product) {
+  const digits = normalizeBarcode(product && product.barcode || '');
+  if (!/^\d{4,5}$/.test(digits)) return false;
+  const built = tnuvaBuildCodeIndex();
+  const code = tnuvaCodeOf(digits);
+  return !!(code && !built.ambiguous.has(code) && built.map.get(code) && String(built.map.get(code).id) === String(product.id));
+}
+// v158: כל הזיהויים לפי המחיר שממתינים לאישור — בלחיצה אחת. ב-10.11 חמש שורות כאלה ישבו בחמישה
+// כרטיסים נפרדים, כל אחד עם שני כפתורים לאותה פעולה. כל שורה עוברת את אותה בדיקה של לחיצה בודדת
+// (receiptPickRowProduct), ונשמרת כשיוך של העובד (user_confirmed) — לא כהכרעה של המאגר.
+function receiptPickAllMatchedRows() {
+  const list = receiptRowActions().unidentified.filter(item => item && item.matchedProduct);
+  if (!list.length) { showToast('אין זיהויים שממתינים לאישור — רענן את המסך', null, null, 3000); return 0; }
+  let done = 0;
+  list.forEach(item => { if (receiptPickRowProduct(item.row.documentIndex, item.row.sourceIndex, item.matchedProduct.id, { quiet: true })) done += 1; });
+  saveReceiptDraft(); refreshScanHost(); refreshPriceAuditViews();
+  showToast(done === 1 ? 'השורה שויכה למוצר שזוהה' : done + ' שורות שויכו למוצרים שזוהו', null, null, 3000);
+  return done;
+}
+// "לא, מוצר אחר": הזיהוי לפי המחיר יורד, והשורה חוזרת ככרטיס בחירה — המועמדים באותו מחיר בלי המוצר שנדחה,
+// חיפוש, סריקה ומוצר חדש. שום דבר לא נשמר עד שנבחר מוצר.
+function receiptRejectMatchedRow(documentIndex, sourceIndex) {
+  const row = receiptFindAuditRow(documentIndex, sourceIndex);
+  if (!row) { showToast('השורה כבר אינה בבדיקה — רענן את המסך', null, null, 3200); return false; }
+  receiptRejectedIdentities.add(String(row.id));
+  refreshPriceAuditViews();
+  return true;
 }
 function receiptAdoptRivalCode(documentIndex, sourceIndex) {
   const row = receiptFindAuditRow(documentIndex, sourceIndex);
@@ -12468,8 +12721,12 @@ function receiptRowActions(report) {
     // ושלחה את המשתמש לסרוק ארגז שכבר זוהה. שאלה נשאלת רק על שורה בלי מוצר.
     const matched = !!(mapped && mapped.__tnuvaProductId);
     if (row.capability === 'unidentified' && matched) {
-      if (identityPending) out.unidentified.push({ row, dispute, matchedProduct: (products || []).find(p => p.id === mapped.__tnuvaProductId) || null });
-      else out.autoMatched += 1;
+      if (identityPending) {
+        const product = (products || []).find(p => p.id === mapped.__tnuvaProductId) || null;
+        // v158: זיהוי שהעובד דחה ("לא, מוצר אחר") חוזר ככרטיס בחירה, בלי המוצר שנדחה.
+        if (product && receiptRejectedIdentities.has(String(row.id))) out.unidentified.push({ row, dispute, rejected: product });
+        else out.unidentified.push({ row, dispute, matchedProduct: product });
+      } else out.autoMatched += 1;
       return;
     }
     if (row.capability === 'unidentified') out.unidentified.push({ row, dispute });
@@ -12500,9 +12757,12 @@ function receiptCodeReadsHtml(item, state) {
   const show = value => value == null || value === '' ? 'לא נקרא' : String(value);
   const parts = reads.map(read => htmlEscape(receiptReadStageName(read)) + ' ' + htmlEscape(read.seen === false ? 'לא קראה את השורה' : show(read.value)));
   const agreement = item.agreement && TNUVA_CODE_AGREEMENT_KINDS.has(String(item.agreement.kind || '')) ? item.agreement : null;
+  // v158: קוד מוסכם שאינו במאגר נאמר כך גם כשהשורה שויכה בדרך אחרת (תיקון ספרה, קריאה אחרת) — לא "קוד אחר באותו מחיר".
+  const agreedCode = agreement ? tnuvaCodeOf(agreement.code) : null;
+  const agreedInCatalog = !!(agreedCode && tnuvaBuildCodeIndex().map.get(agreedCode));
   const verdict = !agreement ? 'אף שתי קריאות לא הסכימו על הקוד.'
     : receiptCodeAgreementWho(agreement) + ' ' + htmlEscape(show(agreement.code)) +
-      (state === 'missing' ? ' — והוא אינו במאגר.' : state ? '.' : ' — אבל גם קוד אחר שנקרא מוביל למוצר באותו מחיר, ולכן ההכרעה שלך.');
+      (state === 'missing' || !agreedInCatalog ? ' — והוא אינו במאגר.' : state ? '.' : ' — אבל גם קוד אחר שנקרא מוביל למוצר באותו מחיר, ולכן ההכרעה שלך.');
   return '<div dir="rtl">קוד: ' + parts.join(' · ') + '</div><div dir="rtl" data-code-agreement>' + verdict + '</div>';
 }
 function receiptRowDisputeHtml(dispute) {
@@ -12569,12 +12829,12 @@ function receiptRowHeadHtml(row) {
 // הסבירה ביותר, כמו קודם; המועמד שהשם שלו הכי קרוב לשם שבנייר מסומן כך רק
 // כשיש פער ברור ממי שאחריו — בלי פער אין מה לסמן. הבחירה עצמה נשארת לחיצה
 // אחת מפורשת, בלי ללכת לארגז ובלי להקים מוצר חדש.
-function receiptRowCandidatesHtml(row, dispute, hasRival) {
-  const candidates = receiptRowCandidates(row, dispute);
+function receiptRowCandidatesHtml(row, dispute, hasRival, excludeIds) {
+  const candidates = receiptRowCandidates(row, dispute, excludeIds);
   if (!candidates.length) return '';
   const strong = candidates[0].weight >= 100 && !hasRival ? candidates[0] : null;
   const rest = strong ? candidates.slice(1) : candidates;
-  const closest = !strong && candidates[0].weight > 0 && (candidates.length === 1 || candidates[0].weight > candidates[1].weight) ? candidates[0] : null;
+  const closest = !strong && candidates[0].weight > 0 && (candidates.length === 1 || candidates[0].weight - candidates[1].weight >= RECEIPT_CLOSEST_NAME_MARGIN) ? candidates[0] : null;
   const button = (item, index, classes, mark) => '<button data-role="rowfix-pick" data-doc="' + Number(row.documentIndex) +
     '" data-row="' + Number(row.sourceIndex) + '" data-product="' + htmlEscape(String(item.product.id)) +
     '" class="btn-tap w-full text-right rounded-xl py-3 px-3 mt-2 flex items-start gap-2 ' + classes + '">' +
@@ -12593,6 +12853,136 @@ function receiptRowCandidatesHtml(row, dispute, hasRival) {
       item === closest ? 'bg-white border-2 border-violet-500 text-violet-900' : 'bg-white border border-violet-300 text-violet-900',
       item === closest ? 'השם הכי דומה לשם שבנייר' : '')).join('') + '</div>';
 }
+// v158: סדר הכרטיסים הוא סדר התעודה — לפי מספר השורה בנייר, לא לפי סוג הכרטיס. ב-10.11 שורה 28
+// הופיעה לפני שורה 1, כי כרטיסי הזיהוי באו לפני כרטיסי המחלוקת.
+function receiptCardOrderKey(row) {
+  const line = Number(row && row.line);
+  return Number((row && row.documentIndex) || 0) * 100000 + (Number.isFinite(line) && line > 0 ? line : Number((row && row.sourceIndex) || 0) + 1);
+}
+// v158: מה כל קריאה קראה — הטקסט של 142/143/150 שהבעלים ביקש, במלואו — מאחורי שורת "פרטים". העובד
+// רואה את השאלה ואת הכפתורים; מי שרוצה לדעת למה, פותח.
+function receiptReadsDetailsHtml(dispute, summary) {
+  const inner = receiptRowDisputeHtml(dispute);
+  if (!inner) return '';
+  return '<details data-row-reads class="mt-2"><summary class="cursor-pointer text-[11px] font-bold text-slate-500"><i class="fa-solid fa-circle-info ml-1"></i>' +
+    htmlEscape(summary || 'מה קראה כל סריקה') + '</summary>' + inner + '</details>';
+}
+// v144/v158: "המוצר לא ברשימה?" — חיפוש, סריקה ומוצר חדש — בשורה מקופלת אחת, שנפתחת מאליה רק כשאין
+// שום דבר אחר ללחוץ עליו. ב-10.11 הבלוק הזה, עם פסקת ההסבר ושלושת הכפתורים, חזר שמונה פעמים.
+function receiptRowOtherWaysHtml(row, title, open, scanPrimary) {
+  return '<div data-row-other-ways class="mt-3 pt-2 border-t border-violet-100"><details' + (open ? ' open' : '') + '>' +
+    '<summary class="cursor-pointer text-xs font-black text-slate-700">' + htmlEscape(title) + '</summary>' +
+    '<div class="text-[11px] font-bold text-slate-500 mt-1">אפשר לחפש במאגר לפי שם או ברקוד (גם אם המוצר לא הגיע), לסרוק ברקוד מהמוצר עצמו, או לפתוח מוצר חדש. השיוך אינו מאשר קבלת כמות.</div>' +
+    receiptRowActionButton('rowfix-search', row, '<i class="fa-solid fa-magnifying-glass ml-1"></i>חפש לפי שם או ברקוד', 'bg-violet-50 border border-violet-300 text-violet-900 w-full mt-2') +
+    '<div class="grid grid-cols-2 gap-2 mt-2">' +
+      receiptRowActionButton('rowfix-scan', row, '<i class="fa-solid fa-barcode ml-1"></i>סרוק ברקוד מהמוצר', scanPrimary ? 'bg-violet-600 text-white' : 'bg-white border border-violet-300 text-violet-800') +
+      receiptRowActionButton('rowfix-new', row, '<i class="fa-solid fa-plus ml-1"></i>מוצר חדש בלי סריקה', 'bg-white border border-violet-300 text-violet-800') +
+    '</div></details></div>';
+}
+// v158: הזיהויים לפי המחיר (תיקון ספרה, הקוד שקריאה אחרת קראה) — בכרטיס אחד, עם כפתור אחד לכולם.
+// לכל שורה: מה נקרא בנייר, מה זוהה, והקוד שבמאגר — כדי שהעובד יוכל להשוות אותו לעמודת הקוד שעל
+// הנייר, כי שמות המוצרים שהמודל קרא אינם אמינים (ב-10.11: "טונה 400גר פרות" לעמק סמי).
+function receiptMatchedBatchHtml(list) {
+  const many = list.length > 1;
+  const how = mapped => {
+    const method = String((mapped && mapped.barcodeMatchMethod) || '');
+    return /second_read/.test(method) ? 'קריאה אחרת של הצילום קראה את הקוד הזה, והמחיר תואם'
+      : /repair/.test(method) ? 'הקוד שנקרא שונה ממנו בספרה אחת, והמחיר תואם' : 'המחיר תואם';
+  };
+  const rows = list.map(({ row, dispute, matchedProduct }) => {
+    const doc = receiptScanDoc(row.documentIndex);
+    const mapped = doc && Array.isArray(doc.rows) ? doc.rows[Number(row.rowIndex)] : null;
+    const code = tnuvaCodeOf(matchedProduct.barcode) || normalizeBarcode(matchedProduct.barcode || '') || '';
+    return '<div data-matched-row class="mt-3 pt-3 border-t border-violet-100">' + receiptRowHeadHtml(row) +
+      '<div class="mt-1 text-sm font-black text-violet-900">זוהה: ' + htmlEscape(matchedProduct.name) + '</div>' +
+      '<div class="text-[11px] font-bold text-slate-500">קוד במאגר <bdi>' + htmlEscape(code) + '</bdi> · ₪' + fmtUnitPrice(matchedProduct.price, true) + ' · ' + how(mapped) + '</div>' +
+      '<div class="grid grid-cols-[1fr_auto] gap-2 mt-2">' +
+        '<button data-role="rowfix-pick" data-doc="' + Number(row.documentIndex) + '" data-row="' + Number(row.sourceIndex) +
+        '" data-product="' + htmlEscape(String(matchedProduct.id)) + '" class="btn-tap rounded-lg py-2.5 px-3 text-sm font-black ' +
+        (many ? 'bg-white border border-violet-300 text-violet-900' : 'bg-violet-600 text-white') + '">זה ' + htmlEscape(matchedProduct.name) + ' — אשר זיהוי</button>' +
+        receiptRowActionButton('rowfix-reject', row, 'לא, מוצר אחר', 'bg-white border border-slate-300 text-slate-700') +
+      '</div>' + receiptReadsDetailsHtml(dispute) + '</div>';
+  }).join('');
+  return '<article data-matched-batch class="rounded-xl border border-violet-200 bg-white p-3 mt-2">' +
+    '<div class="text-[10px] font-black text-violet-700"><i class="fa-solid fa-circle-plus ml-1"></i>אשר את זיהוי המוצר להשלמת בדיקת המבצעים</div>' +
+    '<div class="text-xs font-bold text-slate-600 mt-1">' + (many
+      ? list.length + ' שורות זוהו לפי המחיר וקריאה נוספת של הצילום. השווה את הקוד שבמאגר לקוד שעל הנייר, ואשר בלחיצה אחת.'
+      : 'השורה זוהתה לפי המחיר וקריאה נוספת של הצילום. השווה את הקוד שבמאגר לקוד שעל הנייר.') + '</div>' +
+    (many ? '<button data-role="rowfix-pick-all" class="btn-tap w-full rounded-lg py-3 px-3 mt-2 text-sm font-black bg-violet-600 text-white"><i class="fa-solid fa-check-double ml-1"></i>אשר את כל ' + list.length + ' הזיהויים</button>' : '') +
+    rows + '</article>';
+}
+// v158: כרטיס בחירה — הקוד שבשורה אינו במאגר ואין זיהוי לפי המחיר. הרשימה פתוחה (v144), הדרכים האחרות
+// מקופלות, ומה שכל קריאה קראה בסוף, מאחורי "פרטים".
+function receiptIdentifyCardHtml({ row, dispute, rejected }) {
+  const exclude = rejected ? String(rejected.id) : null;
+  const found = receiptRivalCandidate(row, dispute);
+  const rival = found && (!exclude || String(found.product.id) !== exclude) ? found : null;
+  // המוצר של התיבה הירוקה אינו חוזר גם ברשימה; מוצר שנדחה אינו מוצע שוב.
+  const candidates = receiptRowCandidatesHtml(row, dispute, !!rival, [exclude, rival ? String(rival.product.id) : null]);
+  const nothingElse = !rival && !candidates;
+  return '<article class="rounded-xl border border-violet-200 bg-white p-3 mt-2">' +
+    '<div class="text-[10px] font-black text-violet-700"><i class="fa-solid fa-circle-plus ml-1"></i>הקוד שבשורה אינו במאגר — צריך לבחור מוצר</div>' +
+    receiptRowHeadHtml(row) +
+    (rejected ? '<div class="mt-1 text-[11px] font-bold text-slate-500">הזיהוי "' + htmlEscape(rejected.name) + '" נדחה על ידך — בחר מוצר אחר.</div>' : '') +
+    (rival ? '<div class="mt-2 rounded-lg bg-emerald-50 border border-emerald-200 p-2 text-[11px] font-bold text-emerald-900">' +
+      'הקוד של הקריאה השנייה, ' + htmlEscape(rival.code) + ', כן קיים במאגר: <b>' + htmlEscape(rival.product.name) + '</b> — ₪' +
+      fmtUnitPrice(rival.product.price, true) + ', בדיוק המחיר שמודפס בשורה.</div>' +
+      receiptRowActionButton('rowfix-rival', row, '<i class="fa-solid fa-check ml-1"></i>זה המוצר — שייך את השורה', 'bg-emerald-600 text-white w-full mt-2') : '') +
+    candidates +
+    receiptRowOtherWaysHtml(row, nothingElse ? 'איך מזהים את המוצר?' : 'המוצר לא ברשימה? חפש, סרוק או פתח מוצר חדש', nothingElse, nothingElse) +
+    receiptReadsDetailsHtml(dispute) + '</article>';
+}
+// v158: שורת הסיכום של מחלוקת — העובדות בלבד: איזה שדה, מה נקרא ומה הקריאה האחרת קראה; לקוד — גם
+// שם המוצר של כל קוד כשהוא במאגר. הנימוקים (מי הכריע, קריאה שלישית ורביעית) נשארים ב"פרטים".
+function receiptDisputeSummaryText(row, dispute) {
+  const names = RECEIPT_DISPUTE_FIELD_NAMES;
+  const show = value => value == null || value === '' ? 'לא נקרא' : String(value);
+  const built = tnuvaBuildCodeIndex();
+  const productOf = value => { const code = tnuvaCodeOf(value); const product = code && !built.ambiguous.has(code) ? built.map.get(code) : null; return product ? ' (' + product.name + ')' : ''; };
+  return (dispute.fields || []).map(item => {
+    if (item.field === 'row') return 'רק הקריאה שנבחרה ראתה את השורה הזאת';
+    const isCode = item.field === 'code';
+    const others = Array.isArray(item.reads) && item.reads.length
+      ? [...new Set(item.reads.filter(read => read && read.selected !== true && read.value != null && read.value !== '').map(read => String(read.value)))]
+        .filter(value => value !== String(item.selected == null ? '' : item.selected))
+      : [];
+    const otherText = (others.length ? others : [show(item.other)]).map(value => show(value) + (isCode ? productOf(value) : '')).join(' / ');
+    return (names[item.field] || item.field) + ': ' + show(item.selected) + (isCode ? productOf(item.selected) : '') + ' מול ' + otherText;
+  }).join(' · ');
+}
+// v158: במחלוקת על קוד בשורה מזוהה, כשקוד שקריאה אחרת קראה מוביל למוצר אחר באותו מחיר (שכנים באותו
+// מחיר — קוטג' 5% ו-9%) — כפתור להחלפה, במקום לשלוח את העובד לחיפוש.
+function receiptDisputeRivalProduct(row, dispute) {
+  const field = (dispute && Array.isArray(dispute.fields) ? dispute.fields : []).find(item => item && item.field === 'code');
+  if (!field || !row || !row.productId) return null;
+  const built = tnuvaBuildCodeIndex();
+  const printed = Number(row.originalUnitPrice);
+  if (!isFinite(printed)) return null;
+  const hits = new Map();
+  tnuvaFieldOtherCodes(field, tnuvaCodeOf(field.selected)).forEach(code => {
+    const product = built.ambiguous.has(code) ? null : built.map.get(code);
+    if (product && String(product.id) !== String(row.productId) && Number(product.price) > 0 && Math.abs(Number(product.price) - printed) <= PRICE_AUDIT_UNIT_TOLERANCE) hits.set(String(product.id), product);
+  });
+  return hits.size === 1 ? [...hits.values()][0] : null;
+}
+function receiptDisputeCardHtml({ row, dispute }) {
+  const rival = receiptDisputeRivalProduct(row, dispute);
+  return '<article class="rounded-xl border border-amber-300 bg-white p-3 mt-2">' +
+    '<div class="text-[10px] font-black text-amber-800"><i class="fa-solid fa-code-compare ml-1"></i>הסריקות נחלקו על השורה</div>' +
+    receiptRowHeadHtml(row) +
+    '<div class="mt-2 text-xs font-black text-amber-900" data-dispute-summary>' + htmlEscape(receiptDisputeSummaryText(row, dispute)) + '</div>' +
+    receiptReadsDetailsHtml(dispute) +
+    '<div class="grid grid-cols-2 gap-2 mt-2">' +
+      receiptRowActionButton('rowfix-confirm', row, '<i class="fa-solid fa-check ml-1"></i>השורה נכונה', 'bg-amber-600 text-white') +
+      (rival ? '<button data-role="rowfix-pick" data-doc="' + Number(row.documentIndex) + '" data-row="' + Number(row.sourceIndex) +
+          '" data-product="' + htmlEscape(String(rival.id)) + '" class="btn-tap rounded-lg py-2.5 px-3 text-sm font-black bg-white border border-amber-300 text-amber-900">זה ' + htmlEscape(rival.name) + '</button>'
+        : receiptRowActionButton('rowfix-scan', row, '<i class="fa-solid fa-barcode ml-1"></i>סרוק ברקוד מהמוצר', 'bg-white border border-amber-300 text-amber-800')) +
+    '</div>' +
+    '<details class="mt-2"><summary class="cursor-pointer text-[11px] font-bold text-slate-500">מוצר אחר? חפש לפי שם או ברקוד, או סרוק</summary>' +
+      receiptRowActionButton('rowfix-search', row, '<i class="fa-solid fa-magnifying-glass ml-1"></i>חפש לפי שם או ברקוד', 'bg-amber-50 border border-amber-300 text-amber-900 w-full mt-2') +
+      (rival ? receiptRowActionButton('rowfix-scan', row, '<i class="fa-solid fa-barcode ml-1"></i>סרוק ברקוד מהמוצר', 'bg-white border border-amber-300 text-amber-800 w-full mt-2') : '') +
+    '</details></article>';
+}
 function receiptRowActionsHtml(report) {
   const actions = receiptRowActions(report);
   const catalogSettled = actions.settled - actions.modelSettled - actions.userSettled - actions.agreementSettled - actions.agreementMissing;
@@ -12610,48 +13000,23 @@ function receiptRowActionsHtml(report) {
     return parts.length ? '<section class="rounded-xl border border-emerald-200 bg-emerald-50 p-2.5 mb-2 text-sm font-bold text-emerald-900" dir="rtl">' +
       htmlEscape(parts.join(' · ')) + '.</section>' : '';
   }
-  const newCards = actions.unidentified.map(({ row, dispute, matchedProduct }) => {
-    const rival = receiptRivalCandidate(row, dispute);
-    const candidates = matchedProduct ? '' : receiptRowCandidatesHtml(row, dispute, !!rival);
-    // v144: הדרך להמשיך כתובה בסדר הזה — קודם הרשימה (או האישור), ורק אחריה
-    // "המוצר לא ברשימה?" עם חיפוש, סריקה ומוצר חדש. הסריקה היא הכפתור הראשי רק
-    // כשאין שום דבר אחר ללחוץ עליו; עד כאן היא הייתה סגולה תמיד, ושלחה לארגז
-    // גם כשהתשובה כבר ישבה ברשימה המקופלת.
-    const nothingElse = !matchedProduct && !rival && !candidates;
-    const otherTitle = matchedProduct ? 'זה מוצר אחר?' : nothingElse ? 'איך מזהים את המוצר?' : 'המוצר לא ברשימה?';
-    return '<article class="rounded-xl border border-violet-200 bg-white p-3 mt-2">' +
-      '<div class="text-[10px] font-black text-violet-700"><i class="fa-solid fa-circle-plus ml-1"></i>' +
-        (matchedProduct ? 'אשר את זיהוי המוצר להשלמת בדיקת המבצעים' : 'הקוד שבשורה אינו במאגר — צריך לבחור מוצר') + '</div>' +
-      receiptRowHeadHtml(row) + receiptRowDisputeHtml(dispute) +
-      (matchedProduct ? '<div class="mt-2 text-xs font-bold text-slate-600">השורה שויכה בעזרת המחיר למוצר ' + htmlEscape(matchedProduct.name) +
-        '. אשר שזה אכן המוצר — ואז אפשר יהיה לבדוק גם את הנחת המבצעים.</div>' +
-        '<button data-role="rowfix-pick" data-doc="' + Number(row.documentIndex) + '" data-row="' + Number(row.sourceIndex) +
-        '" data-product="' + htmlEscape(String(matchedProduct.id)) + '" class="btn-tap w-full rounded-lg py-3 px-3 mt-2 text-sm font-black bg-violet-600 text-white">' +
-        'זה ' + htmlEscape(matchedProduct.name) + ' — אשר זיהוי</button>' : '') +
-      (rival ? '<div class="mt-2 rounded-lg bg-emerald-50 border border-emerald-200 p-2 text-[11px] font-bold text-emerald-900">' +
-        'הקוד של הקריאה השנייה, ' + htmlEscape(rival.code) + ', כן קיים במאגר: <b>' + htmlEscape(rival.product.name) + '</b> — ₪' +
-        fmtUnitPrice(rival.product.price, true) + ', בדיוק המחיר שמודפס בשורה.</div>' +
-        receiptRowActionButton('rowfix-rival', row, '<i class="fa-solid fa-check ml-1"></i>זה המוצר — שייך את השורה', 'bg-emerald-600 text-white w-full mt-2') : '') +
-      candidates +
-      '<div data-row-other-ways class="mt-3 pt-2 border-t border-violet-100">' +
-        '<div class="text-xs font-black text-slate-700">' + otherTitle + '</div>' +
-        '<div class="text-[11px] font-bold text-slate-500 mt-0.5">אפשר לחפש במאגר לפי שם או ברקוד (גם אם המוצר לא הגיע), לסרוק ברקוד מהמוצר עצמו, או לפתוח מוצר חדש. השיוך אינו מאשר קבלת כמות.</div>' +
-        receiptRowActionButton('rowfix-search', row, '<i class="fa-solid fa-magnifying-glass ml-1"></i>חפש לפי שם או ברקוד', 'bg-violet-50 border border-violet-300 text-violet-900 w-full mt-2') +
-        '<div class="grid grid-cols-2 gap-2 mt-2">' +
-          receiptRowActionButton('rowfix-scan', row, '<i class="fa-solid fa-barcode ml-1"></i>סרוק ברקוד מהמוצר', nothingElse ? 'bg-violet-600 text-white' : 'bg-white border border-violet-300 text-violet-800') +
-          receiptRowActionButton('rowfix-new', row, '<i class="fa-solid fa-plus ml-1"></i>מוצר חדש בלי סריקה', 'bg-white border border-violet-300 text-violet-800') +
-        '</div></div></article>';
-  }).join('');
-  const disputedCards = actions.disputed.map(({ row, dispute }) =>
-    '<article class="rounded-xl border border-amber-300 bg-white p-3 mt-2">' +
-      '<div class="text-[10px] font-black text-amber-800"><i class="fa-solid fa-code-compare ml-1"></i>הסריקות נחלקו על השורה</div>' +
-      receiptRowHeadHtml(row) + receiptRowDisputeHtml(dispute) +
-      receiptRowActionButton('rowfix-search', row, '<i class="fa-solid fa-magnifying-glass ml-1"></i>חפש לפי שם או ברקוד', 'bg-amber-50 border border-amber-300 text-amber-900 w-full mt-2') +
-      '<div class="grid grid-cols-2 gap-2 mt-2">' +
-        receiptRowActionButton('rowfix-confirm', row, '<i class="fa-solid fa-check ml-1"></i>השורה נכונה', 'bg-amber-600 text-white') +
-        receiptRowActionButton('rowfix-scan', row, '<i class="fa-solid fa-barcode ml-1"></i>סרוק ברקוד מהמוצר', 'bg-white border border-amber-300 text-amber-800') +
-      '</div></article>').join('');
-  const priceCards = actions.priced.map(({ row, dispute }) => {
+  // v158: הזיהויים לפי המחיר — יחד, ראשונים (לחיצה אחת סוגרת את כולם); כל שאר הכרטיסים בסדר התעודה.
+  const matched = actions.unidentified.filter(item => item.matchedProduct);
+  const cards = [].concat(
+    actions.unidentified.filter(item => !item.matchedProduct).map(item => ({ row: item.row, html: receiptIdentifyCardHtml(item) })),
+    actions.disputed.map(item => ({ row: item.row, html: receiptDisputeCardHtml(item) })),
+    actions.priced.map(item => ({ row: item.row, html: receiptPriceCardHtml(item) })))
+    .sort((a, b) => receiptCardOrderKey(a.row) - receiptCardOrderKey(b.row)).map(item => item.html).join('');
+  // v158: "הוכרע בלי לשאול אותך" הוא דיווח, לא משימה — מאחורי שורה מקופלת.
+  const settledHtml = settledLine ? '<details data-settled class="mt-2"><summary class="cursor-pointer text-[11px] font-bold text-slate-500">מה הוכרע בלי לשאול אותך</summary>' +
+    '<div class="text-[11px] font-bold text-slate-500 mt-1">' + htmlEscape(settledLine) + '.</div></details>' : '';
+  return '<section data-row-actions class="rounded-xl border-2 border-violet-300 bg-white p-2.5 mb-2 text-sm" dir="rtl" aria-label="שורות שדורשות החלטה">' +
+    '<div class="font-black text-violet-900" role="status">' + count(actions.total, 'שורה אחת דורשת החלטה לפני הקליטה', 'שורות דורשות החלטה לפני הקליטה') +
+    (actions.decided ? ' · ' + count(actions.decided, 'שורה אחת אושרה ידנית', 'שורות אושרו ידנית') : '') + (mine ? ' · ' + mine : '') + '</div>' +
+    '<div class="text-[11px] font-bold text-slate-500 mt-0.5">כל החלטה נשמרת בטיוטה ואינה משנה את מה שנקרא מהנייר.</div>' +
+    (matched.length ? receiptMatchedBatchHtml(matched) : '') + cards + settledHtml + '</section>';
+}
+function receiptPriceCardHtml({ row, dispute }) {
     const checked = row.result === 'difference' && row.expectedOptions.length ? row.expectedOptions[0] : null;
     const paper = row.printedVsCatalog || null;
     // v141: מחיר מאגר שכבר שווה למודפס אינו דבר לעדכן.
@@ -12675,20 +13040,16 @@ function receiptRowActionsHtml(report) {
           ' מול ₪' + fmtUnitPrice(checked.price, true) + ' (' + htmlEscape(checked.label) + ')</div>'
           : '<div class="mt-1 text-slate-500">המחיר המודפס אינו מחיר המאגר ואינו מחיר מבצע, ולכן בדיקת המחירים אינה יכולה לאשר אותו לבדה' +
             (row.reason ? ' (' + htmlEscape(row.reason) + ')' : '') + '.</div>') +
-      '</div>' + receiptRowDisputeHtml(dispute) +
+      '</div>' + receiptReadsDetailsHtml(dispute) +
       '<div class="grid grid-cols-1 gap-2 mt-2">' +
         receiptRowActionButton('rowfix-price-doc', row, '<i class="fa-solid fa-check ml-1"></i>המחיר בתעודה נכון — אשר לתעודה הזאת', 'bg-rose-600 text-white') +
         (canUpdate ? receiptRowActionButton('rowfix-price-catalog', row, 'עדכן את מחיר המאגר ל-₪' + fmtUnitPrice(row.originalUnitPrice, true), 'bg-white border border-rose-300 text-rose-800') : '') +
-        receiptRowActionButton('rowfix-search', row, '<i class="fa-solid fa-magnifying-glass ml-1"></i>חפש לפי שם או ברקוד', 'bg-white border border-slate-300 text-slate-700') +
-        receiptRowActionButton('rowfix-scan', row, '<i class="fa-solid fa-barcode ml-1"></i>זה מוצר אחר — סרוק את הברקוד', 'bg-white border border-slate-300 text-slate-700') +
-      '</div></article>';
-  }).join('');
-  return '<section data-row-actions class="rounded-xl border-2 border-violet-300 bg-white p-2.5 mb-2 text-sm" dir="rtl" aria-label="שורות שדורשות החלטה">' +
-    '<div class="font-black text-violet-900" role="status">' + count(actions.total, 'שורה אחת דורשת החלטה לפני הקליטה', 'שורות דורשות החלטה לפני הקליטה') +
-    (actions.decided ? ' · ' + count(actions.decided, 'שורה אחת אושרה ידנית', 'שורות אושרו ידנית') : '') + (mine ? ' · ' + mine : '') + '</div>' +
-    '<div class="text-[11px] font-bold text-slate-500 mt-0.5">כל החלטה נשמרת בטיוטה ואינה משנה את מה שנקרא מהנייר.' +
-      (settledLine ? ' הוכרע בלי לשאול אותך: ' + htmlEscape(settledLine) + '.' : '') + '</div>' +
-    newCards + disputedCards + priceCards + '</section>';
+      '</div>' +
+      // v158: מוצר אחר — חיפוש וסריקה — מאחורי שורה מקופלת; השאלה כאן היא המחיר.
+      '<details class="mt-2"><summary class="cursor-pointer text-[11px] font-bold text-slate-500">זה מוצר אחר? חפש לפי שם או ברקוד, או סרוק</summary>' +
+        receiptRowActionButton('rowfix-search', row, '<i class="fa-solid fa-magnifying-glass ml-1"></i>חפש לפי שם או ברקוד', 'bg-white border border-slate-300 text-slate-700 w-full mt-2') +
+        receiptRowActionButton('rowfix-scan', row, '<i class="fa-solid fa-barcode ml-1"></i>זה מוצר אחר — סרוק את הברקוד', 'bg-white border border-slate-300 text-slate-700 w-full mt-2') +
+      '</details></article>';
 }
 function receiptConfirmDisputedRow(documentIndex, sourceIndex) {
   const row = receiptFindAuditRow(documentIndex, sourceIndex);
@@ -12869,11 +13230,14 @@ function receiptRowProductScanned(value) {
   apply();
   return true;
 }
-function receiptAssignRowProduct(ctx, product, barcode, method) {
+function receiptAssignRowProduct(ctx, product, barcode, method, options) {
+  const quiet = !!(options && options.quiet); // v158: אישור מקובץ — שמירה, רענון והודעה פעם אחת בסוף
   const doc = receiptScanDoc(ctx && ctx.documentIndex);
   const mapped = doc && Array.isArray(doc.rows) ? doc.rows[Number(ctx.rowIndex)] : null;
   const digits = normalizeBarcode(barcode || (product && product.barcode) || '');
-  if (!mapped || !product || !/^\d{6,20}$/.test(digits) || normalizeBarcode(product.barcode || '') !== digits) {
+  // v158: ברקוד קצר של ארגז/פיקדון מתקבל כשהוא בדיוק הברקוד של המוצר במאגר (tnuvaShortCodeProduct).
+  const shortCode = /^\d{4,5}$/.test(digits) && tnuvaShortCodeProduct(product);
+  if (!mapped || !product || !(shortCode || /^\d{6,20}$/.test(digits)) || normalizeBarcode(product.barcode || '') !== digits) {
     tnuvaRowProductContext = null;
     showToast('שורת התעודה או המוצר השתנו — השיוך לא בוצע', null, null, 4000);
     return false;
@@ -12891,6 +13255,7 @@ function receiptAssignRowProduct(ctx, product, barcode, method) {
   mapped.userConfirmedAt = Date.now();
   tnuvaRowProductContext = null;
   try { aiScanEvaluation = aiEvaluateInvoiceScan(aiScanResponse); } catch (error) {}
+  if (quiet) return true;
   saveReceiptDraft(); refreshScanHost(); refreshPriceAuditViews();
   showToast('השורה שויכה ל"' + product.name + '"', null, null, 2800);
   return true;
@@ -13432,7 +13797,14 @@ function aiResolveInvoiceBarcode(row) {
     const sourceReadType = String(row && row.barcodeUserConfirmedFromReadType || readType);
     const sourceObservedRaw = row && row.barcodeUserConfirmedFromObserved != null ? row.barcodeUserConfirmedFromObserved : observedRaw;
     const sourceObserved = aiNormalizeBarcodePattern(sourceObservedRaw);
-    if (!Number.isFinite(Number(row && row.userConfirmedAt)) || Number(row.userConfirmedAt) <= 0 || !/^\d{6,20}$/.test(resolved)) return { error: 'אישור המשתמש אינו מכיל ברקוד מלא ותקין' };
+    if (!Number.isFinite(Number(row && row.userConfirmedAt)) || Number(row.userConfirmedAt) <= 0) return { error: 'אישור המשתמש אינו מכיל ברקוד מלא ותקין' };
+    // v158: ארגז/פיקדון שאושר ידנית — הקוד הקצר הוא הברקוד של מוצר יחיד במאגר (tnuvaShortCodeProduct), כמו tnuva_code_exact.
+    if (/^\d{4,5}$/.test(resolved) && ['picked_from_catalog', 'second_read_code', 'scanned_product'].includes(sourceMethod)) {
+      const short = (products || []).find(item => normalizeBarcode(item && item.barcode || '') === resolved && tnuvaShortCodeProduct(item));
+      if (short && String(row.barcodeUserConfirmedFromCatalogHintId || '') === String(short.id)) return { product: short, barcode: resolved, observed: resolved, method: 'user_confirmed', identityEvidence: 'short_code_confirmed' };
+      return { error: 'הקוד הקצר שאושר אינו ברקוד של מוצר יחיד במאגר' };
+    }
+    if (!/^\d{6,20}$/.test(resolved)) return { error: 'אישור המשתמש אינו מכיל ברקוד מלא ותקין' };
     const matches = aiCatalogBarcodeMatches(resolved, false);
     if (matches.length !== 1) return { error: matches.length > 1 ? 'הברקוד שאושר קיים ביותר ממוצר אחד' : 'הברקוד שאושר אינו קיים במאגר' };
     if (sourceMethod === 'suggested_pattern') {
@@ -14611,26 +14983,44 @@ function tnuvaCodeRepairCandidates(code) {
 // כשהקוד שנבחר אינו מוביל לשום מוצר, הקוד השני מוביל למוצר יחיד, והמחיר
 // המודפס בשורה מאשר אותו — אותה רמת ראיה בדיוק של תיקון ספרה אחת, ומקור
 // חזק ממנו: הוא נקרא מהנייר בקריאה עצמאית, לא נוחש מתוך המאגר.
-function tnuvaSecondReadCode(rawIndex, row, built, consensus) {
+// v158: לא רק `other` (הקריאה הזולה שבאותו מיקום) אלא כל מה שכל קריאה קראה בקוד של
+// השורה המודפסת הזאת (reads, שירות 20 — השורה מזוהה שם לפי הכסף שלה). ב-10.11 שורה 15
+// נקראה 1303916 על ידי המודל החזק, 41309316 על ידי הזולה שבאותו מיקום (זו הייתה `other`),
+// ו-4130916 — הקוד שבמאגר, במחיר המודפס בדיוק — על ידי הזולה שהכסף שלה התאים לשורה;
+// הקוד הנכון ישב ברשימה ולא נבדק. שני מוצרים שונים במחיר הזה — אין אימוץ, הרשימה מציגה את שניהם.
+function tnuvaFieldOtherCodes(field, selectedCode) {
+  if (!field || typeof field !== 'object') return [];
+  const values = [field.other].concat((Array.isArray(field.reads) ? field.reads : [])
+    .filter(read => read && typeof read === 'object' && read.selected !== true).map(read => read.value));
+  const out = [];
+  values.forEach(value => { const code = tnuvaCodeOf(value); if (code && code !== selectedCode && !out.includes(code)) out.push(code); });
+  return out;
+}
+function tnuvaOtherReadCodes(rawIndex, consensus, selectedCode) {
   const disputed = consensus && Array.isArray(consensus.disputedRows) ? consensus.disputedRows : [];
   const entry = disputed.find(item => Number(item && item.rowIndex) === Number(rawIndex));
   const field = entry && Array.isArray(entry.fields) ? entry.fields.find(item => String((item && item.field) || '') === 'code') : null;
-  const candidate = field ? tnuvaCodeOf(field.other) : null;
-  if (!candidate || built.ambiguous.has(candidate)) return null;
-  const product = built.map.get(candidate);
-  if (!product) return null;
-  const unit = row && row.unitPriceExVat != null ? Number(row.unitPriceExVat) : null;
-  const qty = row && row.quantity != null ? Number(row.quantity) : null;
-  const total = row && row.lineTotalExVat != null ? Number(row.lineTotalExVat) : null;
-  const effective = unit != null && isFinite(unit) ? aiMoneyCents(unit)
-    : (qty != null && qty > 0 && total != null && isFinite(total) ? Math.round(aiMoneyCents(total) / qty) : null);
-  const base = Number(product.price);
-  if (effective == null || !isFinite(base) || base <= 0) return null;
+  return tnuvaFieldOtherCodes(field, selectedCode);
+}
+// המחיר המודפס ליחידה מאשר את המוצר: מחיר המאגר או מחיר המבצע הפעיל, ±2 אגורות.
+function tnuvaPrintedPriceConfirms(row, product) {
+  const effective = tnuvaPrintedUnitCents(row);
+  const base = Number(product && product.price);
+  if (effective == null || !isFinite(base) || base <= 0) return false;
   const options = [aiMoneyCents(base)];
   const pr = promoForProduct(product.id, todayStr());
   if (promoActive(pr, todayStr())) options.push(aiMoneyCents(discountedUnitPrice(base, Number(pr.pct) || 0)));
-  if (!options.some(option => option != null && Math.abs(option - effective) <= 2)) return null;
-  return { code: candidate, product };
+  return options.some(option => option != null && Math.abs(option - effective) <= 2);
+}
+function tnuvaSecondReadCode(rawIndex, row, built, consensus) {
+  const codes = tnuvaOtherReadCodes(rawIndex, consensus, tnuvaCodeOf(row && row.code));
+  const hits = new Map();
+  codes.forEach(candidate => {
+    if (built.ambiguous.has(candidate)) return;
+    const product = built.map.get(candidate);
+    if (product && tnuvaPrintedPriceConfirms(row, product)) hits.set(String(product.id), { code: candidate, product });
+  });
+  return hits.size === 1 ? [...hits.values()][0] : null;
 }
 // v150: הסכמת קריאות על הקוד (שירות 20). שדה הקוד של השורה ב-disputedRows נושא reads — מה כל
 // קריאה קראה בקוד של השורה המודפסת הזאת — ו-agreement: {code, kind, stages}. הכרעת הבעלים (29.10):
@@ -14639,6 +15029,11 @@ function tnuvaSecondReadCode(rawIndex, row, built, consensus) {
 // לשאול, כשהקוד המוסכם מוביל במאגר למוצר יחיד שמחירו שווה בדיוק למחיר המודפס. השרת אינו מכיר את
 // המאגר; ההכרעה כולה כאן.
 const TNUVA_CODE_AGREEMENT_KINDS = new Set(['strong_strong', 'strong_cheap', 'cheap_cheap']);
+// v158: הסכמה על קוד שאינו במאגר עוצרת את הניחושים (תיקון ספרה, הקוד שקריאה אחרת קראה) רק כשהיא בין
+// קריאות שונות. שתי הקריאות החזקות הן אותו מודל על אותו צילום, והשנייה מקבלת את מקומות המחלוקת
+// להנחיה — ב-10.11 שתיהן קראו 12963746 (הנייר: 72963746) ו-117118 (הנייר: 57118), אותה ספרה שגויה
+// פעמיים. הסכמה כזאת אינה עדות עצמאית, ולכן השורה ממשיכה למסלול של 146 — עם אישור בלחיצה, כמו תמיד.
+const TNUVA_CODE_AGREEMENT_BLOCKS_GUESS = new Set(['strong_cheap', 'cheap_cheap']);
 function tnuvaCodeAgreementField(rawIndex, consensus) {
   const disputed = consensus && Array.isArray(consensus.disputedRows) ? consensus.disputedRows : [];
   const entry = disputed.find(item => Number(item && item.rowIndex) === Number(rawIndex));
@@ -14782,14 +15177,18 @@ function tnuvaAdaptScanPayload(payload) {
       const agreed = agreementField ? tnuvaAgreedCode(agreementField, exact, row, built) : null;
       const agreedApplied = !!(agreed && agreed.product && !agreed.same);
       if (agreedApplied) product = agreed.product;
-      const guess = !(agreed && agreed.missing);
+      // v158: רק הסכמה בין קריאות שונות עוצרת את הניחושים (TNUVA_CODE_AGREEMENT_BLOCKS_GUESS).
+      const guess = !(agreed && agreed.missing && TNUVA_CODE_AGREEMENT_BLOCKS_GUESS.has(String(agreed.kind || '')));
       // v47 (הכרעתו 8.8): קוד שלא נמצא — ניסיון תיקון של ספרה אחת. נרשם ביומן.
       let repair = null, secondRead = null;
-      if (!product && code && guess) { repair = tnuvaRepairCode(code, row, built); if (repair) product = repair.product; }
-      // v103: עדיין לא זוהה — הקוד שהקריאה השנייה של אותו צילום קראה לשורה הזאת.
       if (!product && guess) {
+        if (code) repair = tnuvaRepairCode(code, row, built);
+        // v103: הקוד שקריאה אחרת של אותו צילום קראה לשורה הזאת (v158: כל הקריאות).
         secondRead = tnuvaSecondReadCode(rawIndexOf.get(row), row, built, payload && payload.consensus);
-        if (secondRead) product = secondRead.product;
+        // v158: שתי הראיות מצביעות על שני מוצרים שונים — אין ניחוש; שתיהן ברשימת המועמדים.
+        if (repair && secondRead && String(repair.product.id) !== String(secondRead.product.id)) { repair = null; secondRead = null; }
+        if (repair) { product = repair.product; secondRead = null; }
+        else if (secondRead) product = secondRead.product;
       }
       const fullBarcode = product ? normalizeBarcode(product.barcode || '') : '';
       return {
@@ -16407,7 +16806,7 @@ function aiInvoiceCaptureHtml() {
   }
   const docCards = aiScanDocuments.map((doc, i) => {
     const noteText = 'סכום צפוי: ₪' + fmtMoney(doc.amount || 0) + (doc.units != null ? ' · ' + doc.units + ' יחידות' : '');
-    const pages = doc.pages.map((p, pi) => '<div class="relative w-28 h-28 shrink-0 rounded-lg overflow-hidden border-2 ' + (p.orientationConfirmed ? 'border-emerald-400' : 'border-amber-400') + ' bg-white"><button data-role="ai-review-page" data-doc="' + i + '" data-page="' + pi + '" class="absolute inset-0 w-full h-full"><img src="' + p.dataUrl + '" class="w-full h-full object-contain" alt="פתח בדיקת כיוון"></button><button data-role="ai-remove-page" data-doc="' + i + '" data-page="' + pi + '" aria-label="מחק עמוד" class="absolute top-1 left-1 w-7 h-7 rounded-full bg-rose-600 text-white text-xs shadow z-10"><i class="fa-solid fa-xmark"></i></button><button data-role="ai-review-page" data-doc="' + i + '" data-page="' + pi + '" aria-label="פתח תמונה גדולה וסובב" class="absolute top-1 right-1 w-7 h-7 rounded-full bg-blue-600 text-white text-xs shadow z-10"><i class="fa-solid fa-expand"></i></button><div class="absolute bottom-0 inset-x-0 ' + (p.orientationConfirmed ? 'bg-emerald-700/90' : 'bg-amber-600/95') + ' text-white text-[9px] font-black text-center py-1 pointer-events-none">' + (p.orientationConfirmed ? '✓ הכיוון אושר' : 'דרוש אישור') + ' · עמוד ' + (pi + 1) + ((Number(p.rotation) || 0) ? ' · ' + (Number(p.rotation) || 0) + '°' : '') + (p.cropped ? ' · נחתך' : '') + '</div></div>').join('');
+    const pages = doc.pages.map((p, pi) => '<div class="relative w-28 h-28 shrink-0 rounded-lg overflow-hidden border-2 ' + (p.orientationConfirmed ? 'border-emerald-400' : 'border-amber-400') + ' bg-white"><button data-role="ai-review-page" data-doc="' + i + '" data-page="' + pi + '" class="absolute inset-0 w-full h-full"><img src="' + p.dataUrl + '" class="w-full h-full object-contain" alt="פתח בדיקת כיוון"></button><button data-role="ai-remove-page" data-doc="' + i + '" data-page="' + pi + '" aria-label="מחק עמוד" class="absolute top-1 left-1 w-7 h-7 rounded-full bg-rose-600 text-white text-xs shadow z-10"><i class="fa-solid fa-xmark"></i></button><button data-role="ai-review-page" data-doc="' + i + '" data-page="' + pi + '" aria-label="פתח תמונה גדולה וסובב" class="absolute top-1 right-1 w-7 h-7 rounded-full bg-blue-600 text-white text-xs shadow z-10"><i class="fa-solid fa-expand"></i></button><div class="absolute bottom-0 inset-x-0 ' + (p.orientationConfirmed ? 'bg-emerald-700/90' : 'bg-amber-600/95') + ' text-white text-[9px] font-black text-center py-1 pointer-events-none">' + (p.orientationConfirmed ? '✓ הכיוון אושר' : 'דרוש אישור') + ' · ' + aiPageLabel(p, pi) + ((Number(p.rotation) || 0) ? ' · ' + (Number(p.rotation) || 0) + '°' : '') + (p.cropped ? ' · נחתך' : '') + '</div></div>').join('');
     return '<div class="rounded-2xl border-2 border-slate-200 p-3 mb-3"><div class="flex items-center justify-between gap-2"><div><div class="font-black text-slate-800">תעודה ' + (i + 1) + '</div><div class="text-[11px] font-bold text-slate-500">' + noteText + '</div></div><span class="text-xs font-black ' + ((doc.pages.length || tnuvaCachedDoc(doc)) ? 'text-emerald-700' : 'text-rose-600') + '">' + (doc.pages.length || doc.restoredPageCount || 0) + ' עמודים</span></div>' +
       (pages ? '<div class="flex gap-2 overflow-x-auto py-3">' + pages + '</div>' : tnuvaCachedDoc(doc) ? '<div class="text-sm font-bold text-emerald-700 my-3">הפענוח שמור — אין צורך לצלם את התעודה הזו שוב</div>' : '<div class="rounded-xl bg-amber-50 border border-amber-200 p-2 text-xs font-bold text-amber-800 my-3">צלם את כל דפי התעודה. צילום אחד ברור לכל דף.</div>') +
       '<input id="aiDocCam_' + i + '" data-role="ai-file" data-doc="' + i + '" type="file" accept="image/*" capture="environment" class="hidden">' +
@@ -24112,6 +24511,8 @@ app.addEventListener('click', (e) => {
   if (role === 'rowfix-scan') { receiptOpenRowProductScan(parseInt(t.dataset.doc, 10), parseInt(t.dataset.row, 10)); return; }
   if (role === 'rowfix-rival') { receiptAdoptRivalCode(parseInt(t.dataset.doc, 10), parseInt(t.dataset.row, 10)); return; }
   if (role === 'rowfix-pick') { receiptPickRowProduct(parseInt(t.dataset.doc, 10), parseInt(t.dataset.row, 10), t.dataset.product); return; }
+  if (role === 'rowfix-pick-all') { receiptPickAllMatchedRows(); return; }
+  if (role === 'rowfix-reject') { receiptRejectMatchedRow(parseInt(t.dataset.doc, 10), parseInt(t.dataset.row, 10)); return; }
   if (role === 'rowfix-new') { receiptOpenRowNewProduct(parseInt(t.dataset.doc, 10), parseInt(t.dataset.row, 10)); return; }
   if (role === 'rowfix-confirm') { receiptConfirmDisputedRow(parseInt(t.dataset.doc, 10), parseInt(t.dataset.row, 10)); return; }
   if (role === 'rowfix-price-doc') { receiptConfirmRowPrice(parseInt(t.dataset.doc, 10), parseInt(t.dataset.row, 10), 'document'); return; }
