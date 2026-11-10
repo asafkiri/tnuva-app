@@ -756,7 +756,7 @@ let receiptDupConfirmed = false; // אישור שמירה למרות חשד לכ
 const RECEIPT_DRAFT_KEY = 'tn_receipt_draft';
 let receivingDigitsMissTimer = null;
 let receivingDigitsMissNotified = '';
-const APP_VERSION = '160'; // בדיקה שורה-שורה: סימון מהכרטיס שמעל המצלמה ("הגיע" / "אחרת" / "לא הגיע" / "הוסף" / "הגיע בנוסף") סוגר את המצלמה וחוזר לשורה של המוצר ברשימה
+const APP_VERSION = '161'; // בדיקה שורה-שורה: מוצר בלי מחיר קופה — השדה להשלמת המחיר בשורה עצמה (כמו יטבתה 415 וברמן 167)
 // v158: תווית הגרסה בגיבויים וביומן הפעולות נגזרת מ-APP_VERSION. עד כאן היא הייתה קבועה ('v150_code_agreement') ונשארה
 // מאחור שמונה גרסאות — הגיבוי של 10.11 אמר 150 בעוד המסך אמר 157.
 const APP_VERSION_LABEL = 'v' + APP_VERSION;
@@ -6946,6 +6946,44 @@ function receiptLineTallyText(r) {
   (r.extras || []).forEach(x => { over += receiptLineExtraGot(x) || 0; });
   return (short ? ' · חוסר ' + short + ' יח׳' : '') + (over ? ' · עודף ' + over + ' יח׳' : '');
 }
+// v161 (בעל העסק, 10.11.2026: "כאשר יש מוצר שאין לו מחיר קופה באפליקציה — אפשר שיהיה ישירות מהשורה להכניס את המחיר של
+// הקופה?"; כמו ביטבתה 415 וברמן 167): מוצר בלי מחיר קופה בבדיקה שורה-שורה — השדה בשורה עצמה, במקום "בדוק בקופה ועדכן"
+// ששלח למסך המחירים (ושם צריך לחפש את המוצר ולחזור). כמו ההשלמה בחלון הכמות (גרסה 73, qtyPosMissingHtml): נשמר תוך כדי
+// הקלדה דרך savePosPrice — אותה כתיבה מושהית לענן כמו מסך המחירים, כולל posPriceAt שמגן מפני דריסה בייבוא דוח ישן — בלי
+// לצייר מחדש (השדה, הפוקוס והמקלדת נשארים), עם "נשמר — ₪X בקופה" מתחת; בציור הבא (הסימון, "שנה", "סיום") השורה כבר מראה
+// "בקופה: ₪X" כמו כל שורה. השדה קיים רק כשאין מחיר, ולכן זו השלמה של חסר ולא שינוי מחיר — שינוי נשאר במסך המחירים. גם
+// בשורה מקופלת ("הגיע" / "לא הגיע"): אחרי הסימון במצלמה (160) חוזרים אליה, והמחיר מושלם בלי "שנה". ה-id — לפי המוצר
+// (מוצר אחד — כרטיס אחד ברשימה).
+function receiptLinePosHtml(p) {
+  const id = htmlEscape(p.id);
+  return '<div class="mt-1 bg-amber-50 border-2 border-amber-300 rounded-xl px-2.5 py-2">' +
+      '<div class="flex items-center justify-between gap-2">' +
+        '<label for="linePos_' + id + '" class="text-[11px] font-black text-amber-700 leading-tight"><i class="fa-solid fa-triangle-exclamation"></i> אין מחיר קופה — אפשר להשלים כאן<br><span class="text-sky-700"><i class="fa-solid fa-cash-register"></i> כמה עובר בקופה</span> <span class="text-slate-400">(כולל מע״מ)</span></label>' +
+        '<div class="shrink-0 flex items-center gap-1"><span class="text-slate-400 font-bold">₪</span>' +
+          '<input id="linePos_' + id + '" data-line-pos="' + id + '" type="text" inputmode="decimal" autocomplete="off" placeholder="0.00" aria-label="מחיר קופה: ' + htmlEscape(p.name) + '" class="w-20 h-10 text-center text-base font-black border-2 border-amber-400 bg-white rounded-xl outline-none focus:border-sky-500 tabular-nums"></div>' +
+      '</div>' +
+      '<div id="linePosHint_' + id + '" class="hidden" aria-live="polite"></div>' +
+    '</div>';
+}
+// ההקלדה בשדה — אותם כללים כמו בחלון הכמות (גרסה 73): מספר חיובי נשמר מיד ("נשמר — ₪X בקופה"); מתחת לעלות כולל מע״מ — אזהרה
+// אדומה אבל לא חסימה (יש מוצרים שנמכרים בהפסד: מחיר מפוקח, מבצע רשת); ריק — המחיר נמחק והרמז נעלם; מה שאינו מספר חיובי —
+// "הזן מחיר חיובי", ומחיר שנשמר מהשדה רגע קודם נמחק, כדי שמה שבשדה הוא מה שנשמר.
+function receiptLinePosInput(pid, value) {
+  const p = products.find(x => x.id === pid); if (!p) return;
+  const hint = $('linePosHint_' + pid);
+  const setHint = (cls, html) => { if (!hint) return; hint.className = html ? 'text-[11px] font-black mt-1.5 ' + cls : 'hidden'; hint.innerHTML = html || ''; };
+  const raw = String(value == null ? '' : value).replace(',', '.').trim();
+  const num = parseFloat(raw);
+  if (raw === '' || !isFinite(num) || !(num > 0)) {
+    if (p.posPrice != null) savePosPrice(pid, '');
+    setHint('text-rose-600', raw === '' ? '' : 'הזן מחיר חיובי');
+    return;
+  }
+  savePosPrice(pid, raw);
+  const costInc = r2((Number(p.price) || 0) * (1 + VAT));
+  if (costInc > 0 && r2(num) < costInc) setHint('text-rose-600', '<i class="fa-solid fa-triangle-exclamation"></i> נשמר — ₪' + fmtMoney(num) + ' בקופה · נמוך מהעלות כולל מע״מ (₪' + fmtMoney(costInc) + ')');
+  else setHint('text-emerald-700', '<i class="fa-solid fa-check"></i> נשמר — ₪' + fmtMoney(num) + ' בקופה');
+}
 // v152 (כמו ברמן 159): השורה כמו במסך הסריקה — שם, מחיר קופה (או "אין מחיר קופה"), ברקוד ומחיר ליחידה, מספר השורה
 // בנייר, והכמות בתעודה גדולה. "הגיע" הוא הכפתור הראשי, עם הכמות עליו; "אחרת" ו"לא הגיע" קטנים לידו. שורה שסומנה "הגיע"
 // או "לא הגיע" מתקפלת לשורה אחת עם "שנה" (receiptLineOpen — מי שנפתחה מחדש), כדי שמה שעוד לא נבדק יבלוט; "אחרת"
@@ -6974,11 +7012,13 @@ function receiptLineRowHtml(di, li, l, g) {
   const shown = receiptLineGroupShown(g), gmark = receiptLineGroupMark(g); // "אחרת" עם הכמות שבתעודה נראית ומתקפלת כ"הגיע", עם אפס — כ"לא הגיע"
   if ((shown === 'ok' || shown === 'none') && !receiptLineOpen.has(id)) {
     const ok = shown === 'ok';
+    // v161: בלי מחיר קופה — שדה ההשלמה גם בשורה המקופלת (אחרי "הגיע" במצלמה חוזרים אליה), והטקסט תופס את כל הרוחב שנשאר
+    const posEdit = p && p.posPrice == null ? posPriceLineHtml(p, true) : '';
     return '<div id="lineCheck_' + di + '_' + li + '" class="rounded-2xl border-2 px-3 py-2 mb-2.5 flex items-center justify-between gap-2 ' + (ok ? 'border-emerald-300 bg-emerald-50' : 'border-rose-300 bg-rose-50') + '">' +
-      '<div class="min-w-0"><div class="font-black text-slate-800 truncate">' + htmlEscape(l.name) + '</div>' +
+      '<div class="min-w-0' + (posEdit ? ' flex-1' : '') + '"><div class="font-black text-slate-800 truncate">' + htmlEscape(l.name) + '</div>' +
         '<div class="text-xs font-bold ' + (ok ? 'text-emerald-700' : 'text-rose-700') + '">' +
           (ok ? '<i class="fa-solid fa-check" aria-hidden="true"></i> הגיע · ' + qtyText + ' ' + (grouped ? receiptLineGroupUnitsLabel(g) : 'יח׳') : '<i class="fa-solid fa-xmark" aria-hidden="true"></i> לא הגיע · 0 מתוך ' + qtyText) +
-          (p && p.posPrice != null ? ' · בקופה ₪' + fmtMoney(p.posPrice) : '') + '</div></div>' +
+          (p && p.posPrice != null ? ' · בקופה ₪' + fmtMoney(p.posPrice) : '') + '</div>' + posEdit + '</div>' +
       '<button type="button" data-line-open="' + id + '" class="btn-tap shrink-0 min-h-[44px] px-3 rounded-lg bg-white border border-slate-300 text-slate-700 text-xs font-black" aria-label="שנה: ' + htmlEscape(l.name) + '">שנה</button></div>';
   }
   const tone = RECEIPT_LINE_TONE[shown] || 'border-slate-200 bg-white';
@@ -6989,7 +7029,7 @@ function receiptLineRowHtml(di, li, l, g) {
     '<div class="flex items-start gap-3"><div class="flex-1 min-w-0">' +
       '<div class="text-[11px] font-black text-slate-400">שורה ' + l.line + ' בתעודה' + (also ? ' · ' + also : '') + '</div>' +
       '<div class="font-black text-lg text-slate-800 leading-tight">' + htmlEscape(l.name) + '</div>' +
-      posPriceLineHtml(p) +
+      posPriceLineHtml(p, true) + // v161: בלי מחיר קופה — שדה להשלמה במקום האזהרה
       '<div class="text-[11px] text-slate-400 mt-0.5 flex items-center gap-1.5 flex-wrap"><span><i class="fa-solid fa-barcode"></i> ' + htmlEscape(l.barcode || 'ללא ברקוד') + '</span>' +
         (p ? '<span class="font-black text-slate-600">· ₪' + fmtUnitPrice(unit, false) + ' ליח׳</span>' : '') + '</div></div>' +
       // v157: הכמות — הסך בכל התעודות ("17" / "יח׳ ב-2 תעודות" / "12 + 5"); לשורה יחידה — כמו קודם
@@ -7148,6 +7188,8 @@ function receiptLineCheckInput(e) {
   } else if (el.dataset.extraGot != null) {
     const x = r.extras && r.extras[+el.dataset.extraGot]; if (!x) return;
     x.got = el.value; receiptLineNotice = null; receiptLineCheckChanged(); refreshReceiptLineProgress();
+  } else if (el.dataset.linePos) {
+    receiptLinePosInput(el.dataset.linePos, el.value); // v161: מחיר קופה חסר — נשמר מהשורה, בלי לצייר מחדש
   } else if (el.dataset.lineSearch != null) {
     receiptLineSearchTerm = el.value;
     const box = $('receiptLineSearchResults'); if (box) box.innerHTML = receiptLineSearchResultsHtml(el.value);
@@ -7652,11 +7694,14 @@ function refreshReceiptTotals() {
   if (cnt) cnt.textContent = receiptList.length + ' שורות';
 }
 // מחיר הקופה של המוצר, או "אין מחיר קופה" (לא לארגז מהיר) — אותה שורה במסך הסריקה (buildReceiptRow) ובבדיקה שורה-שורה (v152)
-function posPriceLineHtml(p) {
+// v161: editable — בכרטיס שברשימת הבדיקה שורה-שורה, מוצר בלי מחיר קופה מקבל במקום האזהרה שדה להשלמת המחיר במקום
+// (receiptLinePosHtml). בשורת הסריקה ובכרטיס שמעל המצלמה — האזהרה כמו קודם. ארגז מהיר — בלי מחיר קופה ובלי שדה, כמו קודם.
+function posPriceLineHtml(p, editable) {
   if (!p) return '';
-  return p.posPrice != null
-    ? '<div class="text-base font-black text-sky-700 mt-0.5"><i class="fa-solid fa-cash-register text-xs"></i> בקופה: ₪' + fmtMoney(p.posPrice) + '</div>'
-    : (isQuickCrate(p) ? '' : '<div class="text-[11px] font-black text-amber-600 mt-0.5"><i class="fa-solid fa-triangle-exclamation"></i> אין מחיר קופה — בדוק בקופה ועדכן</div>');
+  if (p.posPrice != null) return '<div class="text-base font-black text-sky-700 mt-0.5"><i class="fa-solid fa-cash-register text-xs"></i> בקופה: ₪' + fmtMoney(p.posPrice) + '</div>';
+  if (isQuickCrate(p)) return '';
+  if (editable) return receiptLinePosHtml(p);
+  return '<div class="text-[11px] font-black text-amber-600 mt-0.5"><i class="fa-solid fa-triangle-exclamation"></i> אין מחיר קופה — בדוק בקופה ועדכן</div>';
 }
 function buildReceiptRow(it) {
   const p = products.find(x => x.id === it.productId);
@@ -24242,7 +24287,11 @@ $('rs_ok').addEventListener('click', confirmReceipt);
 $('receiptQuantityClose').addEventListener('click', closeReceiptQuantityReview);
 // v151: בבדיקה שורה-שורה "סיום" בודק שכל השורות סומנו ומתרגם אותן לאותן שורות כמו "יש חוסרים או עודפים"
 $('receiptQuantityConfirm').addEventListener('click', e => { if (receiptQuantityReview && receiptQuantityReview.mode === 'lines') finishReceiptLineCheck(); else commitReceiptQuantityReview(e); });
-$('receiptQuantityModal').addEventListener('keydown', e => { if (e.key === 'Escape') closeReceiptQuantityReview(); });
+$('receiptQuantityModal').addEventListener('keydown', e => {
+  if (e.key === 'Escape') { closeReceiptQuantityReview(); return; }
+  // v161: Enter בשדה מחיר הקופה שבשורה — סוגר את המקלדת (המחיר כבר נשמר תוך כדי ההקלדה)
+  if (e.key === 'Enter' && e.target && e.target.dataset && e.target.dataset.linePos) { e.preventDefault(); e.target.blur(); }
+});
 // v153: סריקה בתוך הבדיקה שורה-שורה — "סרוק מוצר" בתחתית החלון, והכרטיס שמעל המצלמה
 $('receiptLineScan').addEventListener('click', openReceiptLineScanner);
 $('scanLineCard').addEventListener('click', receiptLineScanCardClick);

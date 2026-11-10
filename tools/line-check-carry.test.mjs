@@ -95,8 +95,8 @@ test('1. הכלל: כמו בתעודה — "הגיע" (גם בשתי תעודו�
   assert.deepEqual(review(r).extras.map(x => [x.productId, x.got]), [['pudding', '2']]);
   assert.equal(progress(r), 'כל 4 שורות סומנו — אפשר לסיים · חוסר 1 יח׳ · עודף 3 יח׳');
   const html = rows(r);
-  assert.match(strip(html), /חלב 3% בקרטון 1 ליטר הגיע · 17 יח׳ ב-2 תעודות שנה/, 'שורה שסומנה "הגיע" — מקופלת, כמו סימון ביד; 157: הקבוצה של שתי התעודות');
-  assert.match(strip(html), /קוטג׳ 5% 250 גרם הגיע · 6 יח׳ שנה/);
+  assert.match(strip(html), /חלב 3% בקרטון 1 ליטר הגיע · 17 יח׳ ב-2 תעודות אין מחיר קופה — אפשר להשלים כאן כמה עובר בקופה \(כולל מע״מ\) ₪ שנה/, 'שורה שסומנה "הגיע" — מקופלת, כמו סימון ביד; 157: הקבוצה של שתי התעודות');
+  assert.match(strip(html), /קוטג׳ 5% 250 גרם הגיע · 6 יח׳ אין מחיר קופה — אפשר להשלים כאן כמה עובר בקופה \(כולל מע״מ\) ₪ שנה/);
   assert.match(html, /data-line-got="0:2"[^>]*value="3"/, '"אחרת" פתוחה עם המספר שנסרק');
   assert.match(html, /id="lineCheckSum_0_2"[^>]*>התקבלו 3 · חוסר 1</);
   assert.match(html, /id="lineCheckSum_1_1"[^>]*>התקבלו 3 · עודף 1</);
@@ -181,6 +181,6 @@ test('4. שוויון: בדיקה שהתחילה מסריקה ובדיקה שס�
 
 test('5. הגרסה עלתה ל-155, כולל ההערה ב-service worker', () => {
   const html = fs.readFileSync(new URL('../index.html', import.meta.url), 'utf8');
-  assert.match(html, /const APP_VERSION = '160'/);
-  assert.match(fs.readFileSync(new URL('../sw.js', import.meta.url), 'utf8'), /גרסה 160/);
+  assert.match(html, /const APP_VERSION = '161'/); // גרסה 161: מחיר קופה חסר מושלם מהשורה בבדיקה שורה-שורה
+  assert.match(fs.readFileSync(new URL('../sw.js', import.meta.url), 'utf8'), /גרסה 161/);
 });
