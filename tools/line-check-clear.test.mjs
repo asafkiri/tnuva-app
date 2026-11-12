@@ -255,8 +255,8 @@ test('7. הכרטיס שמעל המצלמה — בלי "בטל סימון"; אח
   assert.doesNotMatch(card, /data-line-clear|בטל סימון/);
 });
 
-test('8. הגרסה עלתה ל-162, כולל ההערה ב-service worker', () => {
+test('8. הגרסה עלתה ל-163, כולל ההערה ב-service worker', () => {
   const html = fs.readFileSync(new URL('../index.html', import.meta.url), 'utf8');
-  assert.match(html, /const APP_VERSION = '162'/);
-  assert.match(fs.readFileSync(new URL('../sw.js', import.meta.url), 'utf8'), /^\/\/ גרסה 162 — /);
+  assert.match(html, /const APP_VERSION = '163'/);
+  assert.match(fs.readFileSync(new URL('../sw.js', import.meta.url), 'utf8'), /^\/\/ גרסה 163 — /);
 });

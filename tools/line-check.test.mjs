@@ -88,8 +88,8 @@ test('1. הכפתור החדש בשני המסכים של הבדיקה הידנ�
   const r = await twoPapers();
   assert.equal(r.run('receiptCountingMode'), 'manual');
   const manual = r.run('receiptQuantityButtonsHtml()');
-  assert.deepEqual([...manual.matchAll(/data-role="(rc-quantity-[a-z]+)"/g)].map(m => m[1]), ['rc-quantity-lines', 'rc-quantity-all', 'rc-quantity-differences'], 'החדש ראשון, ואחריו שני הקיימים');
-  assert.match(strip(manual), /התעודה נקראה ואומתה הגיע בדיוק מה שכתוב בתעודה\? בדוק שורה-שורה בטלפון כל תעודה בנפרד — בכל שורה: הגיע, כמות אחרת או לא הגיע כן — הכול הגיע כמו בתעודה לא — חסר או עודף משהו תבחר את המוצר ותכתוב כמה יחידות$/);
+  assert.deepEqual([...manual.matchAll(/data-role="(rc-quantity-[a-z]+)"/g)].map(m => m[1]), ['rc-quantity-lines', 'rc-quantity-all', 'rc-quantity-differences', 'rc-quantity-none'], 'החדש ראשון, אחריו שני הקיימים, ובסוף "לא הגיע כלום" (v163)');
+  assert.match(strip(manual), /התעודה נקראה ואומתה הגיע בדיוק מה שכתוב בתעודה\? בדוק שורה-שורה בטלפון כל תעודה בנפרד — בכל שורה: הגיע, כמות אחרת או לא הגיע כן — הכול הגיע כמו בתעודה לא — חסר או עודף משהו תבחר את המוצר ותכתוב כמה יחידות לא הגיע כלום — הכל חסר$/);
   // בקליטה בסריקה — בתוך "בדקת ידנית את הכמויות מול התעודה?"
   r.run(`receiptCountingMode = 'scan'`);
   const folded = r.run('receiptQuantityButtonsHtml()');

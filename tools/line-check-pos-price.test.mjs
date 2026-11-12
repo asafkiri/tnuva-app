@@ -10,7 +10,7 @@
 // 4. מתחת לעלות כולל מע״מ — נשמר, עם אזהרה אדומה (לא חסימה).
 // 5. שורה מקופלת ("הגיע" / "לא הגיע") בלי מחיר קופה — השדה גם בה; ארגז מהיר — בלי שדה ובלי אזהרה; Enter בשדה סוגר את המקלדת
 //    (blur), Escape עדיין סוגר את החלון.
-// 6. הגרסה עלתה ל-162, כולל ההערה ב-service worker.
+// 6. הגרסה עלתה ל-163, כולל ההערה ב-service worker.
 // הרצה: node --test tools/line-check-pos-price.test.mjs
 import fs from 'node:fs';
 import test from 'node:test';
@@ -201,9 +201,9 @@ test('5. שורה מקופלת בלי מחיר קופה — השדה גם בה; 
   assert.equal(r.run(`$('receiptQuantityModal').classList.contains('hidden')`), true, 'Escape סוגר');
 });
 
-test('6. הגרסה עלתה ל-162, כולל ההערה ב-service worker', () => {
+test('6. הגרסה עלתה ל-163, כולל ההערה ב-service worker', () => {
   const html = fs.readFileSync(new URL('../index.html', import.meta.url), 'utf8');
-  assert.match(html, /const APP_VERSION = '162'/);
+  assert.match(html, /const APP_VERSION = '163'/);
   assert.match(html, /APP_VERSION_LABEL = 'v' \+ APP_VERSION;/);
-  assert.match(fs.readFileSync(new URL('../sw.js', import.meta.url), 'utf8'), /גרסה 162/);
+  assert.match(fs.readFileSync(new URL('../sw.js', import.meta.url), 'utf8'), /גרסה 163/);
 });
