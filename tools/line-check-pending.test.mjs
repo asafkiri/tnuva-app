@@ -613,10 +613,10 @@ test('12. בדיקה שסומנו בה שורות אינה מוחלפת כשהת
   await q.release();
 });
 
-test('13. הגרסה עלתה ל-163, כולל ההערה ב-service worker; "סריקת מוצרים" אינה נבחרת עוד בשום מסך', () => {
+test('13. הגרסה (164: מבצע שבתעודה ואינו במערכת), כולל ההערה ב-service worker; "סריקת מוצרים" אינה נבחרת עוד בשום מסך', () => {
   const html = fs.readFileSync(new URL('../index.html', import.meta.url), 'utf8');
-  assert.match(html, /const APP_VERSION = '163'/);
-  assert.match(fs.readFileSync(new URL('../sw.js', import.meta.url), 'utf8'), /^\/\/ גרסה 163 — /);
+  assert.match(html, /const APP_VERSION = '164'/);
+  assert.match(fs.readFileSync(new URL('../sw.js', import.meta.url), 'utf8'), /^\/\/ גרסה 164 — /);
   assert.doesNotMatch(html, /data-role="rc-count-by-scan"|מעבר לקליטה בסריקת מוצרים<|>התחל קליטת מוצרים</);
 });
 
