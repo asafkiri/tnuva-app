@@ -13379,8 +13379,8 @@ function refreshPriceAuditViews(options) {
   if (!(options && options.hostsOnly)) refreshReconcilePriceAudit(); // v165
   // v165: במסך הקליטה של הבדיקה הידנית — השער (שורה שמחכה לבחירת מוצר לפני הבדיקה) מחושב פעם אחת, לפאנל ולכרטיס שמעליו
   receiptPaperGateOnce(() => {
-    const options = currentView === 'receiving' && receiptUsesManualQuantities() ? $('rcQuantityOptions') : null;
-    const gate = options ? receiptPaperGate() : null;
+    const buttonsHost = currentView === 'receiving' && receiptUsesManualQuantities() ? $('rcQuantityOptions') : null;
+    const gate = buttonsHost ? receiptPaperGate() : null;
     ['rcPriceAudit', 'rsPriceAudit'].forEach(id => {
       const host = $(id); if (!host) return;
       const active = document.activeElement;
@@ -13395,8 +13395,8 @@ function refreshPriceAuditViews(options) {
       PRICE_AUDIT_FOLDS.forEach((sel, i) => { const el = host.querySelector(sel); if (el && expanded[i]) el.open = true; });
     });
     // אחרי הכרעה בשורה — הכרטיס שמעל השורות מתעדכן, וכשהמוצר האחרון נבחר הבדיקה שנבחרה נפתחת לבד (הבחירה נשארה כל הזמן שהשורה חיכתה)
-    if (options) {
-      options.innerHTML = receiptQuantityButtonsHtml(gate);
+    if (buttonsHost) {
+      buttonsHost.innerHTML = receiptQuantityButtonsHtml(gate);
       if (!gate && receiptQuantityIntent && receiptPaperScanState === 'ok' && !aiScanBusy) setTimeout(receiptQuantityIntentRun, 0);
     }
   });
