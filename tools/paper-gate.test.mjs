@@ -11,12 +11,14 @@
 // 3. בוחרים את המוצר — הבדיקה שורה-שורה נפתחת לבד, והכרטיס מוחלף בכפתורים הרגילים.
 // 4. גם "הכל הגיע", "חוסרים ועודפים" ו"לא הגיע כלום" מחכים לכרטיס, ונפתחים לבד אחריו; לחיצה על בדיקה בזמן שהכרטיס מוצג — הודעה, בלי מסך ההשוואה.
 // 5. כשהרשימה חסומה ואין שורה שאפשר להשלים — כמו עד 164: ההודעה הישנה ומסך ההשוואה.
-// 6. טיוטה מגרסה 164 שנעצרה כאן (הבחירה נמחקה, נשארה בדיקה ממתינה): הבחירה חוזרת, ואחרי הבחירה הרשימה עולה עם מה שנסרק.
+// 6. טיוטה מגרסה 164 שנעצרה כאן (הבחירה נמחקה, נשארה בדיקה ממתינה): הבחירה חוזרת, ואחרי הבחירה הרשימה עולה עם מה שנסרק; הכפתור
+//    הכחול שבתחתית בזמן שהכרטיס מוצג — הודעה, בלי מסך ההשוואה.
 // 7. "שנה את הבדיקה" בזמן הקריאה משחרר גם את הבדיקה הממתינה: הכרטיס אינו מחזיר את הבחירה, ומה שנסרק נשאר בספירה.
 // 8. מסך ההשוואה: "השורה נכונה", "אשר לתעודה זו בלבד" ו"לא, מוצר אחר" מציירים את המסך מחדש — הכרטיס יורד והכותרת מתעדכנת; ציור אחד ללחיצה.
 // 9. קיפול שנפתח נשאר פתוח אחרי אישור; שדה תאריך שמקלידים בו אינו נהרס; רענון נתונים מהענן אינו מצייר את מסך ההשוואה באמצע הקלדה.
 // 10. קליטה בסריקה (טיוטה ישנה) — בלי שער, כמו קודם; מצלמת הקליטה סגורה — בלי חישוב של בדיקת המחירים לכפתור שלה.
-// 11. הגרסה.
+// 11. שתי תעודות, והשורה בלי מוצר בשנייה: הכרטיס אומר "2 התעודות נקראו", והרשימה עולה עם שתיהן.
+// 12. הגרסה.
 // הרצה: node --test tools/paper-gate.test.mjs
 import fs from 'node:fs';
 import test from 'node:test';
@@ -255,6 +257,11 @@ test('6. טיוטה מגרסה 164 שנעצרה כאן (הבחירה נמחקה,
   assert.match(card, /מה שכבר נסרק נשמר: מוצר אחד · 12 יח׳ — יסומן ברשימה כשהיא תיפתח\./);
   assert.match(card, /שום דבר לא חסר — הכמויות ייבדקו מול התעודה ברשימה\.$/);
   assert.doesNotMatch(card, /עוד לא נספר כלום/);
+  // הכפתור הכחול שבתחתית ("בדוק וסיים") בזמן שהכרטיס מוצג: נשארים במסך הקליטה, עם הודעה — בלי מסך ההשוואה ובלי חלון
+  c.events.get('cartBtn:click')({});
+  assert.equal(c.run('currentView'), 'receiving'); assert.equal(modalOpen(c), false); assert.equal(c.run('pendingReceipt'), null);
+  assert.equal(c.toasts.at(-1), 'קודם בוחרים מוצר לשורה שכאן — ואז ממשיכים לקלוט.'); assert.equal(c.run('receiptQuantityIntent'), 'lines');
+  assert.deepEqual(list(c), ['milk 12'], 'הספירה לא נגעה');
   // כך נשמרה הטיוטה ב-164: הבחירה נמחקה לפני שמסך ההשוואה נפתח, והבדיקה הממתינה נשארה
   c.run('receiptQuantityIntent = null; saveReceiptDraft()');
   assert.equal(draft(c).quantityIntent, null);
@@ -361,7 +368,23 @@ test('10. קליטה בסריקה (טיוטה ישנה) — בלי שער, כמ�
   assert.equal(c.run('audits'), 1); assert.equal(c.run(`$('scanPriceNotice').classList.contains('hidden')`), false);
 });
 
-test('11. הגרסה עלתה ל-165, כולל ההערה ב-service worker', () => {
+test('11. שתי תעודות, והשורה בלי מוצר בשנייה: "2 התעודות נקראו", הכרטיס של השורה מהתעודה השנייה, והרשימה עולה עם שתי התעודות', async () => {
+  const second = paper([['milk', 5], ['cream', 2]], '4471012');
+  second.rows[1] = { ...second.rows[1], code: '77777', description: 'גביע לבן' };
+  const c = await scanned([paper([['milk', 12], ['cottage', 6]], '4471011'), second]);
+  assert.equal(c.run('currentView'), 'receiving'); assert.equal(c.run('receiptQuantityIntent'), 'lines');
+  assert.match(gateCard(c), /^2 התעודות נקראו · 4 שורות/); assert.match(gateCard(c), /צריך רק לבחור מוצר לשורה אחת — ואז ממשיכים לקלוט/);
+  assert.equal(c.toasts.at(-1), 'התעודות נקראו. צריך רק לבחור מוצר לשורה אחת — ואז ממשיכים לקלוט.');
+  const row = section(app(c), '<section data-row-actions data-gate-rows');
+  assert.equal((row.match(/<article/g) || []).length, 1); assert.match(strip(row), /גביע לבן קוד בנייר 77777/);
+  assert.match(row, /data-role="rowfix-pick" data-doc="1" data-row="1"/, 'השורה השנייה של התעודה השנייה');
+  assert.doesNotMatch(screen(c), /לא נסרקה אף יחידה|חסר ₪/);
+  assert.equal(c.run(`receiptPickRowProduct(1, 1, 'cream')`), true); runQueued(c);
+  assert.equal(modalOpen(c), true, 'הבדיקה נפתחה לבד'); assert.equal(review(c).pending, undefined); assert.equal(review(c).docs.length, 2, 'שתי התעודות ברשימה');
+  assert.equal(gateCard(c), '');
+});
+
+test('12. הגרסה עלתה ל-165, כולל ההערה ב-service worker', () => {
   const html = fs.readFileSync(new URL('../index.html', import.meta.url), 'utf8'), sw = fs.readFileSync(new URL('../sw.js', import.meta.url), 'utf8');
   assert.match(html, /const APP_VERSION = '165';/);
   assert.match(sw, /^\/\/ גרסה 165 — /);
