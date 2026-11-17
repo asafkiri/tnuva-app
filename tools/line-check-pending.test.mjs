@@ -12,7 +12,8 @@
 //    נוסף"; רטט אחד, והודעה בראש החלון. "סיום" — אותה תעודה שמורה כמו סימון ביד.
 // 4. התעודה נקראה כשהמצלמה פתוחה: המצלמה לא נסגרת, המונה עובר ל"סומנו", סריקה חדשה כבר מגיעה לשורה שלה; כרטיס שפתוח באותו רגע
 //    נבנה מחדש מול הרשימה ומה שהוקלד בו נשאר; החלון מוצג כשהמצלמה נסגרת.
-// 5. התעודה נקראה אבל צריך להשלים זיהוי מוצרים: בזמן שהמצלמה פתוחה לא קורה דבר; כשהיא נסגרת — מסך ההשוואה, והספירה נשמרת.
+// 5. התעודה נקראה אבל צריך לבחור מוצר לשורה: בזמן שהמצלמה פתוחה לא קורה דבר; כשהיא נסגרת — הכרטיס במסך הקליטה (v165: לא מסך
+//    ההשוואה), והספירה נשמרת; אחרי שהמוצר נבחר הרשימה עולה לבד, עם מה שנסרק.
 // 6. הקריאה נכשלה: החלון אומר זאת וסורקים הלאה; "בדוק את צילום התעודה" חוזר למסך הקליטה; אחרי התיקון — הרשימה עם מה שנסרק.
 // 7. בלי תעודה: אותו חלון ("בדיקה בלי תעודה"); "סיום — שמור בלי תעודה" שומר קליטה בלי תעודה, פתוחה, כמו קודם; המסך שמאחורי החלון.
 // 8. בלי תעודה, ואז מצלמים אותה באמצע: מה שנסרק נשאר, והבדיקה הופכת לשורה-שורה כשהתעודה נקראת.
@@ -324,8 +325,8 @@ test('4. התעודה נקראה כשהמצלמה פתוחה: המצלמה נש�
   assert.deepEqual(marks(e), ['qty:10,,']);
 });
 
-test('5. התעודה נקראה אבל צריך להשלים זיהוי מוצרים: המצלמה לא נקטעת; כשהיא נסגרת — מסך ההשוואה, והספירה נשמרת', async () => {
-  // שורה שהקוד שלה אינו במאגר — אין רשימה עד שמזהים אותה (במסך ההשוואה, כמו קודם)
+test('5. התעודה נקראה אבל צריך לבחור מוצר לשורה: המצלמה לא נקטעת; כשהיא נסגרת — הכרטיס במסך הקליטה (לא מסך ההשוואה), והספירה נשמרת; אחרי הבחירה הרשימה עולה לבד', async () => {
+  // שורה שהקוד שלה אינו במאגר — אין רשימה עד שבוחרים לה מוצר. עד 164 נפתח כאן מסך ההשוואה ("חסר ₪…" על סחורה שעוד לא נבדקה)
   const UNKNOWN = paper([['milk', 12], ['cottage', 6]], '4471009');
   UNKNOWN.rows[1] = { ...UNKNOWN.rows[1], code: '99999', description: 'מוצר שאינו במאגר' };
   const c = await reading([UNKNOWN]);
@@ -340,10 +341,28 @@ test('5. התעודה נקראה אבל צריך להשלים זיהוי מוצ�
   c.run('closeScanner()');
   assert.equal(modalOpen(c), true, 'לרגע — החלון, ואז הפתיחה שנדחתה');
   runQueued(c);
-  assert.equal(c.run('currentView'), 'reconcile', 'מסך ההשוואה — להשלים את הזיהוי');
-  assert.equal(modalOpen(c), false, 'החלון לא נשאר מעל מסך ההשוואה');
-  assert.match(c.toasts.at(-1), /צריך להשלים את זיהוי המוצרים/);
+  assert.equal(c.run('currentView'), 'receiving', 'נשארים במסך הקליטה — בלי מסך ההשוואה');
+  assert.equal(modalOpen(c), false, 'החלון לא נשאר מעל הכרטיס');
+  assert.equal(c.toasts.at(-1), 'התעודה נקראה. צריך רק לבחור מוצר לשורה אחת — ואז ממשיכים לקלוט.');
+  assert.deepEqual(readyBuzzes(c), [[60, 40, 60]], 'רטט אחד — התעודה נקראה');
+  assert.equal(c.run('receiptQuantityIntent'), 'lines', 'הבחירה נשמרת עד שהמוצר נבחר'); assert.equal(review(c).pending, true, 'והבדיקה הממתינה איתה');
   assert.deepEqual(list(c), ['milk 12'], 'מה שנסרק נשמר');
+  const screen = strip(app(c));
+  assert.match(screen, /צריך רק לבחור מוצר לשורה אחת — ואז ממשיכים לקלוט/);
+  assert.match(screen, /מה שכבר נסרק נשמר: מוצר אחד · 12 יח׳ — יסומן ברשימה כשהיא תיפתח\./);
+  assert.doesNotMatch(screen, /לא נסרקה אף יחידה|חסר ₪/, 'שום חוסר על סחורה שעוד לא נבדקה');
+  // ציור נוסף של המסך אינו מודיע שוב ואינו פותח דבר
+  const said = c.toasts.length;
+  c.run('renderReceiving()'); runQueued(c);
+  assert.equal(c.toasts.length, said); assert.equal(modalOpen(c), false); assert.equal(c.run('currentView'), 'receiving');
+  // בוחרים את המוצר מהכרטיס — הרשימה עולה לבד באותו חלון, ומה שנסרק כבר מסומן
+  assert.equal(c.run(`receiptPickRowProduct(0, 1, 'cottage')`), true);
+  runQueued(c);
+  assert.equal(c.run('currentView'), 'receiving'); assert.equal(modalOpen(c), true, 'הבדיקה נפתחה לבד');
+  assert.equal(c.run('receiptQuantityIntent'), null, 'הבחירה נפתחה — פעם אחת');
+  assert.equal(review(c).pending, undefined, 'כבר לא בדיקה ממתינה — הרשימה');
+  assert.deepEqual(marks(c), ['ok,'], 'החלב שנסרק (12 כמו בתעודה) מסומן "הגיע"; הקוטג׳ מחכה');
+  assert.deepEqual(list(c), ['milk 12']);
 });
 
 test('6. הקריאה נכשלה: החלון אומר זאת וסורקים הלאה; "בדוק את צילום התעודה"; אחרי התיקון — הרשימה, עם מה שנסרק', async () => {
@@ -613,10 +632,10 @@ test('12. בדיקה שסומנו בה שורות אינה מוחלפת כשהת
   await q.release();
 });
 
-test('13. הגרסה (164: מבצע שבתעודה ואינו במערכת), כולל ההערה ב-service worker; "סריקת מוצרים" אינה נבחרת עוד בשום מסך', () => {
+test('13. הגרסה (165: שורה שמחכה לבחירת מוצר — כרטיס במסך הקליטה), כולל ההערה ב-service worker; "סריקת מוצרים" אינה נבחרת עוד בשום מסך', () => {
   const html = fs.readFileSync(new URL('../index.html', import.meta.url), 'utf8');
-  assert.match(html, /const APP_VERSION = '164'/);
-  assert.match(fs.readFileSync(new URL('../sw.js', import.meta.url), 'utf8'), /^\/\/ גרסה 164 — /);
+  assert.match(html, /const APP_VERSION = '165'/);
+  assert.match(fs.readFileSync(new URL('../sw.js', import.meta.url), 'utf8'), /^\/\/ גרסה 165 — /);
   assert.doesNotMatch(html, /data-role="rc-count-by-scan"|מעבר לקליטה בסריקת מוצרים<|>התחל קליטת מוצרים</);
 });
 
