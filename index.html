@@ -765,7 +765,7 @@ let receiptDupConfirmed = false; // אישור שמירה למרות חשד לכ
 const RECEIPT_DRAFT_KEY = 'tn_receipt_draft';
 let receivingDigitsMissTimer = null;
 let receivingDigitsMissNotified = '';
-const APP_VERSION = '166'; // סגירת התעודה אינה מחכה למנתח: "סגור תעודה עם החוסרים" נשמרת מיד, גם כש"המנתח מסביר את הפער…" עוד רץ
+const APP_VERSION = '166'; // סגירת התעודה אינה מחכה למנתח; ושמירה שלא אושרה אינה נועלת את הקליטה בלי הסבר — "אשר וקלוט" בודק ומנסה שוב בעצמו (כמו ברמן 156–157)
 // v158: תווית הגרסה בגיבויים וביומן הפעולות נגזרת מ-APP_VERSION. עד כאן היא הייתה קבועה ('v150_code_agreement') ונשארה
 // מאחור שמונה גרסאות — הגיבוי של 10.11 אמר 150 בעוד המסך אמר 157.
 const APP_VERSION_LABEL = 'v' + APP_VERSION;
@@ -2009,7 +2009,8 @@ function canEditDraft(kind, quiet=false) {
   if(handoffApplying) return true;
   const h=draftHandoffs[kind], st=h&&h.state();
   if((kind==='receiving' && (receiptFinalizing || localReceiptPending())) || handoffFinalizing[kind] || (st&&st.readOnly)) {
-    if(!quiet) showToast(kind==='receiving'?'יש שמירת קליטה שעדיין נבדקת. לחץ על בדיקת השמירה למעלה.':handoffBlockedText(kind,st),null,null,4000); return false;
+    // v166: במילים פשוטות — ומה לוחצים (עד 165: "יש שמירת קליטה שעדיין נבדקת. לחץ על בדיקת השמירה למעלה.")
+    if(!quiet) showToast(kind==='receiving'?(receiptFinalizing?'הקליטה נשמרת עכשיו — רגע אחד.':'הקליטה נעולה עד שהשמירה תאושר. לחץ "בדוק ונסה לשמור שוב" בפס הכחול שלמעלה.'):handoffBlockedText(kind,st),null,null,4000); return false;
   }
   return true;
 }
@@ -2106,8 +2107,9 @@ function ensureLocalReceiptFinalizer(){
 }
 function localReceiptResult(result){
   if(result.ok)return true;
-  const text={offline:'אין אישור מהענן. הקליטה נשארה בטלפון; אפשר לבדוק את השמירה שוב.',unknown:'תשובת השמירה מתעכבת. הקליטה נשארה בטלפון; לחץ על בדיקת השמירה למעלה.',
-    storage:'אין מקום לשמירת הקליטה במכשיר. הנתונים שעל המסך לא נוקו; פנה מקום ונסה שוב.',busy:'שמירת הקליטה עדיין נבדקת.',
+  // v166: offline/unknown/busy במילים פשוטות. "לחץ שוב" נכון בשני המקומות: "אשר וקלוט" בודק ומנסה שוב בעצמו, וכך גם הכפתור בפס.
+  const text={offline:'אין אישור מהענן — כנראה נפל החיבור. שום דבר לא אבד: הקליטה שמורה בטלפון. לחץ שוב כדי לנסות לשמור.',unknown:'הענן לא ענה בזמן. שום דבר לא אבד: הקליטה שמורה בטלפון. לחץ שוב כדי לבדוק ולנסות לשמור.',
+    storage:'אין מקום לשמירת הקליטה במכשיר. הנתונים שעל המסך לא נוקו; פנה מקום ונסה שוב.',busy:'השמירה עדיין רצה — רגע אחד.',
     changed:'התעודה או מחיר המוצר השתנו בענן. הקליטה המקומית נשמרה; בדוק את התעודה בהיסטוריה.',
     exists:'התעודה הזאת כבר נשמרה. העותק המקומי נשאר לבדיקה ולא ידרוס אותה.',saved:'הקליטה כבר הסתיימה בטלפון אחר. העותק המקומי נשאר לבדיקה.',
     moved:'זאת טיוטה ישנה שהועברה לטלפון אחר. יש לסיים אותה בטלפון שאליו הועברה; העותק כאן נשמר.',canceled:'הטיוטה הישנה בוטלה בטלפון אחר. העותק כאן נשמר לבדיקה.',
@@ -2142,13 +2144,26 @@ function completeLocalReceipt(sessionId,keepAttempt=false){
   receiptDupConfirmed=false;receiptLinesConfirmed=false;receiptNoDoc=false;receiptAttachTarget=null;recomputeNoteTotal();
   if(!keepAttempt)localReceiptFinalizer?.forget(sessionId);handoffFinishPlans.receiving=null;setView('receiptsHistory');return true;
 }
+// v166 (כמו ברמן 156–157): מחזיר את התוצאה — "אשר וקלוט" ממשיך לשמור כשהניסיון הישן ירד. ניסיון שהוכרע אינו נשאר תלוי:
+// saved-late — הענן מחזיק בדיוק את מה שנשלח, אין מה לנסות שוב; הטיוטה עם השינויים המאוחרים נשארת פתוחה לבדיקה.
+// pending-changed+gone — קריאה מהשרת ענתה שאין שם כלום: הניסיון הישן לא הגיע, והקליטה השתנתה מאז — הקליטה נפתחת שוב,
+// ו"אשר וקלוט" שומר את מה שיש עכשיו (אותו מזהה תעודה — גם אם הישן ינחת בסוף, לא תהיה כפילות). עד 165 שני אלה נעלו
+// את הקליטה לנצח. בזמן הבדיקה הפס אומר "בודק ושומר…" (עד 165 לא השתנה כלום על המסך, עד חצי דקה ויותר).
 async function retryLocalReceiptFinish(){
-  if(receiptFinalizing)return;
-  const finalizer=ensureLocalReceiptFinalizer(),id=localReceiptSession(),attempt=finalizer?.attempt(id);if(!attempt)return;
-  receiptFinalizing=true;
-  try{const result=await finalizer.finish({...attempt,fingerprint:handoffFingerprint('receiving')});
-    if(localReceiptResult(result)&&completeLocalReceipt(id))showToast('התעודה נשמרה ✓');
+  if(receiptFinalizing)return null;
+  const finalizer=ensureLocalReceiptFinalizer(),id=localReceiptSession(),attempt=finalizer?.attempt(id);if(!attempt)return null;
+  receiptFinalizing=true;renderDraftHandoffBanner();
+  let result=null;
+  try{result=await finalizer.finish({...attempt,fingerprint:handoffFingerprint('receiving')});
+    if(result.ok){if(completeLocalReceipt(id))showToast('התעודה נשמרה ✓');}
+    else if(result.reason==='saved-late'||(result.reason==='pending-changed'&&result.gone)){
+      finalizer.forget(id);
+      showToast(result.reason==='saved-late'?'התעודה כבר נשמרה בענן. מה ששונה כאן אחרי השמירה נשאר בטלפון לבדיקה — אפשר "לשמור עותק בצד ולפנות את המסך".'
+        :'השמירה הקודמת לא הגיעה לענן, והקליטה השתנתה מאז. הקליטה פתוחה שוב — בדוק ולחץ "אשר וקלוט".',null,null,6500);
+    }
+    else localReceiptResult(result);
   }finally{receiptFinalizing=false;renderDraftHandoffBanner();}
+  return result;
 }
 function localReceiptRecoveryEntries(){
   const all=[];
@@ -2161,8 +2176,14 @@ function localReceiptRecoveryEntries(){
 }
 function localReceiptBannerHtml(){
   const active=receiptDraftActive(receiptDraftPayload(false)),pending=localReceiptPending();
+  // v166: עד 165 — "שמירת הקליטה עדיין נבדקת. הנתונים נשארו בטלפון הזה." ובעל העסק, 26.11: "עכשיו אני חסום לא יודע מה קורה פה".
+  // עכשיו: מה קרה, שלא אבד כלום, שהקליטה נעולה עד האישור ומה לוחצים; ובזמן הבדיקה עצמה — "בודק ושומר…" בלי כפתור.
   let html='<div class="rounded-xl border border-blue-200 bg-blue-50 text-blue-900 p-3 mb-2 text-sm font-bold">'+
-    (pending?'שמירת הקליטה עדיין נבדקת. הנתונים נשארו בטלפון הזה.<button class="btn-tap block w-full bg-white border rounded-lg p-2 mt-2" data-local-receipt="retry">בדוק את השמירה שוב</button>':
+    (pending?(receiptFinalizing
+        ?'<div class="font-black">בודק ושומר…</div><div class="mt-1">זה לוקח פחות מדקה. שום דבר לא אבד — הקליטה שמורה בטלפון הזה.</div>'
+        :'<div class="font-black">השמירה נשלחה, ועוד לא הגיע אישור מהענן.</div><div class="mt-1">שום דבר לא אבד — הקליטה שמורה בטלפון הזה. עד שהשמירה תאושר, הקליטה נעולה.</div>'+
+          '<button class="btn-tap block w-full bg-white border rounded-lg p-2 mt-2 font-black" data-local-receipt="retry">בדוק ונסה לשמור שוב</button>'+
+          '<div class="mt-2 text-xs">לא עובר? סגור את האפליקציה, פתח אותה שוב ולחץ כאן שוב.</div>'):
       'הקליטה נשמרת בטלפון הזה. מתחילים ומסיימים באותו טלפון; התעודה תופיע בשאר המכשירים אחרי הסיום.')+'</div>';
   if(active&&!receiptFinalizing)html+='<details class="mb-2 text-sm"><summary>אפשרויות לעותק המקומי</summary><button class="btn-tap border rounded-lg p-2 mt-2" data-local-receipt="archive">שמור עותק בצד ופנה את המסך</button></details>';
   const entries=localReceiptRecoveryEntries();
@@ -2262,6 +2283,8 @@ function guardDraftEvent(e) {
   const role=t.closest('[data-role]')?.dataset.role||'',id=t.closest('[id]')?.id||'';
   if(['rc-history','rc-recon-cancel','ret-slot'].includes(role)||['scanClose','rs_cancel','qty_cancel','confirmCancel'].includes(id))return;
   if(id==='confirmOk'&&confirmCb&&confirmCb.allowReadOnly)return;
+  // v166: "אשר וקלוט" עם ניסיון שמירה תלוי — confirmReceipt בודק אותו בעצמו ומנסה שוב (בזמן שהוא רץ — נחסם כמו קודם)
+  if(id==='rs_ok'&&kind==='receiving'&&!receiptFinalizing&&localReceiptPending())return;
   if(!canEditDraft(kind)){e.preventDefault();e.stopImmediatePropagation();return;}
   if(e.type==='input'&&id==='orderNote'){handoffUserEdit=true;if(kind==='order'){orderDraftNote=t.value;saveDraft();}else{returnsDraftNotes[returnsSlot]=t.value;saveReturnsDraft();}queueMicrotask(()=>{handoffUserEdit=false;});}
   if(['input','change','click'].includes(e.type)) {
@@ -19575,7 +19598,16 @@ function receiptPriceChanges() {
 async function confirmReceipt() {
   if (!pendingReceipt) { hideReceiptSummary(); return; }
   if (receiptFinalizing) return;
-  if (!canEditDraft('receiving'))return;
+  if (!canEditDraft('receiving', true)) {
+    // v166 (כמו ברמן 157): ניסיון שמירה תלוי מלחיצה קודמת — "אשר וקלוט" בודק אותו בעצמו, כמו "בדוק ונסה לשמור שוב" בפס
+    // שלמעלה (שמוסתר מאחורי חלון הסיכום). נשמר — נסגר משם. הענן כבר שמר (saved-late) — ההודעה אומרת, ולא שומרים שוב.
+    // הניסיון הישן לא הגיע (pending-changed+gone) או כבר לא תואם את הענן (changed) — הוא ירד, וממשיכים באותה לחיצה לשמור
+    // את מה שיש עכשיו. בלי תשובה מהשרת — נשאר תלוי, עם ההודעה. עד 165 הלחיצה נבלעה: "לחץ על בדיקת השמירה למעלה".
+    if (!localReceiptPending()) { canEditDraft('receiving'); return; }
+    const res = await retryLocalReceiptFinish();
+    if (!res || res.ok || res.saved || localReceiptPending() || !canEditDraft('receiving', true) || !pendingReceipt) return;
+    if (!['pending-changed', 'changed'].includes(res.reason)) return;
+  }
   // v166: רק קריאת הנייר עוצרת את השמירה. המנתח הוא הסבר מעל ממצאים שכבר נסגרו ואושרו —
   // מה שנשמר (pendingReceipt) נבנה מהם, והוא אינו נוגע בכמויות. עד 165 הוא עצר כאן
   // ("יש להמתין לסיום בדיקת התעודה") עד שענה — עד חמש דקות לניסיון, שלושה ניסיונות.
