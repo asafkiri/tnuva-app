@@ -618,10 +618,10 @@ test('11. הרשימה אינה מריצה את בדיקת המחירים המל
   assert.match(row(r, 0, 2), COMPACT);
 });
 
-test('12. הגרסה (165), כולל ההערה ב-service worker; החלון החדש בדף; ומסך עריכת התעודה שומר בדיוק כמו קודם', async () => {
+test('12. הגרסה (166), כולל ההערה ב-service worker; החלון החדש בדף; ומסך עריכת התעודה שומר בדיוק כמו קודם', async () => {
   const html = fs.readFileSync(new URL('../index.html', import.meta.url), 'utf8');
-  assert.match(html, /const APP_VERSION = '165'/);
-  assert.match(fs.readFileSync(new URL('../sw.js', import.meta.url), 'utf8'), /^\/\/ גרסה 165 — /);
+  assert.match(html, /const APP_VERSION = '166'/);
+  assert.match(fs.readFileSync(new URL('../sw.js', import.meta.url), 'utf8'), /^\/\/ גרסה 166 — /);
   // החלון: מעל חלון הבדיקה שורה-שורה (70) וחלון הסיכום (65), מתחת לחיווי "שומר לענן" (100)
   assert.match(html, /<div id="paperPromoModal" role="dialog" aria-modal="true" aria-label="פתיחת מבצע מהתעודה" class="hidden fixed inset-0 bg-slate-900\/60 backdrop-blur-sm items-center justify-center p-4 z-\[90\]" dir="rtl">/);
   assert.match(html, /<div id="receiptQuantityModal"[^>]* z-\[70\]"/);

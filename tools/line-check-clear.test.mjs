@@ -255,8 +255,8 @@ test('7. הכרטיס שמעל המצלמה — בלי "בטל סימון"; אח
   assert.doesNotMatch(card, /data-line-clear|בטל סימון/);
 });
 
-test('8. הגרסה (165: שורה שמחכה לבחירת מוצר — כרטיס במסך הקליטה), כולל ההערה ב-service worker', () => {
+test('8. הגרסה (166: סגירת התעודה אינה מחכה למנתח), כולל ההערה ב-service worker', () => {
   const html = fs.readFileSync(new URL('../index.html', import.meta.url), 'utf8');
-  assert.match(html, /const APP_VERSION = '165'/);
-  assert.match(fs.readFileSync(new URL('../sw.js', import.meta.url), 'utf8'), /^\/\/ גרסה 165 — /);
+  assert.match(html, /const APP_VERSION = '166'/);
+  assert.match(fs.readFileSync(new URL('../sw.js', import.meta.url), 'utf8'), /^\/\/ גרסה 166 — /);
 });

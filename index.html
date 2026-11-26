@@ -765,7 +765,7 @@ let receiptDupConfirmed = false; // אישור שמירה למרות חשד לכ
 const RECEIPT_DRAFT_KEY = 'tn_receipt_draft';
 let receivingDigitsMissTimer = null;
 let receivingDigitsMissNotified = '';
-const APP_VERSION = '165'; // שורה שמחכה לבחירת מוצר לפני הבדיקה: כרטיס אחד במסך הקליטה, בלי מסך ההשוואה; ומסך ההשוואה מתרענן אחרי כל אישור (כמו יטבתה 419)
+const APP_VERSION = '166'; // סגירת התעודה אינה מחכה למנתח: "סגור תעודה עם החוסרים" נשמרת מיד, גם כש"המנתח מסביר את הפער…" עוד רץ
 // v158: תווית הגרסה בגיבויים וביומן הפעולות נגזרת מ-APP_VERSION. עד כאן היא הייתה קבועה ('v150_code_agreement') ונשארה
 // מאחור שמונה גרסאות — הגיבוי של 10.11 אמר 150 בעוד המסך אמר 157.
 const APP_VERSION_LABEL = 'v' + APP_VERSION;
@@ -16768,6 +16768,16 @@ async function aiRunInvoiceScan({ background = false } = {}) {
 let aiAnalyzeBusy = false;
 let aiAnalyzeError = '';
 let aiAnalyzeResult = null;
+// v166: סגירת התעודה אינה מחכה למנתח. כל ריצה מקבלת מספר; aiAnalyzeDetach מנתק
+// את הריצה שבדרך (הבקשה ממשיכה ברקע), ותשובה של ריצה שנותקה — כשתגיע — אינה
+// נוגעת בדבר: לא בממצאים, לא בטיוטה ולא במסך.
+let aiAnalyzeRunId = 0;
+function aiAnalyzeDetach() {
+  if (!aiAnalyzeBusy) return false;
+  aiAnalyzeRunId++;
+  aiAnalyzeBusy = false;
+  return true;
+}
 
 function aiAnalyzeRowProductIndex(ev) {
   // כל שורה שהמנוע כבר שייך למוצר בוודאות, לפי תעודה/שורה/עמוד.
@@ -16925,6 +16935,7 @@ async function aiRunAnalyzer(options) {
   const ev = aiScanEvaluation;
   if (!ev) { if (!auto) showToast('אין עדיין תוצאות סריקה לנתח', null, null, 2600); return; }
   if (!auth || !auth.currentUser) { if (!auto) showToast('עדיין אין חיבור מאובטח — המתן רגע ונסה שוב', null, null, 3000); return; }
+  const analyzeRun = ++aiAnalyzeRunId; // v166
   aiAnalyzeBusy = true; handoffChanged('receiving'); aiAnalyzeError = ''; aiAnalyzeResult = null;
   if (currentView === 'reconcile') renderReconcile();
   try {
@@ -16958,7 +16969,7 @@ async function aiRunAnalyzer(options) {
       try { payload = await pending.promise; }
       finally { if (receiptAnalysisPending === pending) receiptAnalysisPending = null; }
     }
-    if (scanRun !== aiScanRunId || ev !== aiScanEvaluation || key !== receiptDraftId + '\n' + JSON.stringify(aiAnalyzePayload(ev))) return;
+    if (analyzeRun !== aiAnalyzeRunId || scanRun !== aiScanRunId || ev !== aiScanEvaluation || key !== receiptDraftId + '\n' + JSON.stringify(aiAnalyzePayload(ev))) return;
     receiptAnalysisCache = { key, payload }; saveReceiptDraft();
     const analysis = payload.analysis || {};
     const allClaims = Array.isArray(analysis.claims) ? analysis.claims : [];
@@ -16980,11 +16991,14 @@ async function aiRunAnalyzer(options) {
     };
     if (aiAnalyzeResult.accepted) aiAdoptAnalyzerResult(ev, aiAnalyzeResult);
   } catch (error) {
-    if (ev === aiScanEvaluation) aiAnalyzeError = (error && error.message) || 'הניתוח נכשל';
+    if (analyzeRun === aiAnalyzeRunId && ev === aiScanEvaluation) aiAnalyzeError = (error && error.message) || 'הניתוח נכשל';
   } finally {
-    if (ev === aiScanEvaluation) aiAnalyzeBusy = false;
-    handoffChanged('receiving');
-    if (currentView === 'reconcile') renderReconcile();
+    // v166: ריצה שנותקה (התעודה נסגרה בלעדיה) אינה מאפסת ריצה חדשה ואינה מציירת את המסך.
+    if (analyzeRun === aiAnalyzeRunId) {
+      if (ev === aiScanEvaluation) aiAnalyzeBusy = false;
+      handoffChanged('receiving');
+      if (currentView === 'reconcile') renderReconcile();
+    }
   }
 }
 // v188: אימוץ. כשההסבר של המנתח נסגר על הכסף ועל היחידות, הטענות שלו הן
@@ -17070,7 +17084,11 @@ function aiAnalyzeClaimDetailWithEditorHtml(claim, index, findings, headClass) {
 function aiAnalyzeHtml(ev) {
   if (!ev || !ev.findingsReady) return '';
   if (aiAnalyzeBusy) {
-    return '<div class="mt-3 rounded-2xl border-2 border-violet-200 bg-violet-50 p-3 text-center"><i class="fa-solid fa-spinner fa-spin text-violet-600"></i> <span class="font-black text-violet-800 text-sm">המנתח מסביר את הפער…</span></div>';
+    // v166: כשהממצאים שעל המסך כבר סוגרים את החשבון (ev.valid — הכפתור לסגירה פתוח),
+    // אומרים שאין צורך לחכות. כשהסגירה נעולה, ייתכן שדווקא המנתח יפתח אותה — ולכן בלי השורה.
+    return '<div class="mt-3 rounded-2xl border-2 border-violet-200 bg-violet-50 p-3 text-center"><i class="fa-solid fa-spinner fa-spin text-violet-600"></i> <span class="font-black text-violet-800 text-sm">המנתח מסביר את הפער…</span>' +
+      (ev.valid === true ? '<div data-analyzer-no-wait class="text-xs font-bold text-violet-700 mt-1">אפשר לסגור את התעודה בלי לחכות לו</div>' : '') +
+      '</div>';
   }
   const result = aiAnalyzeResult;
   if (result && result.accepted) {
@@ -19558,7 +19576,10 @@ async function confirmReceipt() {
   if (!pendingReceipt) { hideReceiptSummary(); return; }
   if (receiptFinalizing) return;
   if (!canEditDraft('receiving'))return;
-  if(aiScanBusy||aiAnalyzeBusy){showToast('יש להמתין לסיום בדיקת התעודה.');return;}
+  // v166: רק קריאת הנייר עוצרת את השמירה. המנתח הוא הסבר מעל ממצאים שכבר נסגרו ואושרו —
+  // מה שנשמר (pendingReceipt) נבנה מהם, והוא אינו נוגע בכמויות. עד 165 הוא עצר כאן
+  // ("יש להמתין לסיום בדיקת התעודה") עד שענה — עד חמש דקות לניסיון, שלושה ניסיונות.
+  if(aiScanBusy){showToast('יש להמתין לסיום בדיקת התעודה.');return;}
   // v141: גם כאן, לפני השמירה — מסלול ההשוואה אינו עובר תמיד ב-finishReceipt,
   // וטלפון אחר יכול לשמור את אותו נייר בינתיים. חלון האישור יושב מתחת לסיכום.
   const paperDup = receiptPaperDuplicate(pendingReceipt.noteParts, activeReceiptDate());
@@ -19568,6 +19589,7 @@ async function confirmReceipt() {
     return;
   }
   if(!saveReceiptDraft())return;
+  aiAnalyzeDetach(); // v166: מכאן התשובה של המנתח, אם תגיע, לא תשנה כלום בתעודה שנשמרת
   const finalSession=handoffDraft('receiving').sessionId, finalFingerprint=handoffFingerprint('receiving');
   receiptFinalizing=true;
   try {
