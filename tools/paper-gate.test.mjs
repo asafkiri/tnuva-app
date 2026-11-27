@@ -384,8 +384,8 @@ test('11. שתי תעודות, והשורה בלי מוצר בשנייה: "2 ה�
   assert.equal(gateCard(c), '');
 });
 
-test('12. הגרסה (166: סגירת התעודה אינה מחכה למנתח), כולל ההערה ב-service worker', () => {
+test('12. הגרסה (167: תיקון ל-166 — הפס אחרי שמירה שלא אושרה, וסגירה ופתיחה), כולל ההערה ב-service worker', () => {
   const html = fs.readFileSync(new URL('../index.html', import.meta.url), 'utf8'), sw = fs.readFileSync(new URL('../sw.js', import.meta.url), 'utf8');
-  assert.match(html, /const APP_VERSION = '166';/);
-  assert.match(sw, /^\/\/ גרסה 166 — /);
+  assert.match(html, /const APP_VERSION = '167';/);
+  assert.match(sw, /^\/\/ גרסה 167 — /);
 });

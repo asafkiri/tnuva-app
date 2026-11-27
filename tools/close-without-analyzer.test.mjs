@@ -174,8 +174,8 @@ test('5. ריצה של המנתח שנותקה אינה מאפסת ריצה חד
   r.run('renderReconcile = __render');
 });
 
-test('6. הגרסה (166), כולל ההערה ב-service worker', () => {
+test('6. הגרסה (167), כולל ההערה ב-service worker', () => {
   const html = fs.readFileSync(new URL('../index.html', import.meta.url), 'utf8');
-  assert.match(html, /const APP_VERSION = '166'/);
-  assert.match(fs.readFileSync(new URL('../sw.js', import.meta.url), 'utf8'), /^\/\/ גרסה 166 — /);
+  assert.match(html, /const APP_VERSION = '167'/);
+  assert.match(fs.readFileSync(new URL('../sw.js', import.meta.url), 'utf8'), /^\/\/ גרסה 167 — /);
 });
