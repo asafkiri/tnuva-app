@@ -9,8 +9,11 @@
 // 4. הניסיון הישן לא הגיע לענן והקליטה השתנתה מאז: הוא יורד, ו"אשר וקלוט" שומר את מה שיש עכשיו — באותה לחיצה, פעם אחת.
 // 5. הניסיון הישן כן נשמר והקליטה השתנתה מאז: "כבר נשמרה", בלי שמירה שנייה, והקליטה נפתחת לבדיקה.
 // 6. בלי תשובה מהשרת על הניסיון הישן: לא מוותרים עליו — נשאר תלוי עד שיש תשובה.
+// 7. (v167) סגירה ופתיחה של האפליקציה עם ניסיון תלוי: טביעת הקליטה ונתוני הצילום נשארים, ו"בדוק ונסה לשמור שוב" שומר — גם כשהשמירה
+//    כבר הגיעה לענן ורק התשובה אבדה. וגם: הפס שנשאר על המסך אחרי שמירה שלא אושרה הוא הפס עם הכפתור (lostSave).
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
 import * as harness from './receipt-scan-harness.mjs';
 
 const tick = () => new Promise(resolve => setImmediate(resolve));
@@ -65,6 +68,10 @@ async function lostSave(r) {
   r.context.networkFailure = false;
   assert.equal(r.run('localReceiptPending()'), true, 'הניסיון תלוי');
   assert.equal(r.run("canEditDraft('receiving', true)"), false, 'הקליטה נעולה');
+  // v167: הפס כמו שנשאר על המסך (בלי ציור יזום של הבדיקה) — עם הכפתור. ב-166 הוא נשאר על "בודק ושומר…" בלי כפתור,
+  // כי שמירה שלא אושרה ציירה אותו בזמן שהדגל של השמירה עוד דלק; הבדיקות ציירו אותו בעצמן לפני שקראו, ולא ראו.
+  const left = strip(r.node('draftHandoffBanner').innerHTML);
+  assert.ok(left.startsWith('השמירה נשלחה, ועוד לא הגיע אישור מהענן.') && left.includes('בדוק ונסה לשמור שוב') && !left.includes('בודק ושומר'), left);
 }
 // הקליטה השתנתה אחרי הניסיון: הטביעה של הניסיון השמור כבר אינה הטביעה של עכשיו (והנתונים שלו — לא מה שעל המסך).
 function changedSince(r) {
@@ -189,4 +196,45 @@ test('6. בלי תשובה מהשרת על הניסיון הישן: לא מוו�
   assert.equal(saved(cloud).length, 1);
   assert.deepEqual(items(saved(cloud)[0]), [['milk', 9, 10]]);
   assert.equal(r.run('localReceiptPending()'), false);
+});
+
+test('7. סגירה ופתיחה של האפליקציה עם ניסיון תלוי (מה שהפס מציע כשזה "לא עובר"): הטביעה ונתוני הצילום נשארים, ו"בדוק ונסה לשמור שוב" שומר (166: הקליטה נפתחה מחדש במקום להישמר)', async () => {
+  const a = await toSummary();
+  await lostSave(a.r);
+  const fingerprint = a.r.run("handoffFingerprint('receiving')");
+  // אותו טלפון, אחרי סגירה ופתיחה: אותו זיכרון ואותו ענן, דף חדש — בלי הצילומים, שאינם נשמרים
+  const storage = a.r.storage;
+  const b = harness.runtime('tnuva', { cloud: a.cloud, storage });
+  await a.cloud.tick();
+  assert.equal(b.run('aiScanDocuments[0].pages.length'), 0, 'הצילומים לא חזרו');
+  assert.equal(b.run("handoffFingerprint('receiving')"), fingerprint, 'טביעת הקליטה לא משתנה בפתיחה מחדש');
+  assert.deepEqual(JSON.parse(b.run('JSON.stringify(SCAN_PAGE_AUDIT_FIELDS.map(f => aiScanResponse.perDocument[0][f]))')), [1, ['?'], [null], [null], ['ok']], 'נתוני הצילום נשארו עם הקריאה');
+  assert.equal(b.run('localReceiptPending()'), true, 'הניסיון התלוי נשאר אחרי הפתיחה');
+  assert.ok(banner(b).startsWith('השמירה נשלחה, ועוד לא הגיע אישור מהענן.'), banner(b));
+  await bannerRetry(b);
+  assert.equal(b.run('localReceiptPending()'), false);
+  assert.equal(b.run('currentView'), 'receiptsHistory');
+  assert.equal(saved(a.cloud).length, 1, 'נשמרה פעם אחת');
+  assert.deepEqual(items(saved(a.cloud)[0]), [['milk', 9, 10]]);
+  assert.ok(b.toasts.includes('התעודה נשמרה ✓'), b.toasts.join(' | '));
+  // ואם השמירה כן הגיעה לענן ורק התשובה אבדה: אחרי הפתיחה הכפתור מזהה שזו אותה תעודה — נסגר, בלי כפילות ובלי "מה ששונה כאן"
+  const c = await toSummary();
+  c.cloud.loseReplyAfterCommit = true; c.r.context.readFailure = true;
+  assert.equal(await confirmTap(c.r), 'ran');
+  c.cloud.loseReplyAfterCommit = false;
+  assert.equal(c.r.run('localReceiptPending()'), true);
+  assert.equal(saved(c.cloud).length, 1);
+  const d = harness.runtime('tnuva', { cloud: c.cloud, storage: c.r.storage });
+  await c.cloud.tick();
+  await bannerRetry(d);
+  assert.equal(d.run('localReceiptPending()'), false);
+  assert.equal(d.run('currentView'), 'receiptsHistory');
+  assert.equal(saved(c.cloud).length, 1, 'לא נשמרה פעם שנייה');
+  assert.ok(d.toasts.includes('התעודה נשמרה ✓'), d.toasts.join(' | '));
+});
+
+test('8. הגרסה (167), כולל ההערה ב-service worker', () => {
+  const html = fs.readFileSync(new URL('../index.html', import.meta.url), 'utf8');
+  assert.match(html, /const APP_VERSION = '167'/);
+  assert.match(fs.readFileSync(new URL('../sw.js', import.meta.url), 'utf8'), /^\/\/ גרסה 167 — /);
 });

@@ -765,7 +765,7 @@ let receiptDupConfirmed = false; // אישור שמירה למרות חשד לכ
 const RECEIPT_DRAFT_KEY = 'tn_receipt_draft';
 let receivingDigitsMissTimer = null;
 let receivingDigitsMissNotified = '';
-const APP_VERSION = '166'; // סגירת התעודה אינה מחכה למנתח; ושמירה שלא אושרה אינה נועלת את הקליטה בלי הסבר — "אשר וקלוט" בודק ומנסה שוב בעצמו (כמו ברמן 156–157)
+const APP_VERSION = '167'; // תיקון ל-166: אחרי שמירה שלא אושרה הפס מציג את הכפתור (ולא נשאר על "בודק ושומר…"); ואחרי סגירה ופתיחה של האפליקציה "בדוק ונסה לשמור שוב" שומר — נתוני הצילום נשארים עם הקריאה, וטביעת הקליטה אינה משתנה
 // v158: תווית הגרסה בגיבויים וביומן הפעולות נגזרת מ-APP_VERSION. עד כאן היא הייתה קבועה ('v150_code_agreement') ונשארה
 // מאחור שמונה גרסאות — הגיבוי של 10.11 אמר 150 בעוד המסך אמר 157.
 const APP_VERSION_LABEL = 'v' + APP_VERSION;
@@ -1597,9 +1597,22 @@ async function tnuvaStartPaperScan(opts = {}) {
   if (runId !== aiScanRunId || receiptEntryMode !== 'photo') return;
   tnuvaAdoptPaperAnchors();
 }
+// v167: נתוני הצילום (מספר העמודים, החיתוך, החלוקה, האיכות) מחושבים מהצילומים שבזיכרון — ואחרי סגירה ופתיחה של האפליקציה
+// הצילומים אינם (הם לא נשמרים), אז עד 166 הנתונים האלה ירדו מהקריאה אף שנשמרו בטיוטה. שתי תוצאות: קליטה שנשמרה אחרי
+// פתיחה מחדש איבדה אותם; וטביעת הקליטה (handoffFingerprint) השתנתה בעצם הפתיחה — ולכן ניסיון שמירה שלא אושר לא נשלח שוב
+// אחריה (165: "יש שמירה קודמת שלא הוכרעה…", נעול; 166: הניסיון ירד והקליטה נפתחה מחדש, במקום פשוט להישמר — בניגוד למה
+// שהפס מציע: "סגור את האפליקציה, פתח אותה שוב ולחץ כאן שוב"). מעכשיו, כשאין צילומים בזיכרון, נשאר מה שנשמר.
+const SCAN_PAGE_AUDIT_FIELDS = ['pageCount', 'cropReasons', 'splitReasons', 'photoQuality', 'qualityAdvice'];
+function aiScanPageAuditKept(result) {
+  const live = aiScanPageAudit(result.docIndex);
+  if (Object.keys(live).length) return live;
+  const kept = {};
+  SCAN_PAGE_AUDIT_FIELDS.forEach(field => { if (result[field] !== undefined) kept[field] = result[field]; });
+  return kept;
+}
 function tnuvaScanMetadata(result) {
   return { docIndex: result.docIndex, ok: !!result.ok, attempts: result.attempts || 1,
-    ...aiScanPageAudit(result.docIndex),
+    ...aiScanPageAuditKept(result),
     serviceVersion: result.serviceVersion || null, requestId: result.requestId || null,
     model: result.model || null, usage: result.usage || null,
     barcodeRetry: result.retryAudit || null, scanAudit: result.scanAudit || null,
@@ -19651,7 +19664,9 @@ async function confirmReceipt() {
   else if (noDoc && !attach) showToast('נקלט לפי ספירה — התעודה פתוחה עד שיגיע הנייר', null, null, 3600);
   else if (attach) showToast('התעודה צורפה ונבדקה ✓', null, null, 2600);
   else showToast('התעודה נקלטה ✓', null, null, 2200);
-  } finally { receiptFinalizing=false; }
+  // v167: הפס מצויר שוב אחרי שהדגל ירד. ב-166 הפס קיבל מצב "בודק ושומר…", ושמירה שלא אושרה ציירה אותו (localReceiptResult)
+  // בזמן שהדגל עוד דלק — כך שאחריה הוא נשאר על "בודק ושומר…" בלי הכפתור, עד שעברו מסך. (ב-165 היה שם הכפתור.)
+  } finally { receiptFinalizing=false; renderDraftHandoffBanner(); }
 }
 // v27: מחיקת תעודת חזרה — עם גיבוי וביטול מיידי, כמו בקליטה
 async function delReturn(id) {

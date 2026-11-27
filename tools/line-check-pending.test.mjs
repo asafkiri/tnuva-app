@@ -632,10 +632,10 @@ test('12. בדיקה שסומנו בה שורות אינה מוחלפת כשהת
   await q.release();
 });
 
-test('13. הגרסה (166: סגירת התעודה אינה מחכה למנתח), כולל ההערה ב-service worker; "סריקת מוצרים" אינה נבחרת עוד בשום מסך', () => {
+test('13. הגרסה (167: תיקון ל-166 — הפס אחרי שמירה שלא אושרה, וסגירה ופתיחה), כולל ההערה ב-service worker; "סריקת מוצרים" אינה נבחרת עוד בשום מסך', () => {
   const html = fs.readFileSync(new URL('../index.html', import.meta.url), 'utf8');
-  assert.match(html, /const APP_VERSION = '166'/);
-  assert.match(fs.readFileSync(new URL('../sw.js', import.meta.url), 'utf8'), /^\/\/ גרסה 166 — /);
+  assert.match(html, /const APP_VERSION = '167'/);
+  assert.match(fs.readFileSync(new URL('../sw.js', import.meta.url), 'utf8'), /^\/\/ גרסה 167 — /);
   assert.doesNotMatch(html, /data-role="rc-count-by-scan"|מעבר לקליטה בסריקת מוצרים<|>התחל קליטת מוצרים</);
 });
 
